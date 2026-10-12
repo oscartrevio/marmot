@@ -12,6 +12,9 @@ teardown() { mm_test_teardown; }
   run "$MM_SRC/install.sh"
   [ "$status" -eq 0 ]
   [ -f "$MARMOT_PREFIX/lib/core.sh" ]
+  [ -f "$MARMOT_PREFIX/completion/mm.bash" ]
+  [ ! -e "$MARMOT_PREFIX/tests" ]
+  [ ! -e "$MARMOT_PREFIX/.git" ]
   [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
   [ "$(readlink -f "$MARMOT_BIN/marmot")" = "$MARMOT_PREFIX/marmot" ]
   run "$MARMOT_BIN/mm" --version
@@ -57,4 +60,22 @@ teardown() { mm_test_teardown; }
   run "$MM_SRC/install.sh" --uninstall
   [ "$status" -eq 0 ]
   [ -L "$MARMOT_BIN/mm" ]
+}
+
+@test "the installed copy can uninstall itself" {
+  "$MM_SRC/install.sh" >/dev/null
+  run "$MARMOT_PREFIX/install.sh" --uninstall
+  [ "$status" -eq 0 ]
+  [ ! -e "$MARMOT_BIN/mm" ]
+  [ ! -e "$MARMOT_PREFIX" ]
+}
+
+@test "--uninstall never deletes a git checkout used as the install folder" {
+  mkdir -p "$(dirname "$MARMOT_PREFIX")"
+  cp -R "$MM_SRC" "$MARMOT_PREFIX"; mkdir -p "$MARMOT_PREFIX/.git"
+  "$MARMOT_PREFIX/install.sh" >/dev/null
+  run "$MARMOT_PREFIX/install.sh" --uninstall
+  [ "$status" -eq 0 ]
+  [ ! -e "$MARMOT_BIN/mm" ]
+  [ -f "$MARMOT_PREFIX/marmot" ]
 }
