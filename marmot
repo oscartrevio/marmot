@@ -6,8 +6,9 @@ MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/core.sh
 . "$MM_HOME/lib/core.sh"
 
-MM_COMMANDS=(history)
+MM_COMMANDS=(status history)
 declare -A MM_DESC=(
+  [status]="Live system health dashboard (--once for a snapshot)"
   [history]="Show what marmot has changed"
 )
 
