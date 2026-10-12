@@ -6,8 +6,9 @@ MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/core.sh
 . "$MM_HOME/lib/core.sh"
 
-MM_COMMANDS=()
+MM_COMMANDS=(history)
 declare -A MM_DESC=(
+  [history]="Show what marmot has changed"
 )
 
 mm_usage() {

@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# The `mm` entry point.
+# The `mm` entry point and `mm history`.
 
 setup() {
   load helpers/common
@@ -21,4 +21,37 @@ teardown() { mm_test_teardown; }
     run mm $args
     [ "$status" -ne 0 ] || { echo "accepted: mm $args"; false; }
   done
+}
+
+@test "history with no log says so" {
+  run mm history
+  [ "$status" -eq 0 ]
+  [[ "$output" == "No operations recorded yet"* ]]
+}
+
+@test "history reads old 5-column and new 6-column rows, as text and JSON" {
+  mkdir -p "$XDG_STATE_HOME/marmot"
+  printf '%s\n' \
+    $'2026-10-12T17:05:39+00:00\tclean\tremove\t/tmp/old\t4096' \
+    $'2026-10-13T10:00:00+00:00\tclean\ttrash\t/tmp/doc\t8192\t/home/u/.local/share/Trash/files/doc' \
+    $'2026-10-13T10:00:01+00:00\tpurge\trefused\t/x/node_modules\t0\tin use' \
+    >"$XDG_STATE_HOME/marmot/operations.log"
+  run mm history
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"/x/node_modules"*"(in use)"* ]]
+  run mm history --json
+  [ "$status" -eq 0 ]
+  [ "$(jq -r 'map(.action) | join(",")' <<<"$output")" = "remove,trash,refused" ]
+  [ "$(jq -r '.[0].detail + "|" + .[2].detail + "|" + (.[1].bytes | tostring)' <<<"$output")" = "|in use|8192" ]
+}
+
+@test "history --limit/-l returns only the newest rows (-n stays the global --dry-run)" {
+  mkdir -p "$XDG_STATE_HOME/marmot"
+  printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t/tmp/a\t1\t' \
+    $'2026-10-12T11:00:00+00:00\tclean\tremove\t/tmp/b\t1\t' >"$XDG_STATE_HOME/marmot/operations.log"
+  run mm history -l 1 --json
+  [ "$status" -eq 0 ]
+  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b" ]
+  run mm history --limit 1 --json
+  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b" ]
 }
