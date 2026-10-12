@@ -1,0 +1,5 @@
+# Library globals are consumed by the files that source them (SC2034), and some scripts are
+# single-quoted on purpose because they run in a child `bash -c` (SC2016).
+external-sources=true
+source-path=SCRIPTDIR
+disable=SC2034,SC2016
