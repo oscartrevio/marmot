@@ -27,6 +27,10 @@ mm_test_setup() {
   fi
   export XDG_CONFIG_HOME="$HOME/.config" XDG_DATA_HOME="$HOME/.local/share"
   export XDG_STATE_HOME="$HOME/.local/state" XDG_CACHE_HOME="$HOME/.cache"
+  # Newer git starts background maintenance after commits; its short-lived lock files would race
+  # helpers that walk a tree (mm_age), so tests run git with it switched off.
+  export GIT_CONFIG_GLOBAL="$sandbox/gitconfig" GIT_CONFIG_NOSYSTEM=1
+  printf '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n' >"$GIT_CONFIG_GLOBAL"
   unset MM_CONFIG_DIR MM_STATE_DIR MM_WHITELIST_FILE MM_PURGE_PATHS_FILE MM_LOG_FILE MM_DRY_RUN MM_DEBUG
   export MM_TTY=0 NO_COLOR=1 LC_ALL=C.UTF-8
   export MM_TEST_UNSTUBBED_LOG="$sandbox/unstubbed.log"
@@ -93,7 +97,7 @@ mm_log_rows() {
 
 # mm_age PATH DAYS — make PATH (recursively) look DAYS old by mtime and atime. ctime cannot be
 # faked; tests that need old ctime override `date` instead (see mm_test_clock).
-mm_age() { find "$1" -exec touch -h -d "$2 days ago" {} +; }
+mm_age() { find "$1" -exec touch -c -h -d "$2 days ago" {} +; }
 
 # mm_test_clock DAYS — move marmot's notion of "now" DAYS days into the future for child bash
 # processes (mm_idle_days and friends call `date +%s`).
