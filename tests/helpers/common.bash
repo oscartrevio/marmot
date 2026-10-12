@@ -64,12 +64,22 @@ mm_test_fake() {
   chmod +x "$BATS_TEST_TMPDIR/stubs/$1"
 }
 
-# mm_test_bg DIR CMD... — start CMD in the background with cwd DIR; killed at teardown.
+# mm_test_bg DIR CMD... — start CMD in the background with cwd DIR; killed at teardown. Returns
+# once the process runs CMD inside DIR: a fixed sleep raced on slow machines, where a test could
+# delete DIR before the background shell had even changed into it.
 mm_test_bg() {
   local dir="$1"; shift
   (cd "$dir" && exec "$@") &
-  MM_TEST_PIDS+=("$!")
-  sleep 0.3
+  local pid=$! want i
+  MM_TEST_PIDS+=("$pid")
+  want=$(realpath -e -- "$dir")
+  for ((i = 0; i < 200; i++)); do
+    if [[ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" == "$want" ]] &&
+       tr '\0' '\n' <"/proc/$pid/cmdline" 2>/dev/null | grep -qxF -- "$1"; then
+      return 0
+    fi
+    sleep 0.05
+  done
 }
 
 mm_test_teardown() {
