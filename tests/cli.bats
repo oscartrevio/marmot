@@ -14,13 +14,15 @@ teardown() { mm_test_teardown; }
   [ "$status" -ne 0 ]
 }
 
-@test "-y/--yes is rejected for every command" {
+@test "-y/--yes is rejected everywhere except mm purge" {
   local args
   for args in "clean -y" "clean --yes" "-y clean" "uninstall --yes ncdu" "optimize -y" "analyze -y" "history -y"; do
     # shellcheck disable=SC2086
     run mm $args
     [ "$status" -ne 0 ] || { echo "accepted: mm $args"; false; }
   done
+  run mm purge --yes --dry-run "$SB"
+  [ "$status" -eq 0 ]
 }
 
 @test "history with no log says so" {
