@@ -6,12 +6,13 @@ MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/core.sh
 . "$MM_HOME/lib/core.sh"
 
-MM_COMMANDS=(clean status analyze purge history)
+MM_COMMANDS=(clean status analyze purge uninstall history)
 declare -A MM_DESC=(
   [clean]="Remove caches, old temp files, logs, and package/Docker leftovers"
   [status]="Live system health dashboard (--once for a snapshot)"
   [analyze]="Interactive disk explorer"
   [purge]="Remove build artifacts (node_modules, .next, target...) from idle projects"
+  [uninstall]="Remove apt/snap/global packages plus their leftovers"
   [history]="Show what marmot has changed"
 )
 
