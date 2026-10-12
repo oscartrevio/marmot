@@ -46,7 +46,7 @@ pick() {
   [[ "$(cat "$NCDU_ARGS")" == *"-- $SB/mine" ]]
 }
 
-@test "review1 #3: ncdu opens read-only for root-owned and unreadable locations" {
+@test "ncdu opens read-only for root-owned and unreadable locations" {
   run mm analyze /var/log
   mkdir -p "$SB/locked"; chmod 000 "$SB/locked"
   run mm analyze "$SB/locked"
@@ -55,7 +55,7 @@ pick() {
   [ "$(grep -c -- ' -r ' "$NCDU_ARGS")" -eq 2 ]
 }
 
-@test "review1 #3: a location opened as root through sudo is still read-only" {
+@test "a location opened as root through sudo is still read-only" {
   mm_test_fake sudo "[[ \"\$*\" == '-n true' ]] && exit 0; printf 'sudo %s\n' \"\$*\" >>'$NCDU_ARGS'"
   mkdir -p "$SB/locked"; chmod 000 "$SB/locked"
   run mm analyze "$SB/locked"
@@ -75,7 +75,7 @@ pick() {
 # entry NAME — the JSON overview entry called NAME (from $output).
 entry() { echo "$output" | jq -c --arg n "$1" '.entries[] | select(.name == $n)'; }
 
-@test "phase3: the overview has a report-only Agent state row when agent state exists" {
+@test "the overview has a report-only Agent state row when agent state exists" {
   run mm analyze --json
   [ -z "$(entry "Agent state")" ]
   mkdir -p "$HOME/.claude/projects" "$HOME/.codex"
@@ -90,7 +90,7 @@ entry() { echo "$output" | jq -c --arg n "$1" '.entries[] | select(.name == $n)'
   echo "$e" | jq -e --arg p "$HOME/.claude" '.path == $p'
 }
 
-@test "phase3: Dev caches sums the XDG cache and the toolchain caches that exist" {
+@test "Dev caches sums the XDG cache and the toolchain caches that exist" {
   mkdir -p "$XDG_CACHE_HOME" "$HOME/.npm/_cacache" "$HOME/.cargo/registry/cache"
   head -c 100000 /dev/urandom >"$XDG_CACHE_HOME/a"
   head -c 200000 /dev/urandom >"$HOME/.npm/_cacache/b"
@@ -100,7 +100,7 @@ entry() { echo "$output" | jq -c --arg n "$1" '.entries[] | select(.name == $n)'
   entry "Dev caches" | jq -e --arg p "$HOME/.cargo/registry" '.bytes >= 600000 and .report_only == false and .path == $p'
 }
 
-@test "phase3: old downloads are found in the XDG download directory" {
+@test "old downloads are found in the XDG download directory" {
   mkdir -p "$HOME/Dl" "$XDG_CONFIG_HOME"
   echo 'XDG_DOWNLOAD_DIR="$HOME/Dl"' >"$XDG_CONFIG_HOME/user-dirs.dirs"
   head -c 100000 /dev/urandom >"$HOME/Dl/old.iso"
@@ -109,7 +109,7 @@ entry() { echo "$output" | jq -c --arg n "$1" '.entries[] | select(.name == $n)'
   entry "Old Downloads (90d+)" | jq -e --arg p "$HOME/Dl" '.path == $p and .bytes >= 100000'
 }
 
-@test "phase3: without ncdu, exploring a path lists its largest entries" {
+@test "without ncdu, exploring a path lists its largest entries" {
   local bin="$SB/bin" f
   mkdir -p "$bin" "$SB/root/big"
   head -c 300000 /dev/urandom >"$SB/root/big/blob"
