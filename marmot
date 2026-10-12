@@ -6,10 +6,11 @@ MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/core.sh
 . "$MM_HOME/lib/core.sh"
 
-MM_COMMANDS=(clean status history)
+MM_COMMANDS=(clean status purge history)
 declare -A MM_DESC=(
   [clean]="Remove caches, old temp files, logs, and package/Docker leftovers"
   [status]="Live system health dashboard (--once for a snapshot)"
+  [purge]="Remove build artifacts (node_modules, .next, target...) from idle projects"
   [history]="Show what marmot has changed"
 )
 
@@ -31,7 +32,7 @@ Global options:
   -v, --version   Version
 
 Confirmations need a terminal: run without one (cron, pipes) and every step that asks is
-skipped.
+skipped. The only unattended deletion is \`mm purge --yes\` (stale build artifacts).
 Personal files go to the Trash ($MM_TRASH_DIR); restore with trash-restore.
 
 Files:
@@ -57,7 +58,9 @@ args=()
 for a in "$@"; do
   case "$a" in
     -n|--dry-run) export MM_DRY_RUN=1 ;;
-    -y|--yes) mm_die "$a: marmot has no unattended mode; confirmations need a terminal" ;;
+    -y|--yes)
+      if [[ "${args[0]:-}" == purge ]]; then args+=("$a")
+      else mm_die "$a: only 'mm purge --yes' runs unattended; other commands ask on the terminal"; fi ;;
     --debug) export MM_DEBUG=1 ;;
     *) args+=("$a") ;;
   esac
