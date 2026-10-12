@@ -6,8 +6,9 @@ MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/core.sh
 . "$MM_HOME/lib/core.sh"
 
-MM_COMMANDS=(status history)
+MM_COMMANDS=(clean status history)
 declare -A MM_DESC=(
+  [clean]="Remove caches, old temp files, logs, and package/Docker leftovers"
   [status]="Live system health dashboard (--once for a snapshot)"
   [history]="Show what marmot has changed"
 )
@@ -34,7 +35,7 @@ skipped.
 Personal files go to the Trash ($MM_TRASH_DIR); restore with trash-restore.
 
 Files:
-  $MM_WHITELIST_FILE   protected paths
+  $MM_WHITELIST_FILE   protected paths (mm clean --whitelist)
   $MM_LOG_FILE  operations log (mm history)
 EOF
 }
