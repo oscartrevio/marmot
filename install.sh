@@ -27,8 +27,12 @@ uninstall() {
       rm -f -- "$l" && say "removed $l"   # SAFE: our own launcher symlink, target verified
     fi
   done
-  if [[ "$(readlink -f "$prefix")" != "$src" ]] && _is_marmot_tree "$prefix"; then
-    rm -rf -- "$prefix" && say "removed $prefix"   # SAFE: verified marmot tree, not this checkout
+  if _is_marmot_tree "$prefix"; then
+    if [[ -e "$prefix/.git" ]]; then
+      say "kept $prefix (a git checkout; remove it yourself if you want)"
+    else
+      rm -rf -- "$prefix" && say "removed $prefix"   # SAFE: verified marmot install, not a git checkout
+    fi
   fi
   say "Kept: ${XDG_CONFIG_HOME:-~/.config}/marmot, ${XDG_STATE_HOME:-~/.local/state}/marmot and the Trash."
 }
@@ -55,8 +59,10 @@ install() {
       _is_marmot_tree "$prefix" || die "$prefix exists and is not a marmot install; set MARMOT_PREFIX."
       rm -rf -- "$prefix"   # SAFE: verified marmot tree, replaced by this checkout
     fi
-    mkdir -p "$(dirname "$prefix")"
-    cp -R -- "$src" "$prefix"
+    mkdir -p "$prefix"
+    # Only what runs: the launcher, libraries, commands, completion, and this installer (for
+    # --uninstall). Tests and git metadata stay in the checkout.
+    cp -R -- "$src/marmot" "$src/install.sh" "$src/lib" "$src/cmd" "$src/completion" "$prefix/"
     say "installed to $prefix"
   fi
   mkdir -p "$bindir"
