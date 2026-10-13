@@ -107,11 +107,12 @@ live() {
   needs_jq
   fake_agent claude
   mkdir -p "$SB/work"
-  mm_test_bg "$SB/work" "$SB/bin/claude" 30
-  local pid=${MM_TEST_PIDS[-1]}
+  detached "$SB/work" "$SB/bin/claude" 30
+  local pid=$DETACHED
   status_json
-  jq -e --argjson p "$pid" '.system.agents.sessions
-    | any(.pid == $p and .agent == "Claude Code" and .process == "claude" and (.orphan | not))' <<<"$JSON"
+  jq -e --argjson p "$pid" --arg d "$SB/work" '.system.agents.sessions
+    | any(.pid == $p and .agent == "Claude Code" and .process == "claude" and (.orphan | not)
+      and .cwd == $d and (.busy | not))' <<<"$JSON"
   jq -e '.system.agents.count >= 1' <<<"$JSON"
 }
 
@@ -119,19 +120,86 @@ live() {
   needs_jq
   needs_python
   printf 'import time\ntime.sleep(30)\n' >"$SB/bin/gemini"
-  mm_test_bg "$SB" python3 "$SB/bin/gemini"
-  local pid=${MM_TEST_PIDS[-1]}
+  detached "$SB" python3 "$SB/bin/gemini"
+  local pid=$DETACHED
   [ "$(cat "/proc/$pid/comm")" = python3 ]
   status_json
   jq -e --argjson p "$pid" '.system.agents.sessions | any(.pid == $p and .agent == "Gemini CLI")' <<<"$JSON"
+}
+
+@test "a session is the top-level agent: its tree's CPU and memory count, sub-agents are not extra" {
+  needs_jq
+  fake_agent codex
+  mkdir -p "$HOME/proj/idle" "$HOME/proj/busy"
+  detached "$HOME/proj/idle" "$SB/bin/codex" 30
+  local idle=$DETACHED
+  # A busy session: the agent itself sleeps; a child it started burns CPU; a sub-agent runs too.
+  printf '#!/bin/bash\nbash -c "while :; do :; done" &\n%s 30 &\nwait\n' "$SB/bin/codex" >"$SB/bin/claude"
+  chmod +x "$SB/bin/claude"
+  detached "$HOME/proj/busy" "$SB/bin/claude"
+  local busy=$DETACHED sub
+  for _ in 1 2 3 4 5 6 7 8 9 10; do sub=$(pgrep -P "$busy" -x codex) && break; sleep 0.1; done
+  [ -n "$sub" ]
+  status_json
+  jq -e --argjson b "$busy" --argjson i "$idle" --argjson s "$sub" '.system.agents.sessions as $all
+    | ($all | map(.pid) | index($b)) as $bi | ($all | map(.pid) | index($i)) as $ii
+    | $bi != null and $ii != null and $bi < $ii
+      and ($all[$bi] | .busy and .cpu_percent >= 2 and .rss_swap_bytes > 0)
+      and ($all[$ii] | (.busy | not))
+      and ($all | all(.pid != $s))' <<<"$JSON"
+  run mm status --once
+  # Busy sorts first, so this row is shown whatever else runs on the host.
+  grep -E "claude +~/proj/busy .* busy " <<<"$output"
+}
+
+@test "a session's memory counts pages its processes share once (proportional, not RSS)" {
+  needs_jq
+  needs_python
+  # 128 MiB written, then forked: parent and child each have it resident, shared copy-on-write.
+  cat >"$SB/bin/hog.py" <<'EOF'
+import os, sys, time
+b = bytearray(b"\x01") * (128 << 20)
+os.fork()
+open("%s.%d" % (sys.argv[1], os.getpid()), "w").close()
+time.sleep(30)
+EOF
+  printf '#!/bin/bash\npython3 %q %q &\nwait\n' "$SB/bin/hog.py" "$SB/ready" >"$SB/bin/claude"
+  chmod +x "$SB/bin/claude"
+  detached "$SB" "$SB/bin/claude"
+  local agent=$DETACHED p rss=0 n
+  for _ in $(seq 50); do n=$(compgen -G "$SB/ready.*" | wc -l); ((n == 2)) && break; sleep 0.1; done
+  [ "$n" -eq 2 ]
+  for p in $(pgrep -f "$SB/bin/hog.py"); do rss=$((rss + $(awk '/^VmRSS:/ { print $2 }' "/proc/$p/status"))); done
+  # The premise: summed RSS counts the shared 128 MiB twice.
+  ((rss >= 256 * 1024))
+  status_json
+  jq -e --argjson a "$agent" '.system.agents.sessions[] | select(.pid == $a)
+    | .rss_swap_bytes >= 128 * 1048576 and .rss_swap_bytes < 192 * 1048576' <<<"$JSON"
+}
+
+@test "agent rows fit the width whatever the age and CPU (10h 37m, over 999%)" {
+  mm_core
+  # shellcheck source=../cmd/status.sh
+  . "$MM_SRC/cmd/status.sh"
+  local t=$'\t' row
+  ST_PANEL=()
+  ST_AGENTS=("101${t}Claude Code${t}claude${t}38220${t}2306867${t}0${t}10930${t}1${t}/srv/agents/a-rather-long-project-folder/with/depth"
+             "102${t}Codex CLI${t}codex${t}120${t}102400${t}0${t}5${t}0${t}/srv/x")
+  _status_agent_rows "  " 80 5 8
+  [ "${#ST_PANEL[@]}" -eq 2 ]
+  for row in "${ST_PANEL[@]}"; do
+    (( ${#row} <= 80 )) || { echo "too wide (${#row}): $row"; false; }
+  done
+  [[ "${ST_PANEL[0]}" == *" 10h 37m "*"1093% "* ]]
+  [[ "${ST_PANEL[1]}" == *" 2m "* ]]
 }
 
 @test "an agent whose working directory was deleted is an orphan and costs health" {
   needs_jq
   fake_agent codex
   mkdir -p "$SB/gone"
-  mm_test_bg "$SB/gone" "$SB/bin/codex" 30
-  local pid=${MM_TEST_PIDS[-1]}
+  detached "$SB/gone" "$SB/bin/codex" 30
+  local pid=$DETACHED
   rm -r -- "$SB/gone"
   status_json
   jq -e --argjson p "$pid" --arg d "$SB/gone" '
@@ -140,9 +208,7 @@ live() {
     and (.system.agents.orphan_count >= 1)
     and (.health_reasons | any(test("orphan")))' <<<"$JSON"
   run mm status --once
-  # The panel shows at most 3 orphan rows and other processes on the host may fill them; the JSON
-  # check above pins this exact process. Here: the orphan surfaces in the human view at all.
-  [[ "$output" == *"cwd deleted: "* ]]
+  grep -E "orphan +codex $pid in deleted " <<<"$output"
 }
 
 @test "a dev server in a deleted directory past the linger age is a lingering orphan" {
