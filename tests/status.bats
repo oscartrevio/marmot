@@ -68,8 +68,9 @@ status_json() {
   JSON=$output
 }
 
-# status_lib SNIPPET — run SNIPPET in a fresh bash with lib/core.sh and cmd/status.sh sourced.
-status_lib() { run bash -c '. "$1/lib/core.sh"; . "$1/cmd/status.sh"; eval "$2"' _ "$MM_SRC" "$1"; }
+# status_lib SNIPPET — run SNIPPET in a fresh bash with lib/core.sh and cmd/status.sh sourced, in
+# a new session (no controlling terminal: sizes come from LINES/COLUMNS, as on CI).
+status_lib() { run setsid -w bash -c '. "$1/lib/core.sh"; . "$1/cmd/status.sh"; eval "$2"' _ "$MM_SRC" "$1"; }
 
 # live KEYS [ARGS...] — run `mm status --interval 1 ARGS` in a 40x100 pty (script(1)); KEYS is a
 # shell snippet whose stdout is typed into it (e.g. 'sleep 4; printf q'). Exit status in
@@ -249,13 +250,37 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   grep -E "bash \(alpha/beta\) +$pid " <<<"$output"
 }
 
-@test "live mode: every frame ends with the footer on its own line, then q quits" {
-  live 'sleep 4; printf q'
+@test "live mode: refreshes rewrite only changed rows, the footer ends its line, q quits" {
+  live 'sleep 5; printf q'
   # 124 would mean q did not quit before the timeout.
   [ "$LIVE_STATUS" -eq 0 ]
-  [ "$(grep -c 'q quit' <<<"$LIVE_TEXT")" -ge 2 ]
-  # Stripped of escapes, a footer glued to the next frame reads "...5mmm status".
-  [ "$(grep -cE 'q quit.*mm status' <<<"$LIVE_TEXT")" -eq 0 ]
+  # The CPU trend grows every refresh, so it is rewritten each time: several frames were drawn.
+  [ "$(grep -c '^Trend ' <<<"$LIVE_TEXT")" -ge 2 ]
+  # A panel title never changes: written by the first frame, again only if the layout shifts
+  # (the header gains a health reason under load), never on every refresh.
+  [ "$(grep -c '⚙ CPU' <<<"$LIVE_TEXT")" -lt "$(grep -c '^Trend ' <<<"$LIVE_TEXT")" ]
+  [ "$(grep -c 'q quit' <<<"$LIVE_TEXT")" -ge 1 ]
+  # Stripped of escapes, a footer glued to whatever is written next reads "...5mmm status".
+  [ "$(grep -cE 'q quit.*(mm status|Trend|Total)' <<<"$LIVE_TEXT")" -eq 0 ]
+}
+
+@test "painting: unchanged rows are skipped, leftover rows cleared, a resize repaints all" {
+  status_lib '
+    ST_INTERVAL=1
+    ST_FRAME=(a b c d e) ST_REPAINT=1; _status_paint >/dev/null
+    ST_FRAME=(a B c); _status_paint >"$HOME/shrink"
+    _status_paint >"$HOME/same"
+    _status_init; _status_first 0
+    COLUMNS=100 LINES=40 _status_draw >/dev/null
+    COLUMNS=100 LINES=40 _status_draw >"$HOME/again"
+    COLUMNS=80 LINES=40 _status_draw >"$HOME/resized"
+    _status_cleanup'
+  [ "$status" -eq 0 ]
+  # Only row 2 changed: rewritten; rows 4 and 5 are no longer used: cleared.
+  [ "$(<"$HOME/shrink")" = $'\e[2;1HB\e[K\n\e[4;1H\e[K\e[5;1H\e[K' ]
+  [ ! -s "$HOME/same" ]
+  [ ! -s "$HOME/again" ]
+  [[ "$(<"$HOME/resized")" == $'\e[H\e[2J'* ]]
 }
 
 @test "without a terminal, plain 'mm status' prints one snapshot and exits" {
