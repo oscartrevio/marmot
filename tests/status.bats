@@ -68,13 +68,36 @@ status_json() {
   JSON=$output
 }
 
+# fake_ss LISTENERS CONNS [CONNS_LATER] — an `ss` double: listener queries (-l) print LISTENERS;
+# `state established` queries print CONNS the first time and CONNS_LATER (default CONNS) after,
+# so counters can grow between the two samples a snapshot takes. Lines as `ss -H` prints them.
+fake_ss() {
+  local d=$BATS_TEST_TMPDIR
+  printf '%s\n' "$1" >"$d/ss.listen"
+  printf '%s\n' "$2" >"$d/ss.est1"
+  printf '%s\n' "${3:-$2}" >"$d/ss.est2"
+  mm_test_fake ss "case \"\$*\" in
+  *established*) if [[ -e '$d/ss.seen' ]]; then cat '$d/ss.est2'; else : >'$d/ss.seen'; cat '$d/ss.est1'; fi ;;
+  *l*) cat '$d/ss.listen' ;;
+esac"
+  rm -f "$d/ss.seen"
+}
+
+# conn LOCAL PEER INFO — one established connection as `ss -Htin` prints it (info on its own line).
+conn() { printf '0      0      %s   %s\n\t cubic wscale:7,7 rto:204 %s mss:1448 lastsnd:10 lastack:20\n' "$1" "$2" "$3"; }
+
+NO_SSH=(-u SSH_CONNECTION -u SSH_CLIENT)
+LISTEN_SSH='LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*
+LISTEN 0      4096       127.0.0.1:5432      0.0.0.0:*'
+
 # status_lib SNIPPET — run SNIPPET in a fresh bash with lib/core.sh and cmd/status.sh sourced, in
 # a new session (no controlling terminal: sizes come from LINES/COLUMNS, as on CI).
 status_lib() { run setsid -w bash -c '. "$1/lib/core.sh"; . "$1/cmd/status.sh"; eval "$2"' _ "$MM_SRC" "$1"; }
 
-# live KEYS [ARGS...] — run `mm status --interval 1 ARGS` in a 40x100 pty (script(1)); KEYS is a
-# shell snippet whose stdout is typed into it (e.g. 'sleep 4; printf q'). Exit status in
-# $LIVE_STATUS, raw output in $LIVE_OUT, the output with escape sequences stripped in $LIVE_TEXT.
+# live KEYS [ARGS...] — run `mm status --interval 1 ARGS` in a pty (script(1)) of LIVE_ROWS
+# (default 40) by 100 columns; KEYS is a shell snippet whose stdout is typed into it (e.g.
+# 'sleep 4; printf q'). Exit status in $LIVE_STATUS, raw output in $LIVE_OUT, the output with
+# escape sequences stripped in $LIVE_TEXT.
 live() {
   command -v script >/dev/null || skip "script(1) not installed"
   local keys=$1 cmd=""
@@ -82,7 +105,7 @@ live() {
   (($#)) && printf -v cmd ' %q' "$@"
   LIVE_OUT="$BATS_TEST_TMPDIR/live.out" LIVE_STATUS=0
   { eval "$keys"; sleep 2; } |
-    timeout 40 script -qfec "stty rows 40 cols 100; env -u MM_TTY mm status --interval 1$cmd" /dev/null \
+    timeout 40 script -qfec "stty rows ${LIVE_ROWS:-40} cols 100; env -u MM_TTY mm status --interval 1$cmd" /dev/null \
       >"$LIVE_OUT" || LIVE_STATUS=$?
   LIVE_TEXT=$(sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$LIVE_OUT" | tr -d '\r')
 }
@@ -317,7 +340,9 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
 }
 
 @test "live mode: refreshes rewrite only changed rows, the footer ends its line, q quits" {
-  live 'sleep 5; printf q'
+  # Room for every panel and no client link coming and going: rows only change by their values.
+  fake_ss "$LISTEN_SSH" ""
+  LIVE_ROWS=70 live 'sleep 5; printf q'
   # 124 would mean q did not quit before the timeout.
   [ "$LIVE_STATUS" -eq 0 ]
   # The CPU trend grows every refresh, so it is rewritten each time: several frames were drawn.
@@ -347,6 +372,72 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   [ ! -s "$HOME/same" ]
   [ ! -s "$HOME/again" ]
   [[ "$(<"$HOME/resized")" == $'\e[H\e[2J'* ]]
+}
+
+@test "client: the inbound peer to a listening port; loopback, outbound and local-only ports ignored" {
+  needs_jq
+  local conns
+  conns=$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:23.5/4.1 retrans:0/3 lastrcv:500 minrtt:21.2'
+    conn 10.0.0.5:22 127.0.0.1:40000 'rtt:0.1/0.05 lastrcv:1 minrtt:0.1'
+    conn 10.0.0.5:5432 203.0.113.8:5555 'rtt:5/1 lastrcv:2 minrtt:5'
+    conn 10.0.0.5:40001 203.0.113.9:443 'rtt:9/1 lastrcv:3 minrtt:9')
+  fake_ss "$LISTEN_SSH" "$conns"
+  status_json "${NO_SSH[@]}"
+  jq -e '.client == { address: "203.0.113.7", name: null, path: null, rtt_ms: 23.5, min_rtt_ms: 21.2,
+    rttvar_ms: 4.1, retrans_delta: 0, laggy: false }' <<<"$JSON"
+  fake_ss "$LISTEN_SSH" "$conns"
+  run env "${NO_SSH[@]}" mm status --once
+  [[ "$output" == *"203.0.113.7"*"rtt 24 ms (best 21)"* && "$output" != *laggy* ]]
+}
+
+@test "client: high RTT, jittery RTT or new retransmits flag a laggy link without costing health" {
+  needs_jq
+  local calm laggy
+  calm=$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:20/2 retrans:0/50 lastrcv:5 minrtt:18')
+  fake_ss "$LISTEN_SSH" "$calm"
+  status_json "${NO_SSH[@]}"
+  jq -e '.client.laggy == false and .client.retrans_delta == 0' <<<"$JSON"
+  # Lifetime retransmits do not count; ones since the previous sample do.
+  fake_ss "$LISTEN_SSH" "$calm" "$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:20/2 retrans:0/55 lastrcv:5 minrtt:18')"
+  status_json "${NO_SSH[@]}"
+  jq -e '.client.laggy and .client.retrans_delta == 5' <<<"$JSON"
+  # "Without costing health": no health reason is about the link. (The score itself is not compared
+  # across runs: it moves with the host's own load between two samples.)
+  for laggy in 'rtt:435.2/30 lastrcv:5 minrtt:21' 'rtt:60/120 lastrcv:5 minrtt:21'; do
+    fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:22 203.0.113.7:51234 "$laggy")"
+    status_json "${NO_SSH[@]}"
+    jq -e '.client.laggy and (.health_reasons | all(test("link|rtt|lag") | not))' <<<"$JSON"
+  done
+  fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:435.2/30 lastrcv:5 minrtt:21')"
+  run env "${NO_SSH[@]}" mm status --once
+  [[ "$(head -3 <<<"$output")" == *"link to you is laggy"* ]]
+}
+
+@test "client: SSH_CONNECTION's address wins over more recent peers, even without TCP stats" {
+  needs_jq
+  fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:20/2 lastrcv:5 minrtt:18'
+    conn 10.0.0.5:22 198.51.100.4:60000 'rtt:80/5 lastrcv:900 minrtt:70')"
+  status_json SSH_CONNECTION='198.51.100.4 60000 10.0.0.5 22'
+  jq -e '.client.address == "198.51.100.4" and .client.rtt_ms == 80' <<<"$JSON"
+  status_json -u SSH_CONNECTION SSH_CLIENT='198.51.100.4 60000 22'
+  jq -e '.client.address == "198.51.100.4"' <<<"$JSON"
+  status_json SSH_CONNECTION='192.0.2.1 1234 10.0.0.5 22'
+  jq -e '.client.address == "192.0.2.1" and .client.rtt_ms == null and (.client.laggy | not)' <<<"$JSON"
+}
+
+@test "client: a Tailscale peer is named, with its path; no inbound connection means null" {
+  needs_jq
+  mm_test_fake tailscale 'printf "%s\n" "{\"Peer\": {\"n1\": {\"HostName\": \"laptop\",
+    \"TailscaleIPs\": [\"100.101.102.103\", \"fd7a:115c:a1e0::1\"], \"CurAddr\": \"\", \"Relay\": \"fra\"}}}"'
+  fake_ss "$LISTEN_SSH" "$(conn 100.88.0.2:22 100.101.102.103:50000 'rtt:30/3 lastrcv:5 minrtt:25')"
+  status_json "${NO_SSH[@]}"
+  jq -e '.client | .name == "laptop" and .path == "Tailscale relay fra"' <<<"$JSON"
+  fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:40001 203.0.113.9:443 'rtt:9/1 lastrcv:3 minrtt:9')"
+  status_json "${NO_SSH[@]}"
+  jq -e '.client == null' <<<"$JSON"
+  fake_ss "$LISTEN_SSH" ""
+  run env "${NO_SSH[@]}" mm status --once
+  [[ "$output" == *"no remote session detected"* ]]
 }
 
 @test "without a terminal, plain 'mm status' prints one snapshot and exits" {
