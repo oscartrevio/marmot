@@ -35,8 +35,11 @@ Options:
 Keys (live): q quit
 Slow probes (apt, systemd, kernel packages, docker) refresh every 5 minutes.
 
-Agents: running AI coding agent CLIs (lib/agents.sh catalog; matched by process name or by the
-  script an interpreter runs), with longest age, memory, and orphans (working dir deleted).
+Agents: one row per running AI coding agent session (lib/agents.sh catalog; matched by process
+  name or by the script an interpreter runs): folder, age, busy/idle (>= 2% CPU), CPU and memory
+  of the agent with everything it started; sub-agents count toward their parent. Memory is
+  proportional (PSS + swapped PSS: pages shared inside the session count once; JSON keeps the
+  name rss_swap_bytes). An agent whose folder was deleted is flagged as an orphan.
 Lingering: dev servers/toolchains (node, bun, deno, python, vite, next-server, esbuild, uvicorn,
   gunicorn, ...) of yours running longer than the linger age and not part of a live agent session.
 Ports: TCP ports your processes have listened on longer than the linger age.
@@ -195,7 +198,7 @@ _status_init() {
     read -r -a procs <<<"${MM_AGENT_PROCS[i]}"
     for k in "${procs[@]}"; do ST_AGENT_OF[$k]=${MM_AGENT_NAME[i]} ST_AGENT_COMM[${k:0:15}]=$k; done
   done
-  ST_PF=0 ST_T=0 ST_SLOW_PID="" ST_SLOW_AT=0 ST_TOPN=5 ST_NCORE=4 ST_GAP=1 ST_IF=""
+  ST_PF=0 ST_T=0 ST_SLOW_PID="" ST_SLOW_AT=0 ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1 ST_IF=""
   ST_SHOWN=() ST_REPAINT=1 ST_SIZE=""
   ST_CT=() ST_CI=() ST_CPU=() ST_CPUH=() ST_RXH=() ST_TXH=() ST_FAILED=() ST_ORPHANS=() ST_KPENDING=0
   declare -gA ST_SLOW=() ST_NRX=() ST_NTX=() ST_P_NRX=() ST_P_NTX=() ST_RBPS=() ST_TBPS=()
@@ -309,8 +312,11 @@ _status_sample() {
 # _status_procs — one pass over /proc/*/stat and /proc/*/status: per-process CPU deltas (top 5),
 # RSS+swap (top 5; marmot's own process tree is left out of both), zombie and process counts.
 # Then, among this user's processes:
-#   ST_AGENTS  agent sessions "pid agent proc age kb orphan" (helper processes of a session are
-#              folded in: their memory counts, they are not extra sessions);
+#   ST_AGENTS  agent sessions "pid agent proc age kb orphan cpu busy cwd": one per top-level agent
+#              process (no agent among its ancestors). kb (proportional, see _status_pss) and cpu
+#              (per mille of one core over the last interval) cover its whole process tree:
+#              helpers, servers, sub-agents; busy is 1 at >= 2% CPU. Sorted busy first, then by
+#              CPU, then oldest first;
 #   ST_LINGER  dev servers/toolchains older than ST_LINGER_AGE that are not inside a live agent
 #              session or an editor, "pid name age kb orphan";
 #   ST_ORPHANS either kind whose working directory was deleted, "pid name age cwd kind".
@@ -340,7 +346,7 @@ _status_procs() {
     function flush() {
       if (spid != "" && mem > 0) { smem[spid] = mem; sn[spid] = sname }
       if (spid != "" && suid == uid && (spid in ppid)) {
-        print "P", spid, ppid[spid]
+        print "P", spid, ppid[spid], (spid in cpu ? cpu[spid] : 0), mem
         if (spid in kind) print kind[spid], spid, ppid[spid], mem, cname[spid], age[spid]
       }
       spid = ""; mem = 0; suid = ""
@@ -378,14 +384,15 @@ _status_procs() {
     }' "$prev" -)
 
   ST_TOPCPU=() ST_TOPMEM=()
-  local -A pp=() agent_of=()
-  local -a cands=() agents=() devs=()
+  local -A pp=() pcpu=() pkb=() agent_of=() aage=() root_of=() tcpu=() tkb=() wd=()
+  local -a cands=() devs=() roots=() walk=() members=()
+  local r q dir busy
   while IFS=$'\t' read -r kind a b c d e; do
     case "$kind" in
       Z) ST_ZOMBIES=$a ST_NPROC=$b ;;
       C) _status_pname "$a" "$c"; ST_TOPCPU+=("$a"$'\t'"$b"$'\t'"$REPLY") ;;
       M) _status_pname "$a" "$c"; ST_TOPMEM+=("$a"$'\t'"$b"$'\t'"$REPLY") ;;
-      P) pp[$a]=$b ;;
+      P) pp[$a]=$b pcpu[$a]=$c pkb[$a]=$d ;;
       A | I | D) cands+=("$kind"$'\t'"$a"$'\t'"$b"$'\t'"$c"$'\t'"$d"$'\t'"$e") ;;
     esac
   done <<<"$out"
@@ -403,36 +410,63 @@ _status_procs() {
       [[ -z "$proc" && -n "$ST_ARGV_BASE" && -n "${ST_AGENT_OF[$ST_ARGV_BASE]:-}" ]] && proc=$ST_ARGV_BASE
     fi
     if [[ -n "$proc" ]]; then
-      agent_of[$pid]=$proc
-      agents+=("$e"$'\t'"$proc")
+      agent_of[$pid]=$proc aage[$pid]=$age
     elif ((age >= ST_LINGER_AGE)); then
       devs+=("$e")
     fi
   done
 
+  # Sessions: agent processes with no agent above them (a sub-agent belongs to its parent's
+  # session). Every process of this user is charged to the session root above it, if any; the
+  # walk up the parent chain is memoized in root_of ("" = in no session).
+  for pid in "${!agent_of[@]}"; do
+    p=${pp[$pid]:-}
+    for ((n = 0; n < 64; n++)); do
+      [[ -n "$p" ]] || break
+      [[ -n "${agent_of[$p]:-}" ]] && continue 2
+      p=${pp[$p]:-}
+    done
+    roots+=("$pid") root_of[$pid]=$pid tcpu[$pid]=0 tkb[$pid]=0
+  done
+  if ((${#roots[@]})); then
+    for pid in "${!pp[@]}"; do
+      walk=() p=$pid
+      while [[ -n "$p" && -z "${root_of[$p]+set}" ]] && ((${#walk[@]} < 64)); do walk+=("$p"); p=${pp[$p]:-}; done
+      r=""
+      [[ -n "$p" ]] && r=${root_of[$p]:-}
+      for q in "${walk[@]}"; do root_of[$q]=$r; done
+      [[ -n "$r" ]] || continue
+      tcpu[$r]=$((tcpu[$r] + pcpu[$pid]))
+      members+=("$pid")
+    done
+    _status_pss "${members[@]}"
+    for pid in "${members[@]}"; do
+      r=${root_of[$pid]} kb=${ST_PSS[$pid]:--1}
+      ((kb >= 0)) || kb=${pkb[$pid]}
+      tkb[$r]=$((tkb[$r] + kb))
+    done
+    walk=()
+    for pid in "${roots[@]}"; do walk+=("/proc/$pid/cwd"); done
+    while IFS=$'\t' read -r dir cwd; do wd[${dir#/proc/}]=$cwd; done < <(find "${walk[@]}" -maxdepth 0 -printf '%h\t%l\n' 2>/dev/null)
+  fi
+
   ST_AGENTS=() ST_AGENT_KB=0 ST_AGENT_MAXAGE=0 ST_ORPHANS=() ST_LINGER=() ST_LINGER_KB=0
-  for e in "${agents[@]}"; do
-    IFS=$'\t' read -r kind pid ppid kb comm age proc <<<"$e"
+  for pid in "${roots[@]}"; do
+    proc=${agent_of[$pid]} age=${aage[$pid]} kb=${tkb[$pid]} cwd=${wd[$pid]:-} orphan=0 busy=0
     ST_AGENT_KB=$((ST_AGENT_KB + kb))
-    [[ -n "${agent_of[$ppid]:-}" ]] && continue
     ((age > ST_AGENT_MAXAGE)) && ST_AGENT_MAXAGE=$age
-    cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) orphan=0
     if [[ "$cwd" == *" (deleted)" ]]; then
-      orphan=1
-      ST_ORPHANS+=("$pid"$'\t'"$proc"$'\t'"$age"$'\t'"${cwd% (deleted)}"$'\t'agent)
+      cwd=${cwd% (deleted)} orphan=1
+      ST_ORPHANS+=("$pid"$'\t'"$proc"$'\t'"$age"$'\t'"$cwd"$'\t'agent)
     fi
-    ST_AGENTS+=("$pid"$'\t'"${ST_AGENT_OF[$proc]}"$'\t'"$proc"$'\t'"$age"$'\t'"$kb"$'\t'"$orphan")
+    ((tcpu[$pid] >= 20)) && busy=1
+    ST_AGENTS+=("$pid"$'\t'"${ST_AGENT_OF[$proc]}"$'\t'"$proc"$'\t'"$age"$'\t'"$kb"$'\t'"$orphan"$'\t'"${tcpu[$pid]}"$'\t'"$busy"$'\t'"$cwd")
   done
 
   for e in "${devs[@]}"; do
     IFS=$'\t' read -r kind pid ppid kb comm age <<<"$e"
-    # Started by a live agent (any ancestor): part of that session, not lingering.
-    p=$ppid
-    for ((n = 0; n < 64; n++)); do
-      [[ -n "${agent_of[$p]:-}" ]] && continue 2
-      [[ -n "${pp[$p]:-}" ]] || break
-      p=${pp[$p]}
-    done
+    # Started by a live agent: part of that session, not lingering.
+    [[ -n "${root_of[$pid]:-}" ]] && continue
     _status_argv "$pid"
     [[ "$ST_ARGV_LINE" =~ $ST_LINGER_SKIP_RE ]] && continue
     name=$comm
@@ -445,9 +479,38 @@ _status_procs() {
     ST_LINGER+=("$pid"$'\t'"$name"$'\t'"$age"$'\t'"$kb"$'\t'"$orphan")
     ST_LINGER_KB=$((ST_LINGER_KB + kb))
   done
-  ((${#ST_AGENTS[@]} > 1)) && mapfile -t ST_AGENTS < <(printf '%s\n' "${ST_AGENTS[@]}" | sort -t$'\t' -k4,4nr)
+  ((${#ST_AGENTS[@]} > 1)) && mapfile -t ST_AGENTS < <(printf '%s\n' "${ST_AGENTS[@]}" | sort -t$'\t' -k8,8nr -k7,7nr -k4,4nr)
   ((${#ST_LINGER[@]} > 1)) && mapfile -t ST_LINGER < <(printf '%s\n' "${ST_LINGER[@]}" | sort -t$'\t' -k3,3nr)
   return 0
+}
+
+# _status_pss PID... — proportional memory (Pss + SwapPss, kB) of each PID into ST_PSS, -1 where
+# /proc/PID/smaps_rollup is unreadable. Processes of one tree share most of their pages (forked
+# workers, shared libraries); summing RSS counts those pages once per process, so a session's
+# memory is the sum of its processes' PSS. Reading smaps_rollup walks page tables (tens of ms
+# for a large heap), so values are refreshed every 10 s; a process not seen before is read
+# at once. Entries for processes not passed are dropped.
+_status_pss() {
+  local pid f k v
+  local -a files=()
+  local -A keep=()
+  declare -gA ST_PSS
+  if ((EPOCHSECONDS - ${ST_PSS_AT:-0} >= 10)); then ST_PSS=() ST_PSS_AT=$EPOCHSECONDS; fi
+  for pid; do
+    if [[ -n "${ST_PSS[$pid]:-}" ]]; then keep[$pid]=${ST_PSS[$pid]}; continue; fi
+    keep[$pid]=-1
+    files+=("/proc/$pid/smaps_rollup")
+  done
+  if ((${#files[@]})); then
+    while IFS=: read -r f k v; do
+      pid=${f#/proc/} pid=${pid%%/*} v=${v% kB} v=${v// /}
+      [[ "$v" =~ ^[0-9]+$ ]] || continue
+      ((keep[$pid] < 0)) && keep[$pid]=0
+      keep[$pid]=$((keep[$pid] + v))
+    done < <(grep -H -E '^(Pss|SwapPss):' "${files[@]}" 2>/dev/null)
+  fi
+  ST_PSS=()
+  for pid in "${!keep[@]}"; do ST_PSS[$pid]=${keep[$pid]}; done
 }
 
 # _status_argv PID — parse /proc/PID/cmdline into ST_ARGV_BASE (argv[0] basename), ST_ARGV_PATH
@@ -924,8 +987,98 @@ _status_age() {
   fi
 }
 
+# _status_tilde VAR PATH — PATH with $HOME shown as ~.
+_status_tilde() {
+  local __p=$2
+  [[ "$__p" == "$HOME" || "$__p" == "$HOME"/* ]] && __p="~${__p#"$HOME"}"
+  printf -v "$1" '%s' "$__p"
+}
+
+# _status_mid VAR TEXT WIDTH — TEXT cut in the middle to WIDTH chars ("~/devel…/handle/esi"): the
+# start says where, the end says which.
+_status_mid() {
+  local __t=$2 __w=$3 __h
+  ((__w < 3)) && __w=3
+  if ((${#__t} > __w)); then
+    __h=$(((__w - 1) / 3))
+    __t="${__t:0:__h}…${__t:${#__t}-(__w - 1 - __h)}"
+  fi
+  printf -v "$1" '%s' "$__t"
+}
+
+# _status_mem VAR KB — "705 MB" below a gigabyte, "3.4 GB" above.
+_status_mem() {
+  if (($2 >= 1048576)); then _status_gib "$1" $(($2 * 1024)); printf -v "$1" '%s GB' "${!1}"
+  else printf -v "$1" '%d MB' $((($2 + 512) / 1024)); fi
+}
+
+# _status_agent_rows INDENT WIDTH LIMIT NAMEW — append agent session rows to ST_PANEL: up to LIMIT
+# sessions as "name  folder  age  busy|idle  cpu  memory" (name column at least NAMEW wide,
+# folder cut in the middle so the row fits WIDTH), "… N more" for the rest, then one "! orphan"
+# line per session whose folder was deleted.
+_status_agent_rows() {
+  local indent=$1 width=$2 limit=$3 nw=$4 e pid agent proc age kb orphan cpu busy cwd
+  local pw shown=0 more=0 moreidle=1 row a state c
+  local -a orphans=()
+  # Column widths: the longest name, folder, age ("10h 37m") and CPU ("1093%"), the folder giving
+  # way when the row would not fit.
+  local fw=8 aw=6 cw=4
+  for e in "${ST_AGENTS[@]}"; do
+    IFS=$'\t' read -r pid agent proc age kb orphan cpu busy cwd <<<"$e"
+    _status_tilde cwd "${cwd:-?}"
+    ((${#proc} > nw)) && nw=${#proc}
+    ((${#cwd} > fw)) && fw=${#cwd}
+    _status_age a "$age"
+    ((${#a} > aw)) && aw=${#a}
+    c="$((cpu / 10))%"
+    ((${#c} > cw)) && cw=${#c}
+  done
+  # row: name folder age state(4) cpu memory(7), one space between columns
+  pw=$((width - ${#indent} - nw - aw - cw - 16))
+  ((pw > fw)) && pw=$fw
+  ((pw < 8)) && pw=8
+  for e in "${ST_AGENTS[@]}"; do
+    IFS=$'\t' read -r pid agent proc age kb orphan cpu busy cwd <<<"$e"
+    _status_tilde cwd "${cwd:-?}"
+    if ((orphan)); then orphans+=("$proc $pid in deleted $cwd"); continue; fi
+    if ((shown >= limit)); then more=$((more + 1)); ((busy)) && moreidle=0; continue; fi
+    shown=$((shown + 1))
+    _status_pad proc "$proc" "$nw"
+    _status_mid cwd "$cwd" "$pw"
+    _status_pad cwd "$cwd" "$pw"
+    _status_age a "$age"
+    if ((busy)); then state="${C_GREEN}busy$C_RESET"; else state="${C_DIM}idle$C_RESET"; fi
+    _status_mem kb "$kb"
+    printf -v row '%s%s %s %*s %s %*s %7s' "$indent" "$proc" "$cwd" "$aw" "$a" "$state" "$cw" "$((cpu / 10))%" "$kb"
+    ST_PANEL+=("$row")
+  done
+  if ((more)); then
+    c=""
+    ((moreidle)) && c=" (idle)"
+    ST_PANEL+=("$indent$C_DIM… $more more$c$C_RESET")
+  fi
+  for e in "${orphans[@]}"; do
+    _status_trunc e "$e" $((width - ${#indent} - 9))
+    ST_PANEL+=("$indent$C_YELLOW! orphan$C_RESET  $e")
+  done
+}
+
+# _status_panel_agents WIDTH — one row per agent session, under a one-line summary.
+_status_panel_agents() {
+  local t d
+  _status_title "◉ Agents"
+  if ((${#ST_AGENTS[@]})); then
+    _status_age d "$ST_AGENT_MAXAGE"
+    _status_mem t "$ST_AGENT_KB"
+    ST_PANEL[0]+="  ${#ST_AGENTS[@]} running · $t · oldest $d"
+    _status_agent_rows "" "$1" "$ST_AGN" 8
+  else
+    ST_PANEL[0]+="  ${C_DIM}none running$C_RESET"
+  fi
+}
+
 _status_panel_sys() {
-  local up t pkgs w=$((ST_W - 9)) n e pid name age cwd kind d agent proc kb orphan port addr
+  local up t pkgs w=$((ST_W - 9)) n e pid name age cwd kind d kb orphan port addr
   local nd=$((ST_TOPN >= 4 ? 3 : ST_TOPN - 1)) older
   _status_age older "$ST_LINGER_AGE"
   older=">$older"
@@ -984,32 +1137,6 @@ _status_panel_sys() {
     fi
   fi
 
-  # Agents: sessions, oldest, memory, orphans; then a per-CLI breakdown ("omp ×5 · claude ×1").
-  if ((${#ST_AGENTS[@]})); then
-    local -A per=()
-    n=0
-    for e in "${ST_AGENTS[@]}"; do
-      IFS=$'\t' read -r pid agent proc age kb orphan <<<"$e"
-      per[$proc]=$((${per[$proc]:-0} + 1)) n=$((n + orphan))
-    done
-    _status_age d "$ST_AGENT_MAXAGE"
-    t="${#ST_AGENTS[@]} running · oldest $d · $(mm_human $((ST_AGENT_KB * 1024)))"
-    ((n && ${#t} + 13 <= w)) && t+=" · $C_YELLOW$n orphaned$C_RESET"
-    _status_row Agents "$t"
-    t=$(for proc in "${!per[@]}"; do printf '%s\t%s\n' "${per[$proc]}" "$proc"; done |
-      sort -t$'\t' -k1,1nr -k2,2 | awk -F'\t' '{ printf "%s%s ×%s", (NR > 1 ? " · " : ""), $2, $1 }')
-    _status_trunc t "$t" "$w"
-    _status_row "" "$C_DIM$t$C_RESET"
-  else
-    _status_row Agents "${C_DIM}none running$C_RESET"
-  fi
-  for e in "${ST_ORPHANS[@]:0:nd}"; do
-    IFS=$'\t' read -r pid name age cwd kind <<<"$e"
-    _status_age d "$age"
-    _status_trunc t "$name $pid · $d · cwd deleted: ${cwd/#"$HOME"/\~}" $((w - 2))
-    _status_row "" "$C_YELLOW!$C_RESET $t"
-  done
-
   if ((${#ST_LINGER[@]})); then
     _status_row Lingering "${#ST_LINGER[@]} $older · $(mm_human $((ST_LINGER_KB * 1024)))"
     for e in "${ST_LINGER[@]:0:nd}"; do
@@ -1021,6 +1148,17 @@ _status_panel_sys() {
   else
     _status_row Lingering "$C_GREEN✓$C_RESET none $older"
   fi
+  # Orphaned dev servers (agent sessions show theirs in the Agents panel).
+  n=0
+  for e in "${ST_ORPHANS[@]}"; do
+    IFS=$'\t' read -r pid name age cwd kind <<<"$e"
+    [[ "$kind" == lingering ]] || continue
+    ((n++ < nd)) || break
+    _status_age d "$age"
+    _status_tilde cwd "$cwd"
+    _status_trunc t "$name $pid · $d · cwd deleted: $cwd" $((w - 2))
+    _status_row "" "$C_YELLOW!$C_RESET $t"
+  done
 
   if ((${#ST_PORTS[@]})); then
     IFS=$'\t' read -r _ _ _ _ age <<<"${ST_PORTS[0]}"
@@ -1075,6 +1213,9 @@ _status_frame() {
   local pair a b
   local -a sep=("")
   ((ST_GAP)) || sep=()
+  # Agent sessions first, across the whole width: their folders need the room.
+  _status_panel_agents $((two ? 2 * ST_W + 2 : ST_W))
+  ST_FRAME+=("${ST_PANEL[@]}" "${sep[@]}")
   if ((two)); then
     for pair in "P_CPU P_MEM" "P_DISK P_NET" "P_PROC P_SYS"; do
       read -r a b <<<"$pair"
@@ -1201,7 +1342,8 @@ _status_json() {
           rss_swap_bytes: (($akb | tonumber) * 1024),
           orphan_count: ($ag | lines | map(select(.[5] == "1")) | length),
           sessions: ($ag | lines | map({ pid: (.[0] | tonumber), agent: .[1], process: .[2],
-            age_seconds: (.[3] | tonumber), rss_swap_bytes: ((.[4] | tonumber) * 1024), orphan: (.[5] == "1") }))
+            age_seconds: (.[3] | tonumber), rss_swap_bytes: ((.[4] | tonumber) * 1024), orphan: (.[5] == "1"),
+            cpu_percent: (.[6] | pct10), busy: (.[7] == "1"), cwd: (.[8] // "" | if . == "" then null else . end) }))
         },
         lingering: {
           min_age_seconds: ($linger | tonumber), count: ($li | lines | length),
@@ -1266,15 +1408,16 @@ _status_draw() {
   ST_SIZE="$rows $cols"
   # Frame + blank + footer use at most rows-1 rows: every painted row ends with a newline (see
   # _status_paint) and the footer's must not scroll the screen.
-  # Shrink until it fits: top lists, cores, panel gaps, then 1 each.
-  ST_TOPN=5 ST_NCORE=4 ST_GAP=1
+  # Shrink until it fits: top lists, cores, agent sessions, panel gaps, then 1 each.
+  ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1
   while :; do
     _status_frame "$cols"
     ((${#ST_FRAME[@]} + ST_GAP + 2 <= rows)) && break
     if ((ST_TOPN > 2)); then ST_TOPN=$((ST_TOPN - 1))
     elif ((ST_NCORE > 2)); then ST_NCORE=$((ST_NCORE - 1))
+    elif ((ST_AGN > 3)); then ST_AGN=$((ST_AGN - 1))
     elif ((ST_GAP)); then ST_GAP=0
-    elif ((ST_TOPN > 1)); then ST_TOPN=1 ST_NCORE=1
+    elif ((ST_TOPN > 1)); then ST_TOPN=1 ST_NCORE=1 ST_AGN=1
     else break; fi
   done
   ((ST_GAP)) && ST_FRAME+=("")
