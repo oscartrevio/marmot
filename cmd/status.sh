@@ -24,11 +24,14 @@ _status_usage() {
   cat <<EOF
 ${C_BOLD}mm status${C_RESET}: live system health dashboard (read-only)
 
-Usage: mm status [--once | --json] [--view compact|full] [--interval N]
+Usage: mm status [--once | --json | --agent] [--view compact|full] [--interval N]
 
 Options:
-  --once          Print one snapshot and exit (default when stdout is not a terminal)
+  --once          Print one snapshot for people and exit
   --json          Print one snapshot as JSON and exit (needs jq)
+  --agent         Print one snapshot for AI coding agents and exit: plain "key: value" text,
+                  problems first with the command that addresses each (default when stdout
+                  is not a terminal)
   --view V        compact (default): agents first, one line per resource; full: every panel
   --interval N    Live refresh interval in seconds (default 2)
   -h, --help      Show this help
@@ -1703,6 +1706,134 @@ _status_json() {
     }'
 }
 
+# ---------------------------------------------------------------- agent output
+
+# _status_agent_text — the snapshot for AI coding agents that run commands without a terminal:
+# plain "key: value" lines and short tables, no escape sequences, bars or sparklines. Problems
+# come first, each with the marmot or system command that addresses it (shown, never run).
+_status_agent_text() {
+  local C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN="" C_RESET=""
+  local e pid agent proc age kb orphan cpu busy cwd name kind t a m sz us av it iu p n i up
+  local -a probs=() rows=()
+
+  # Problems: upkeep checks, orphans, then resources that cost health.
+  _status_checks
+  for e in "${ST_CHK_BAD[@]}"; do probs+=("${e%%$'\t'*}: ${e#*$'\t'}"); done
+  for e in "${ST_ORPHANS[@]}"; do
+    IFS=$'\t' read -r pid name age cwd kind <<<"$e"
+    _status_tilde cwd "$cwd"
+    t="orphaned dev server"
+    [[ "$kind" == agent ]] && t="orphaned agent"
+    probs+=("$t $name (pid $pid) in deleted $cwd: mm optimize")
+  done
+  for e in "${ST_DF[@]}"; do
+    read -r m sz us av it iu <<<"$e"
+    ((sz > 0)) || continue
+    p=$((us * 100 / sz))
+    ((p >= 80)) && probs+=("disk $m $p% full: mm clean --dry-run, then mm purge --dry-run")
+    ((it > 0 && iu * 100 / it >= 90)) && probs+=("inodes on $m $((iu * 100 / it))% used: mm purge --dry-run (node_modules and build output), mm clean --dry-run")
+  done
+  IFS=$'\t' read -r pid kb name _ <<<"${ST_TOPMEM[0]:-}"
+  if ((ST_MEM_AVAIL_PCT < 200)) && [[ -n "$pid" ]]; then
+    _status_gib t $((kb * 1024))
+    probs+=("memory $((ST_MEM_AVAIL_PCT / 10))% available: largest is $name (pid $pid, $t GB); idle agent sessions can be closed")
+  fi
+  ((ST_SWAP_PCT > 500)) && probs+=("swap $((ST_SWAP_PCT / 10))% used: mm optimize (swap reset)")
+  for e in "${ST_REASONS[@]}"; do
+    [[ "$e" == CPU* || "$e" == load* ]] || continue
+    IFS=$'\t' read -r pid cpu name _ <<<"${ST_TOPCPU[0]:-}"
+    probs+=("$e${pid:+: busiest is $name (pid $pid, $((cpu / 10))% of a core)}")
+  done
+
+  printf 'health: %d/100%s\n' "$ST_SCORE" "${ST_REASONS[0]:+ (${ST_REASONS[*]})}"
+  if ((${#probs[@]})); then
+    printf 'problems:\n'
+    printf -- '- %s\n' "${probs[@]}"
+  else
+    printf 'problems: none\n'
+  fi
+
+  _status_dur up "$ST_UP"
+  printf 'machine: %s · %s · %d cores · %d GB RAM · %s · up %s\n' "$ST_HOST" "$ST_MODEL" "$ST_CORES" "$ST_MEMGB" "$ST_OS" "$up"
+
+  _status_mem t "$ST_AGENT_KB"
+  if ((${#ST_AGENTS[@]})); then
+    printf 'agents: %d running · %s\n' "${#ST_AGENTS[@]}" "$t"
+    rows=("agent pid state cpu memory age folder")
+    n=0
+    for e in "${ST_AGENTS[@]}"; do
+      IFS=$'\t' read -r pid agent proc age kb orphan cpu busy cwd <<<"$e"
+      ((n++ < 20)) || continue
+      _status_tilde cwd "${cwd:-?}"
+      ((orphan)) && cwd+=" (deleted)"
+      _status_age a "$age"
+      _status_mem kb "$kb"
+      t=idle
+      ((busy)) && t=busy
+      rows+=("$proc $pid $t $((cpu / 10))% ${kb// /} ${a// /} $cwd")
+    done
+    printf '  %s\n' "${rows[@]}"
+    ((n > 20)) && printf '  … %d more\n' $((n - 20))
+  else
+    printf 'agents: none running\n'
+  fi
+
+  if [[ -z "$ST_CL_ADDR" ]]; then
+    printf 'client: none (no remote session detected)\n'
+  else
+    t="$ST_CL_ADDR${ST_CL_NAME:+ ($ST_CL_NAME)}${ST_CL_PATH:+ · $ST_CL_PATH}"
+    if [[ -n "$ST_CL_RTT" ]]; then
+      a=no
+      ((ST_CL_LAGGY)) && a=yes
+      t+=" · rtt $ST_CL_RTT ms · best ${ST_CL_MIN:-?} ms · jitter ${ST_CL_VAR:-?} ms · retransmits $ST_CL_RETR · laggy $a"
+    fi
+    printf 'client: %s\n' "$t"
+  fi
+
+  _status_dec t "${ST_CPU[0]:-0}"
+  printf 'cpu: %s%% · load %s %s %s · %d cores\n' "$t" "$ST_L1" "$ST_L5" "$ST_L15" "$ST_CORES"
+  _status_gib t $((ST_MA * 1024))
+  a=none
+  ((ST_SWT > 0)) && a="$((ST_SWAP_PCT / 10))% used"
+  printf 'memory: %d%% used · %s GB available · swap %s\n' $((ST_MEM_USED_PCT / 10)) "$t" "$a"
+  for e in "${ST_DF[@]}"; do
+    read -r m sz us av it iu <<<"$e"
+    ((sz > 0)) || continue
+    _status_gib t "$av"
+    a=""
+    ((it > 0)) && a=" · inodes $((iu * 100 / it))% used"
+    printf 'disk %s: %d%% used · %s GB free%s\n' "$m" $((us * 100 / sz)) "$t" "$a"
+  done
+  if [[ -n "$ST_IF" ]]; then
+    _status_rate a "$ST_RX_BPS"
+    _status_rate t "$ST_TX_BPS"
+    printf 'network: %s · down %s · up %s%s\n' "$ST_IF" "$a" "$t" "${ST_VPN[0]:+ · vpn ${ST_VPN[*]}}"
+  else
+    printf 'network: no default route\n'
+  fi
+
+  t=""
+  for e in "${ST_CHK_OK[@]}"; do t+="${t:+ · }$e ok"; done
+  for e in "${ST_CHK_BAD[@]}"; do t+="${t:+ · }${e%%$'\t'*}"; done
+  for e in "${ST_CHK_NOTE[@]}"; do t+="${t:+ · }$e"; done
+  [[ "${ST_SLOW[upgradable]:-0}" != 0 ]] && t+=" (mm optimize upgrades)"
+  printf 'checks: %s\n' "${t:-none}"
+  _status_age a "$ST_LINGER_AGE"
+  t=""
+  for e in "${ST_LINGER[@]:0:8}"; do IFS=$'\t' read -r pid name _ <<<"$e"; t+="${t:+, }$name (pid $pid)"; done
+  printf 'lingering dev servers >%s: %s\n' "$a" "${t:-none}"
+  t=""
+  for e in "${ST_PORTS[@]:0:8}"; do IFS=$'\t' read -r p _ pid name _ <<<"$e"; t+="${t:+, }$p $name (pid $pid)"; done
+  printf 'ports listening >%s: %s\n' "$a" "${t:-none}"
+  t=""
+  for e in "${ST_TOPMEM[@]:0:3}"; do
+    IFS=$'\t' read -r pid kb name cwd <<<"$e"
+    _status_gib i $((kb * 1024))
+    t+="${t:+, }$name (pid $pid) $i GB${cwd:+ in $cwd}"
+  done
+  printf 'top memory: %s\n' "${t:-none}"
+}
+
 # ---------------------------------------------------------------- modes
 
 _status_cleanup() {
@@ -1852,6 +1983,7 @@ mm_cmd_main() {
     case "$1" in
       --once) mode=once ;;
       --json) mode=json ;;
+      --agent) mode=agent ;;
       --interval | --interval=*)
         if [[ "$1" == *=* ]]; then v=${1#*=}; else v=${2:-}; shift; fi
         v=${v%s}
@@ -1874,18 +2006,23 @@ mm_cmd_main() {
   fi
   ST_VPN_GLOBS=${MM_STATUS_VPN_IFACES-$ST_VPN_GLOBS}
   export LC_ALL=C.UTF-8
-  # Live mode needs a terminal on both ends (MM_TTY: stdin is a tty and /dev/tty opens).
-  if [[ "$mode" == live ]] && { [[ "$MM_TTY" != 1 || ! -t 1 ]]; }; then mode=once; fi
+  # Without a terminal on stdout the reader is most likely a program, often an AI agent running
+  # commands: give it the plain agent format. Live mode also needs stdin to be a terminal
+  # (MM_TTY: stdin is a tty and /dev/tty opens); otherwise a human snapshot.
+  if [[ "$mode" == live && ! -t 1 ]]; then mode=agent
+  elif [[ "$mode" == live && "$MM_TTY" != 1 ]]; then mode=once; fi
   command -v jq >/dev/null || [[ "$mode" != json ]] || mm_die "jq is required for --json"
 
   _status_init
   case "$mode" in
     live) _status_live ;;
-    once | json)
+    once | json | agent)
       trap '_status_cleanup' EXIT
       _status_first 0
       if [[ "$mode" == json ]]; then
         _status_json
+      elif [[ "$mode" == agent ]]; then
+        _status_agent_text
       else
         _status_cols
         if [[ "$ST_VIEW" == compact ]]; then _status_frame_compact "$REPLY"; else _status_frame_full "$REPLY"; fi

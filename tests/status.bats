@@ -471,11 +471,37 @@ exit 0'
   [ "$(grep -cE '✓ (kernel|units|docker|unattended)' <<<"$output")" -eq 0 ]
 }
 
-@test "without a terminal, plain 'mm status' prints one snapshot and exits" {
+@test "without a terminal, plain 'mm status' prints the agent format once and exits" {
   run mm status </dev/null
   [ "$status" -eq 0 ]
-  [[ "$output" == *"AGENTS"* && "$output" == *"CHECKS"* ]]
-  [[ "$output" != *$'\e[?1049h'* ]]
+  [[ "$output" == "health: "*$'\n'"problems"* && "$output" == *$'\nagents: '* ]]
+  [[ "$output" != *AGENTS* && "$output" != *$'\e'* ]]
+  # --once stays the human snapshot.
+  run mm status --once </dev/null
+  [[ "$output" == *AGENTS* && "$output" == *CHECKS* && "$output" != *"problems:"* ]]
+}
+
+@test "--agent: plain text, problems first with their command, under 60 lines" {
+  fake_agent codex
+  mkdir -p "$SB/gone"
+  detached "$SB/gone" "$SB/bin/codex" 30
+  local pid=$DETACHED
+  rm -r -- "$SB/gone"
+  run env -u NO_COLOR mm status --agent
+  [ "$status" -eq 0 ]
+  [[ "$output" != *$'\e'* && "$output" != *[█░▁▂▃▄▅▆▇▮▯]* ]]
+  [ "${#lines[@]}" -lt 60 ]
+  # Problems come before everything but the health line; the orphan names its fix.
+  [[ "${lines[0]}" == "health: "* && "${lines[1]}" == "problems:" ]]
+  local probs
+  probs=$(sed -n '/^problems:/,/^machine:/p' <<<"$output")
+  grep -E "^- orphaned agent codex \(pid $pid\) in deleted .*: mm optimize$" <<<"$probs"
+  # Every section after them is a stable "key: value" line or an indented table row.
+  [ "$(sed -n '/^machine:/,$p' <<<"$output" | grep -cvE '^([a-z][a-z />0-9]*: |  )')" -eq 0 ]
+  # On a terminal too: --agent never colors.
+  if command -v script >/dev/null; then
+    [[ "$(script -qfec 'env -u NO_COLOR TERM=xterm-256color mm status --agent' /dev/null)" != *$'\e'* ]]
+  fi
 }
 
 @test "views: compact is the default, agents first, fitting 80 columns; full has every panel" {
