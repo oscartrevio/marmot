@@ -24,15 +24,16 @@ _status_usage() {
   cat <<EOF
 ${C_BOLD}mm status${C_RESET}: live system health dashboard (read-only)
 
-Usage: mm status [--once | --json] [--interval N]
+Usage: mm status [--once | --json] [--view compact|full] [--interval N]
 
 Options:
   --once          Print one snapshot and exit (default when stdout is not a terminal)
   --json          Print one snapshot as JSON and exit (needs jq)
+  --view V        compact (default): agents first, one line per resource; full: every panel
   --interval N    Live refresh interval in seconds (default 2)
   -h, --help      Show this help
 
-Keys (live): q quit
+Keys (live): q quit · v switch between the compact and full view
 Slow probes (apt, systemd, kernel packages, docker) refresh every 5 minutes.
 
 Agents: one row per running AI coding agent session (lib/agents.sh catalog; matched by process
@@ -1047,9 +1048,28 @@ _status_panel_net() {
   done
 }
 
+# _status_link WIDTH — the client link as text in REPLY: "rtt 23 ms (best 18) · 5 retransmits"
+# and, in what WIDTH leaves, the RTT history.
+_status_link() {
+  local t r b sp
+  if [[ -z "$ST_CL_RTT" ]]; then
+    REPLY="${C_DIM}connection not visible to the kernel's TCP table$C_RESET"
+    return 0
+  fi
+  _status_ms r "$ST_CL_RTT"
+  _status_ms b "${ST_CL_MIN:-0}"
+  t="rtt $r ms (best $b)"
+  ((ST_CL_RETR)) && t+=" · $ST_CL_RETR retransmits"
+  r=$(($1 - 1 - ${#t}))
+  ((r > ${#ST_RTTH[@]})) && r=${#ST_RTTH[@]}
+  ((ST_CL_LAGGY)) && t="$C_YELLOW$t$C_RESET"
+  ((r >= 2)) && { _status_spark sp 50 "${ST_RTTH[@]: -r}"; t+=" $sp"; }
+  REPLY=$t
+}
+
 # _status_panel_you — the link to the person watching (see _status_client).
 _status_panel_you() {
-  local t r b sp
+  local t
   _status_title "⇄ You"
   if [[ -z "$ST_CL_ADDR" ]]; then
     _status_row Client "${C_DIM}no remote session detected$C_RESET"
@@ -1058,20 +1078,8 @@ _status_panel_you() {
   t="$ST_CL_ADDR${ST_CL_NAME:+ $ST_CL_NAME}${ST_CL_PATH:+ · $ST_CL_PATH}"
   _status_trunc t "$t" $((ST_W - 9))
   _status_row Client "$t"
-  if [[ -z "$ST_CL_RTT" ]]; then
-    _status_row Link "${C_DIM}connection not visible to the kernel's TCP table$C_RESET"
-    return 0
-  fi
-  _status_ms r "$ST_CL_RTT"
-  _status_ms b "${ST_CL_MIN:-0}"
-  t="rtt $r ms (best $b)"
-  ((ST_CL_RETR)) && t+=" · $ST_CL_RETR retransmits"
-  # The RTT history fills what the row has left.
-  r=$((ST_W - 10 - ${#t}))
-  ((r > ${#ST_RTTH[@]})) && r=${#ST_RTTH[@]}
-  ((ST_CL_LAGGY)) && t="$C_YELLOW$t$C_RESET"
-  ((r >= 2)) && { _status_spark sp 50 "${ST_RTTH[@]: -r}"; t+=" $sp"; }
-  _status_row Link "$t"
+  _status_link $((ST_W - 9))
+  _status_row Link "$REPLY"
 }
 
 _status_panel_proc() {
@@ -1337,8 +1345,8 @@ _status_panel_sys() {
 
 # ---------------------------------------------------------------- frame
 
-# _status_frame COLS — render the dashboard into ST_FRAME (array of lines).
-_status_frame() {
+# _status_frame_full COLS — render the dashboard into ST_FRAME (array of lines).
+_status_frame_full() {
   local cols=$1 two=0 col head info len ilen r i rows left pad
   ((cols >= 100)) && two=1
   if ((two)); then ST_W=$(((cols - 2) / 2)); ((ST_W > 56)) && ST_W=56
@@ -1407,6 +1415,163 @@ _status_frame() {
   fi
   [[ -z "${ST_FRAME[-1]}" ]] && unset 'ST_FRAME[-1]'
   return 0
+}
+
+# _status_frame_compact COLS [ROWS] — the default view into ST_FRAME: agent sessions first, the
+# link to you, one line per resource, checks, top memory; one column as wide as the terminal.
+# With ROWS > 0 the agent list gives way ("… N more") until the frame fits ROWS lines.
+_status_frame_compact() {
+  local cols=$1 rows=${2:-0} lim=${#ST_AGENTS[@]} over
+  ((lim < 1)) && lim=1
+  while :; do
+    _status_compact "$cols" "$lim"
+    over=$((${#ST_FRAME[@]} - rows))
+    ((rows <= 0 || over <= 0 || lim <= 1)) && break
+    lim=$((lim > over ? lim - over : 1))
+  done
+}
+
+# _status_cline LABEL TEXT — a compact-view line: LABEL in a 7-column gutter, then TEXT.
+_status_cline() {
+  local l
+  printf -v l '%-6s' "$1"
+  ST_FRAME+=("$C_BOLD$l$C_RESET $2")
+}
+
+# _status_cline_spark WIDTH LABEL TEXT FLOOR HISTORY — a compact line with the HISTORY array's
+# sparkline right-aligned in the last ST_HIST columns of WIDTH (left out when they are taken).
+_status_cline_spark() {
+  local w=$1 sp pad len
+  local -n __h=$5
+  _status_cline "$2" "$3"
+  ((${#__h[@]} >= 2)) || return 0
+  _status_vlen len "${ST_FRAME[-1]}"
+  ((len + 2 + ST_HIST <= w)) || return 0
+  _status_spark sp "$4" "${__h[@]}"
+  printf -v pad '%*s' $((w - len - ${#__h[@]})) ''
+  ST_FRAME[-1]+="$pad$sp"
+}
+
+# _status_compact WIDTH LIMIT — build the compact view with at most LIMIT agent sessions listed.
+_status_compact() {
+  local w=$1 lim=$2 col left info len up t bar s r wr v m sz us av it iu e pid name ctx n older
+  local -a more=()
+  ((w < 60)) && w=60
+  ST_FRAME=()
+  if ((ST_SCORE >= 80)); then col=$C_GREEN; elif ((ST_SCORE >= 60)); then col=$C_YELLOW; else col=$C_RED; fi
+  left="${C_BOLD}mm status$C_RESET  $col● $ST_SCORE$C_RESET"
+  ((${#ST_REASONS[@]})) && left+="  $col${ST_REASONS[0]}${ST_REASONS[1]:+ · ${ST_REASONS[1]}}$C_RESET"
+  ((ST_CL_LAGGY)) && left+="  ${C_YELLOW}link to you is laggy$C_RESET"
+  _status_vlen len "$left"
+  _status_age up "$ST_UP"
+  # Machine facts right-aligned, dropping detail until they fit.
+  for info in "$ST_HOST · $ST_MODEL · $ST_CORES cores · $ST_MEMGB GB · up $up" \
+    "$ST_HOST · $ST_CORES cores · $ST_MEMGB GB · up $up" "$ST_HOST · up $up" ""; do
+    ((len + 2 + ${#info} <= w)) && break
+  done
+  printf -v t '%*s' $((w - len - ${#info} > 0 ? w - len - ${#info} : 0)) ''
+  ST_FRAME+=("$left${info:+$t$C_DIM$info$C_RESET}")
+
+  if ((${#ST_AGENTS[@]})); then
+    _status_mem t "$ST_AGENT_KB"
+    _status_cline AGENTS "${#ST_AGENTS[@]} running · $t"
+    ST_PANEL=()
+    _status_agent_rows "  " "$w" "$lim" 7
+    ST_FRAME+=("${ST_PANEL[@]}")
+  else
+    _status_cline AGENTS "${C_DIM}none running$C_RESET"
+  fi
+
+  if [[ -z "$ST_CL_ADDR" ]]; then
+    _status_cline YOU "${C_DIM}no remote session detected$C_RESET"
+  else
+    t="$ST_CL_ADDR${ST_CL_NAME:+ $ST_CL_NAME}${ST_CL_PATH:+ · $ST_CL_PATH}"
+    _status_trunc t "$t" $((w - 7))
+    _status_cline YOU "$t"
+    _status_link $((w - 7))
+    ST_FRAME+=("       $REPLY")
+  fi
+
+  _status_bar bar "${ST_CPU[0]:-0}" 12
+  printf -v t '%s %3d%%  load %s / %d cores' "$bar" $(((${ST_CPU[0]:-0} + 5) / 10)) "$ST_L1" "$ST_CORES"
+  _status_cline_spark "$w" CPU "$t" 1000 ST_CPUH
+
+  _status_bar bar "$ST_MEM_USED_PCT" 12
+  _status_gib v $((ST_MA * 1024))
+  s="no swap"
+  ((ST_SWT > 0)) && s="swap $(((ST_SWAP_PCT + 5) / 10))%"
+  printf -v t '%s %3d%%  %s GB free · %s' "$bar" $(((ST_MEM_USED_PCT + 5) / 10)) "$v" "$s"
+  _status_cline MEM "$t"
+
+  t=""
+  for e in "${ST_DF[@]}"; do
+    read -r m sz us av it iu <<<"$e"
+    ((sz > 0)) || continue
+    if [[ "$m" == / ]]; then
+      _status_bar bar "$ST_ROOT_PCT" 12
+      _status_gib v "$av"
+      printf -v t '%s %3d%%  %s GB free' "$bar" $(((ST_ROOT_PCT + 5) / 10)) "$v"
+      ((ST_ROOT_IPCT >= 0)) && t+=" · inodes $(((ST_ROOT_IPCT + 5) / 10))%"
+    elif ((us * 100 / sz >= 75)); then
+      more+=("$m $((us * 100 / sz))%")
+    fi
+  done
+  ((${#more[@]})) && t+=" · ${more[*]}"
+  if [[ -n "$ST_DISK" ]]; then
+    _status_rate r "$ST_RD_BPS"
+    _status_rate wr "$ST_WR_BPS"
+    t+="  r ${r% MB/s}  w $wr"
+  fi
+  _status_cline DISK "$t"
+
+  if [[ -n "$ST_IF" ]]; then
+    _status_rate r "$ST_RX_BPS"
+    _status_rate wr "$ST_TX_BPS"
+    t="↓ ${r% MB/s}  ↑ $wr  $ST_IF"
+    ((${#ST_VPN[@]})) && t+=" · VPN ${ST_VPN[*]}"
+  else
+    t="${C_DIM}no default route$C_RESET"
+  fi
+  _status_cline NET "$t"
+
+  # Checks, then what lingers: dev servers and listening ports older than the linger age.
+  _status_checks
+  _status_check_lines $((w - 7))
+  _status_age older "$ST_LINGER_AGE"
+  n=0
+  for e in "${ST_ORPHANS[@]}"; do [[ "${e##*$'\t'}" == lingering ]] && n=$((n + 1)); done
+  s=""
+  ((n > 1)) && s=s
+  ((n)) && ST_LINES+=("$C_YELLOW!$C_RESET $n dev server$s in deleted folders: mm optimize")
+  if ((${#ST_LINGER[@]})); then
+    t=""
+    for e in "${ST_LINGER[@]}"; do IFS=$'\t' read -r pid name _ <<<"$e"; t+="${t:+, }$name $pid"; done
+    s=""
+    ((${#ST_LINGER[@]} > 1)) && s=s
+    t="${#ST_LINGER[@]} dev server$s running >$older: $t"
+    _status_trunc t "$t" $((w - 9))
+    ST_LINES+=("$C_YELLOW!$C_RESET $t")
+  fi
+  if ((${#ST_PORTS[@]})); then
+    t=""
+    for e in "${ST_PORTS[@]}"; do IFS=$'\t' read -r v _ _ name _ <<<"$e"; t+="${t:+, }$v $name"; done
+    t="${#ST_PORTS[@]} ports listening >$older: $t"
+    _status_trunc t "$t" $((w - 9))
+    ST_LINES+=("$C_YELLOW!$C_RESET $t")
+  fi
+  t=CHECKS
+  for e in "${ST_LINES[@]}"; do
+    if [[ -n "$t" ]]; then _status_cline "$t" "$e"; t=""; else ST_FRAME+=("       $e"); fi
+  done
+
+  t=""
+  for e in "${ST_TOPMEM[@]:0:3}"; do
+    IFS=$'\t' read -r pid v name ctx <<<"$e"
+    _status_gib s $((v * 1024))
+    t+="${t:+ · }$name $s GB${ctx:+ ($ctx)}"
+  done
+  _status_trunc t "$t" $((w - 7))
+  _status_cline TOP "$t"
 }
 
 _status_cols() {
@@ -1574,30 +1739,39 @@ _status_first() {
 # caught here when SIGWINCH was missed) forces a full repaint.
 _status_draw() {
   local rows cols size n
+  : "${ST_VIEW:=compact}"
   size=$(stty size </dev/tty 2>/dev/null)
   read -r rows cols <<<"$size"
   [[ "$rows" =~ ^[1-9][0-9]*$ ]] || rows=${LINES:-50}
   [[ "$cols" =~ ^[1-9][0-9]*$ ]] || cols=${COLUMNS:-80}
   [[ "$rows $cols" == "${ST_SIZE:-}" ]] || ST_REPAINT=1
   ST_SIZE="$rows $cols"
-  # Frame + blank + footer use at most rows-1 rows: every painted row ends with a newline (see
-  # _status_paint) and the footer's must not scroll the screen.
-  # Shrink until it fits: top lists, cores, agent sessions, panel gaps, then 1 each.
-  ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1
-  while :; do
-    _status_frame "$cols"
-    ((${#ST_FRAME[@]} + ST_GAP + 2 <= rows)) && break
-    if ((ST_TOPN > 2)); then ST_TOPN=$((ST_TOPN - 1))
-    elif ((ST_NCORE > 2)); then ST_NCORE=$((ST_NCORE - 1))
-    elif ((ST_AGN > 3)); then ST_AGN=$((ST_AGN - 1))
-    elif ((ST_GAP)); then ST_GAP=0
-    elif ((ST_TOPN > 1)); then ST_TOPN=1 ST_NCORE=1 ST_AGN=1
-    else break; fi
-  done
-  ((ST_GAP)) && ST_FRAME+=("")
-  n=$((rows > 2 ? rows - 2 : 0))
+  # The frame uses at most rows-2 rows, the footer one more: every painted row ends with a
+  # newline (see _status_paint) and the footer's must not scroll the screen.
+  n=$((rows > 2 ? rows - 2 : 1))
+  if [[ "$ST_VIEW" == compact ]]; then
+    _status_frame_compact "$cols" "$n"
+  else
+    # Shrink until it fits: top lists, cores, agent sessions, panel gaps, then 1 each.
+    ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1
+    while :; do
+      _status_frame_full "$cols"
+      ((${#ST_FRAME[@]} + ST_GAP <= n)) && break
+      if ((ST_TOPN > 2)); then ST_TOPN=$((ST_TOPN - 1))
+      elif ((ST_NCORE > 2)); then ST_NCORE=$((ST_NCORE - 1))
+      elif ((ST_AGN > 3)); then ST_AGN=$((ST_AGN - 1))
+      elif ((ST_GAP)); then ST_GAP=0
+      elif ((ST_TOPN > 1)); then ST_TOPN=1 ST_NCORE=1 ST_AGN=1
+      else break; fi
+    done
+    ((ST_GAP)) && ST_FRAME+=("")
+  fi
   ((${#ST_FRAME[@]} > n)) && ST_FRAME=("${ST_FRAME[@]:0:n}")
-  ST_FRAME+=("$C_DIM  q quit · refresh ${ST_INTERVAL}s · slow probes every $((ST_SLOW_EVERY / 60))m$C_RESET")
+  if [[ "$ST_VIEW" == compact ]]; then
+    ST_FRAME+=("$C_DIM q quit · v full view · refresh ${ST_INTERVAL}s$C_RESET")
+  else
+    ST_FRAME+=("$C_DIM q quit · v compact view · refresh ${ST_INTERVAL}s · slow probes every $((ST_SLOW_EVERY / 60))m$C_RESET")
+  fi
   _status_paint
 }
 
@@ -1654,7 +1828,16 @@ _status_live() {
     key=""
     read -rsn1 -t "$t" key 2>/dev/null </dev/tty
     case $? in
-      0) [[ "$key" == [qQ] ]] && break ;;
+      0)
+        case "$key" in
+          [qQ]) break ;;
+          [vV])
+            if [[ "$ST_VIEW" == compact ]]; then ST_VIEW=full; else ST_VIEW=compact; fi
+            ST_REPAINT=1
+            _status_draw
+            ;;
+        esac
+        ;;
       1) sleep "$t" ;; # tty unreadable (background process group): just pace the refresh
     esac
   done
@@ -1663,18 +1846,22 @@ _status_live() {
 }
 
 mm_cmd_main() {
-  local mode=live
-  ST_INTERVAL=2
+  local mode=live v
+  ST_INTERVAL=2 ST_VIEW=compact
   while (($#)); do
     case "$1" in
       --once) mode=once ;;
       --json) mode=json ;;
       --interval | --interval=*)
-        local v
         if [[ "$1" == *=* ]]; then v=${1#*=}; else v=${2:-}; shift; fi
         v=${v%s}
         if [[ ! "$v" =~ ^[0-9]+$ ]] || ((v < 1)); then mm_die "--interval needs whole seconds >= 1 (got '$v')"; fi
         ST_INTERVAL=$v
+        ;;
+      --view | --view=*)
+        if [[ "$1" == *=* ]]; then v=${1#*=}; else v=${2:-}; shift; fi
+        [[ "$v" == compact || "$v" == full ]] || mm_die "--view is compact or full (got '$v')"
+        ST_VIEW=$v
         ;;
       -h | --help) _status_usage; return 0 ;;
       *) mm_die "unknown option: $1 (see mm status --help)" ;;
@@ -1701,7 +1888,7 @@ mm_cmd_main() {
         _status_json
       else
         _status_cols
-        _status_frame "$REPLY"
+        if [[ "$ST_VIEW" == compact ]]; then _status_frame_compact "$REPLY"; else _status_frame_full "$REPLY"; fi
         printf '\n'
         printf '%s\n' "${ST_FRAME[@]}"
         printf '\n'

@@ -258,7 +258,7 @@ EOF
     (.system.listening_ports.ports | any(.pid == $p and .address == "127.0.0.1" and .port > 0 and (.name | test("python"))))
     and (.system.listening_ports.min_age_seconds == 0)
     and (.system.lingering.processes | any(.pid == $p))' <<<"$JSON"
-  run env MM_STATUS_LINGER_AGE=0 mm status --once
+  run env MM_STATUS_LINGER_AGE=0 mm status --once --view full
   [[ "$output" == *"listening >0m · oldest"* ]]
   status_json
   jq -e --argjson p "$pid" '
@@ -289,12 +289,12 @@ EOF
   needs_jq
   status_json MM_STATUS_VPN_IFACES='no-such-vpn*'
   jq -e '.network | all(.kind != "vpn")' <<<"$JSON"
-  run env MM_STATUS_VPN_IFACES='no-such-vpn*' mm status --once
+  run env MM_STATUS_VPN_IFACES='no-such-vpn*' mm status --once --view full
   [ "$(grep -cE '^VPN ' <<<"$output")" -eq 0 ]
   # lo always exists and is up: treating it as a VPN proves rows follow what is detected.
   status_json MM_STATUS_VPN_IFACES=lo
   jq -e '.network | any(.interface == "lo" and .kind == "vpn" and (.default_route | not))' <<<"$JSON"
-  run env MM_STATUS_VPN_IFACES=lo mm status --once
+  run env MM_STATUS_VPN_IFACES=lo mm status --once --view full
   grep -qE '^VPN +lo ' <<<"$output"
 }
 
@@ -321,7 +321,7 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
 }
 
 @test "sparklines hold only the samples taken so far: no padding gap before them" {
-  status_lib '_status_init; _status_first 0; _status_sample; _status_derive; _status_frame 80
+  status_lib '_status_init; _status_first 0; _status_sample; _status_derive; _status_frame_full 80
     _status_cleanup; printf "%s\n" "${ST_FRAME[@]}"'
   [ "$status" -eq 0 ]
   local rows
@@ -334,7 +334,7 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   mkdir -p "$HOME/src/alpha/beta"
   mm_test_bg "$HOME/src/alpha/beta" bash -c 'while :; do :; done'
   local pid=${MM_TEST_PIDS[-1]}
-  run mm status --once
+  run mm status --once --view full
   [ "$status" -eq 0 ]
   grep -E "bash \(alpha/beta\) +$pid " <<<"$output"
 }
@@ -342,7 +342,7 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
 @test "live mode: refreshes rewrite only changed rows, the footer ends its line, q quits" {
   # Room for every panel and no client link coming and going: rows only change by their values.
   fake_ss "$LISTEN_SSH" ""
-  LIVE_ROWS=70 live 'sleep 5; printf q'
+  LIVE_ROWS=70 live 'sleep 5; printf q' --view full
   # 124 would mean q did not quit before the timeout.
   [ "$LIVE_STATUS" -eq 0 ]
   # The CPU trend grows every refresh, so it is rewritten each time: several frames were drawn.
@@ -444,7 +444,7 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   mm_test_fake docker 'printf "running\nexited\n"'
   mm_test_fake dpkg-query 'exit 0'
   mm_test_fake unattended-upgrade 'exit 0'
-  run mm status --once
+  run mm status --once --view full
   [ "$status" -eq 0 ]
   local row
   row=$(grep -E '^Checks ' <<<"$output")
@@ -461,7 +461,7 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
 exit 0'
   mm_test_fake dpkg-query 'printf "ii  linux-image-99.0.0-1-generic\n"'
   mm_test_fake unattended-upgrade 'exit 0'
-  run mm status --once
+  run mm status --once --view full
   [ "$status" -eq 0 ]
   grep -E '^ +! 1 failed unit: foo\.service: systemctl --failed$' <<<"$output"
   grep -E '^ +! kernel 99\.0\.0-1 installed, running .*: sudo reboot$' <<<"$output"
@@ -474,8 +474,40 @@ exit 0'
 @test "without a terminal, plain 'mm status' prints one snapshot and exits" {
   run mm status </dev/null
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Health"* && "$output" == *"Agents"* && "$output" == *"Ports"* ]]
+  [[ "$output" == *"AGENTS"* && "$output" == *"CHECKS"* ]]
   [[ "$output" != *$'\e[?1049h'* ]]
+}
+
+@test "views: compact is the default, agents first, fitting 80 columns; full has every panel" {
+  run env COLUMNS=80 mm status --once
+  [ "$status" -eq 0 ]
+  local labels line
+  labels=$(grep -oE '^(AGENTS|YOU|CPU|MEM|DISK|NET|CHECKS|TOP) ' <<<"$output" | tr -d ' ' | paste -sd' ')
+  [ "$labels" = "AGENTS YOU CPU MEM DISK NET CHECKS TOP" ]
+  while IFS= read -r line; do ((${#line} <= 80)) || { echo "too wide: $line"; false; }; done <<<"$output"
+  run env COLUMNS=80 mm status --once --view full
+  [[ "$output" == *"⚙ CPU"* && "$output" == *"◆ System"* && "$output" != *"CHECKS "* ]]
+  run mm status --once --view nope
+  [ "$status" -ne 0 ]
+}
+
+@test "views: the compact agent list gives way to the terminal height with '… N more'" {
+  local i
+  fake_agent codex
+  for i in 1 2 3 4 5 6; do mkdir -p "$SB/w$i"; detached "$SB/w$i" "$SB/bin/codex" 30; done
+  status_lib '_status_init; _status_first 0; _status_frame_compact 80 14; _status_cleanup
+    printf "%s\n" "${ST_FRAME[@]}"'
+  [ "$status" -eq 0 ]
+  [ "${#lines[@]}" -le 14 ]
+  [[ "$output" == *"… "*" more"* && "$output" == *TOP* ]]
+}
+
+@test "views: v switches live between compact and full, repainting the screen" {
+  fake_ss "$LISTEN_SSH" ""
+  LIVE_ROWS=70 live 'sleep 4; printf v; sleep 2.5; printf q'
+  [ "$LIVE_STATUS" -eq 0 ]
+  [[ "$LIVE_TEXT" == *"AGENTS"*"v full view"*"◉ Agents"*"v compact view"* ]]
+  [ "$(grep -o $'\e\\[2J' "$LIVE_OUT" | wc -l)" -ge 3 ]
 }
 
 @test "status is read-only: only query verbs reach apt/systemctl/docker and nothing is logged" {

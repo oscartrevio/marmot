@@ -9,8 +9,9 @@ of git worktrees. Inspired by [Mole](https://github.com/tw93/Mole), which does t
 mm clean       caches, old browser builds, old agent CLI versions, temp files, apt/snap/journal,
                old kernels, Docker leftovers, stale editor servers
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
-mm status      live health dashboard: CPU, memory, disk and inodes, network/VPN, agent sessions,
-               lingering dev servers and ports, updates, pending reboot, your link's latency
+mm status      live health dashboard, agent sessions first: CPU, memory, disk and inodes,
+               network/VPN, your link's latency, lingering dev servers and ports, updates,
+               pending reboot (`v` switches to the full panel view)
 mm analyze     disk overview, then a read-only explorer; move what you pick to the Trash
 mm optimize    upgrades, swap reset, stranded processes, SSD trim, DNS flush, reboot check
 mm uninstall   apt/snap/npm/bun/pipx packages and ~/.local/bin tools, plus their leftovers
