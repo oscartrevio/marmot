@@ -78,6 +78,14 @@ _status_dur() {
   else printf -v "$1" '%dm' "$__m"; fi
 }
 
+# _status_pad VAR TEXT WIDTH — plain TEXT left-aligned in WIDTH characters. printf's %-Ns pads
+# bytes, which misaligns columns after "…" or any non-ASCII name.
+_status_pad() {
+  local __p
+  printf -v __p '%*s' $(($3 > ${#2} ? $3 - ${#2} : 0)) ''
+  printf -v "$1" '%s%s' "$2" "$__p"
+}
+
 # _status_trunc VAR TEXT WIDTH — plain text cut to WIDTH chars with an ellipsis.
 _status_trunc() {
   local __t=$2 __w=$3
@@ -129,12 +137,12 @@ _status_io_level() {
   REPLY=$l
 }
 
-# _status_spark VAR FLOOR VALUE... — sparkline scaled to max(FLOOR, values), left-padded.
+# _status_spark VAR FLOOR VALUE... — sparkline of the samples so far (no padding: callers put it
+# after fixed-width columns, so a short history never opens a gap), scaled to max(FLOOR, values).
 _status_spark() {
-  local __out=$1 __max=$2 __v __s="" __i
+  local __out=$1 __max=$2 __v __s=""
   shift 2
   for __v; do ((__v > __max)) && __max=$__v; done
-  for ((__i = $#; __i < ST_HIST; __i++)); do __s+=" "; done
   for __v; do
     ((__v < 0)) && __v=0
     __s+=${ST_SPARK[__max > 0 ? __v * 7 / __max : 0]}
@@ -298,7 +306,8 @@ _status_sample() {
 }
 
 # _status_procs — one pass over /proc/*/stat and /proc/*/status: per-process CPU deltas (top 5),
-# RSS+swap (top 5), zombie and process counts. Then, among this user's processes:
+# RSS+swap (top 5; marmot's own process tree is left out of both), zombie and process counts.
+# Then, among this user's processes:
 #   ST_AGENTS  agent sessions "pid agent proc age kb orphan" (helper processes of a session are
 #              folded in: their memory counts, they are not extra sessions);
 #   ST_LINGER  dev servers/toolchains older than ST_LINGER_AGE that are not inside a live agent
@@ -312,7 +321,7 @@ _status_procs() {
   : >>"$prev"
   out=$(cat /proc/[0-9]*/stat /proc/[0-9]*/status 2>/dev/null | awk -v hz="$ST_HZ" -v dt="$dt" \
     -v up="$ST_UP" -v uid="$EUID" -v pf="$prev" -v cur="$cur" -v agents="${!ST_AGENT_COMM[*]}" \
-    -v devre="$ST_DEV_RE" -v interp="$ST_INTERP_RE" -v minage="$ST_LINGER_AGE" '
+    -v devre="$ST_DEV_RE" -v interp="$ST_INTERP_RE" -v minage="$ST_LINGER_AGE" -v me="$$" '
     function ins(set, v, p, n,   i, j) {
       for (i = 1; i <= 5; i++) if (!((set, i) in tv) || v > tv[set, i]) break
       if (i > 5) return
@@ -321,8 +330,14 @@ _status_procs() {
       }
       tv[set, i] = v; tp[set, i] = p; tn[set, i] = n
     }
+    # mine PID — 1 if PID is marmot itself or runs under it (the sampling pipeline, slow probes).
+    function mine(p,   q, n) {
+      if (p in self) return self[p]
+      for (q = p + 0; q > 1 && n++ < 64; q = ppid[q] + 0) if (q == me) return self[p] = 1
+      return self[p] = 0
+    }
     function flush() {
-      if (spid != "" && mem > 0) ins("M", mem, spid, sname)
+      if (spid != "" && mem > 0) { smem[spid] = mem; sn[spid] = sname }
       if (spid != "" && suid == uid && (spid in ppid)) {
         print "P", spid, ppid[spid]
         if (spid in kind) print kind[spid], spid, ppid[spid], mem, cname[spid], age[spid]
@@ -341,7 +356,7 @@ _status_procs() {
       print pid, ticks > cur
       total++; ppid[pid] = f[2]
       if (f[1] == "Z") zombies++
-      if (dt > 0 && (pid in prev)) { pct = int((ticks - prev[pid]) * 1e9 / (hz * dt) + 0.5); if (pct > 0) ins("C", pct, pid, comm) }
+      if (dt > 0 && (pid in prev)) { pct = int((ticks - prev[pid]) * 1e9 / (hz * dt) + 0.5); if (pct > 0) { cpu[pid] = pct; cn[pid] = comm } }
       if (comm in isagent) kind[pid] = "A"
       else if (comm ~ interp) kind[pid] = "I"
       else if (comm ~ devre && a >= minage) kind[pid] = "D"
@@ -355,6 +370,8 @@ _status_procs() {
     END {
       flush(); close(cur)
       print "Z", zombies + 0, total + 0
+      for (p in cpu) if (!mine(p)) ins("C", cpu[p], p, cn[p])
+      for (p in smem) if (!mine(p)) ins("M", smem[p], p, sn[p])
       for (i = 1; i <= 5; i++) if (("C", i) in tv) print "C", tp["C", i], tv["C", i], tn["C", i]
       for (i = 1; i <= 5; i++) if (("M", i) in tv) print "M", tp["M", i], tv["M", i], tn["M", i]
     }' "$prev" -)
@@ -371,6 +388,7 @@ _status_procs() {
       A | I | D) cands+=("$kind"$'\t'"$a"$'\t'"$b"$'\t'"$c"$'\t'"$d"$'\t'"$e") ;;
     esac
   done <<<"$out"
+  _status_top_ctx
 
   # Agents: by process name, or by the script an interpreter runs (node .../bin/gemini).
   for e in "${cands[@]}"; do
@@ -481,6 +499,28 @@ _status_pname() {
   _status_argv "$1"
   [[ -n "$ST_ARGV_BASE$ST_ARGV_TITLE" ]] || { REPLY=$2; return 0; }
   _status_argv_name
+}
+
+# _status_top_ctx — append where each ST_TOPCPU/ST_TOPMEM process works as a fourth field: the
+# last two components of its cwd when that lies under $HOME ("handle/esi"), else empty. Two tsc
+# or node processes are told apart by project this way. One find(1) call for all of them.
+_status_top_ctx() {
+  local e dir cwd a
+  local -A ctx=()
+  local -a paths=()
+  for e in "${ST_TOPCPU[@]}" "${ST_TOPMEM[@]}"; do paths+=("/proc/${e%%$'\t'*}/cwd"); done
+  ((${#paths[@]})) || return 0
+  while IFS=$'\t' read -r dir cwd; do
+    [[ "$cwd" == "$HOME"/* && "$cwd" != *" (deleted)" ]] || continue
+    cwd=${cwd#"$HOME"/}
+    [[ "$cwd" == */*/* ]] && cwd=${cwd#"${cwd%/*/*}"/}
+    ctx[${dir#/proc/}]=$cwd
+  done < <(find "${paths[@]}" -maxdepth 0 -printf '%h\t%l\n' 2>/dev/null)
+  for a in ST_TOPCPU ST_TOPMEM; do
+    local -n top=$a
+    for e in "${!top[@]}"; do top[e]+=$'\t'"${ctx[${top[e]%%$'\t'*}]:-}"; done
+    unset -n top
+  done
 }
 
 # _status_page PID — process age in seconds (from /proc/PID/stat, relative to ST_UP) in REPLY.
@@ -816,9 +856,9 @@ _status_panel_net() {
     _status_row Route "${C_DIM}no default route$C_RESET"
   else
     _status_netgraph sp "$ST_RX_BPS" "${ST_RXH[@]}"; _status_rate rate "$ST_RX_BPS"
-    _status_row Down "$sp $(printf '%10s' "$rate")"
+    _status_row Down "$(printf '%10s' "$rate") $sp"
     _status_netgraph sp "$ST_TX_BPS" "${ST_TXH[@]}"; _status_rate rate "$ST_TX_BPS"
-    _status_row Up "$sp $(printf '%10s' "$rate")"
+    _status_row Up "$(printf '%10s' "$rate") $sp"
     addr=${ST_SLOW[addr_$ST_IF]:-}
     _status_row Iface "$ST_IF${addr:+ · $addr}"
   fi
@@ -833,8 +873,14 @@ _status_panel_net() {
 }
 
 _status_panel_proc() {
-  local e pid v name meter pct nw=$((ST_W - 31)) label size z
-  ((nw > 24)) && nw=24
+  local e pid v name ctx meter pct nw pw=3 label size z row
+  # PID column as wide as the widest PID shown, not pid_max's seven digits.
+  for e in "${ST_TOPCPU[@]:0:ST_TOPN}" "${ST_TOPMEM[@]:0:ST_TOPN}"; do
+    pid=${e%%$'\t'*}
+    ((${#pid} > pw)) && pw=${#pid}
+  done
+  nw=$((ST_W - 24 - pw))
+  ((nw > 36)) && nw=36
   ((nw < 6)) && nw=6
   _status_title "▶ Processes"
   z=${ST_ZOMBIES:-0}
@@ -842,20 +888,24 @@ _status_panel_proc() {
   _status_row Procs "${ST_NPROC:-0} · zombies $z"
   label="Top CPU"
   for e in "${ST_TOPCPU[@]:0:ST_TOPN}"; do
-    IFS=$'\t' read -r pid v name <<<"$e"
-    _status_trunc name "$name" "$nw"
+    IFS=$'\t' read -r pid v name ctx <<<"$e"
+    _status_trunc name "$name${ctx:+ ($ctx)}" "$nw"
+    _status_pad name "$name" "$nw"
     _status_meter meter $(((v + 199) / 200))
     _status_dec pct "$v"
-    _status_row "$label" "$(printf "%-${nw}s %7s %s %6s" "$name" "$pid" "$meter" "$pct%")"
+    printf -v row "%s %${pw}s %s %6s" "$name" "$pid" "$meter" "$pct%"
+    _status_row "$label" "$row"
     label=""
   done
   [[ "$label" ]] && _status_row "$label" "${C_DIM}idle$C_RESET"
   label="Top mem"
   for e in "${ST_TOPMEM[@]:0:ST_TOPN}"; do
-    IFS=$'\t' read -r pid v name <<<"$e"
-    _status_trunc name "$name" "$nw"
+    IFS=$'\t' read -r pid v name ctx <<<"$e"
+    _status_trunc name "$name${ctx:+ ($ctx)}" "$nw"
+    _status_pad name "$name" "$nw"
     _status_gib size $((v * 1024))
-    _status_row "$label" "$(printf "%-${nw}s %7s %9s" "$name" "$pid" "$size GB")"
+    printf -v row "%s %${pw}s %7s" "$name" "$pid" "$size GB"
+    _status_row "$label" "$row"
     label=""
   done
 }
@@ -1209,11 +1259,14 @@ _status_draw() {
   read -r rows cols <<<"$size"
   [[ "$rows" =~ ^[1-9][0-9]*$ ]] || rows=${LINES:-50}
   [[ "$cols" =~ ^[1-9][0-9]*$ ]] || cols=${COLUMNS:-80}
-  # Shrink until the frame (plus blank + footer) fits: top lists, cores, panel gaps, then 1 each.
+  # Frame + blank + footer use at most rows-1 rows: every row, the footer included, ends with
+  # erase-to-end-of-line and a newline, so a capture (script, tmux pipe-pane) never glues the
+  # footer to the next frame, and the footer's newline never scrolls the screen.
+  # Shrink until it fits: top lists, cores, panel gaps, then 1 each.
   ST_TOPN=5 ST_NCORE=4 ST_GAP=1
   while :; do
     _status_frame "$cols"
-    ((${#ST_FRAME[@]} + 1 + ST_GAP <= rows)) && break
+    ((${#ST_FRAME[@]} + ST_GAP + 2 <= rows)) && break
     if ((ST_TOPN > 2)); then ST_TOPN=$((ST_TOPN - 1))
     elif ((ST_NCORE > 2)); then ST_NCORE=$((ST_NCORE - 1))
     elif ((ST_GAP)); then ST_GAP=0
@@ -1221,16 +1274,11 @@ _status_draw() {
     else break; fi
   done
   ((ST_GAP)) && ST_FRAME+=("")
-  ST_FRAME+=("$C_DIM  q quit · refresh ${ST_INTERVAL}s · slow probes every $((ST_SLOW_EVERY / 60))m$C_RESET")
   n=${#ST_FRAME[@]}
-  ((n > rows)) && n=$rows
+  ((n > rows - 2)) && n=$((rows > 2 ? rows - 2 : 0))
   buf=$'\e[H'
-  for ((i = 0; i < n; i++)); do
-    line=${ST_FRAME[i]}
-    buf+="$line"$'\e[K'
-    ((i < n - 1)) && buf+=$'\n'
-  done
-  buf+=$'\e[J'
+  for ((i = 0; i < n; i++)); do buf+="${ST_FRAME[i]}"$'\e[K\n'; done
+  buf+="$C_DIM  q quit · refresh ${ST_INTERVAL}s · slow probes every $((ST_SLOW_EVERY / 60))m$C_RESET"$'\e[K\n\e[J'
   printf '%s' "$buf"
 }
 
