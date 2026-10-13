@@ -19,7 +19,7 @@ _mo() {
   fi
   case $words[2] in
     clean)     _arguments $global '--whitelist[edit protected paths]' '--days[temp idle days]:days' ;;
-    status)    _arguments '--once[single snapshot]' '--json[machine-readable]' '--interval[refresh seconds]:seconds' ;;
+    status)    _arguments '--once[single snapshot]' '--json[machine-readable]' '--view[layout]:view:(compact full)' '--interval[refresh seconds]:seconds' ;;
     analyze|analyse) _files -/ ;;
     optimize)  _arguments $global ;;
     purge)     _arguments $global '(-y --yes)'{-y,--yes}'[unattended: remove stale artifacts only]' '--all[include recent projects (interactive)]' '--paths[edit project roots]' '--days[idle days]:days' '*:directory:_files -/' ;;
