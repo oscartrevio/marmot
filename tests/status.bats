@@ -440,6 +440,37 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   [[ "$output" == *"no remote session detected"* ]]
 }
 
+@test "checks: all fine is one line of ✓ items, pending updates a note there, not a problem" {
+  mm_test_fake docker 'printf "running\nexited\n"'
+  mm_test_fake dpkg-query 'exit 0'
+  mm_test_fake unattended-upgrade 'exit 0'
+  run mm status --once
+  [ "$status" -eq 0 ]
+  local row
+  row=$(grep -E '^Checks ' <<<"$output")
+  [[ "$row" == *"✓ kernel"*"✓ units"*"✓ docker"*"✓ unattended"*"1 update"* ]]
+  # The reboot flag is the host's own file: whichever way it is, it is reported.
+  if [[ -e /var/run/reboot-required ]]; then grep -E '! reboot required.*: sudo reboot$' <<<"$output"
+  else [[ "$row" == *"✓ reboot"* ]]; fi
+  [ "$(grep -cE '! .*(kernel|unit|docker|unattended)' <<<"$output")" -eq 0 ]
+}
+
+@test "checks: each problem gets its own line with the command that addresses it" {
+  mm_test_fake systemctl '[[ "$1" == is-active ]] && { echo inactive; exit 3; }
+[[ "$1" == --failed ]] && echo "foo.service loaded failed failed Foo"
+exit 0'
+  mm_test_fake dpkg-query 'printf "ii  linux-image-99.0.0-1-generic\n"'
+  mm_test_fake unattended-upgrade 'exit 0'
+  run mm status --once
+  [ "$status" -eq 0 ]
+  grep -E '^ +! 1 failed unit: foo\.service: systemctl --failed$' <<<"$output"
+  grep -E '^ +! kernel 99\.0\.0-1 installed, running .*: sudo reboot$' <<<"$output"
+  grep -E '^ +! docker daemon not reachable: docker info$' <<<"$output"
+  # Too long for one 80-column line: the command follows on the next line, whole.
+  grep -A1 -E '^ +! unattended-upgrades inactive:' <<<"$output" | grep -E ' sudo systemctl enable --now unattended-upgrades$'
+  [ "$(grep -cE '✓ (kernel|units|docker|unattended)' <<<"$output")" -eq 0 ]
+}
+
 @test "without a terminal, plain 'mm status' prints one snapshot and exits" {
   run mm status </dev/null
   [ "$status" -eq 0 ]

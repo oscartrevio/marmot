@@ -929,9 +929,6 @@ _status_count() {
   else printf -v "$1" '%d' "$2"; fi
 }
 _status_title() { ST_PANEL=("$C_BOLD$1$C_RESET"); }
-_status_ok() { REPLY="$C_GREEN✓$C_RESET $1"; }
-_status_bad() { REPLY="$C_RED✗$C_RESET $1"; }
-_status_warn() { REPLY="$C_YELLOW!$C_RESET $1"; }
 
 _status_panel_cpu() {
   local bar pct i j best v l1 trend
@@ -1218,65 +1215,86 @@ _status_panel_agents() {
   fi
 }
 
+# _status_checks — system upkeep as ST_CHK_OK (checks that passed), ST_CHK_NOTE (neutral notes:
+# "3 updates", "checking…") and ST_CHK_BAD ("problem<TAB>command that addresses it"; marmot
+# never runs these). Checks whose tool is missing (no systemd, docker, apt) are left out.
+_status_checks() {
+  local n s
+  ST_CHK_OK=() ST_CHK_NOTE=() ST_CHK_BAD=()
+  if ((ST_REBOOT)); then ST_CHK_BAD+=("reboot required${ST_REBOOT_PKGS:+ ($ST_REBOOT_PKGS)}"$'\t'"sudo reboot")
+  else ST_CHK_OK+=(reboot); fi
+  if [[ -z "${ST_SLOW[at]:-}" ]]; then ST_CHK_NOTE+=("checking…"); return 0; fi
+  if ((ST_KPENDING)); then
+    ST_CHK_BAD+=("kernel ${ST_SLOW[kernel_newest_abi]} installed, running ${ST_SLOW[kernel_running_abi]}"$'\t'"sudo reboot")
+  else
+    ST_CHK_OK+=(kernel)
+  fi
+  if [[ "${ST_SLOW[systemd]:-}" != absent ]]; then
+    n=${#ST_FAILED[@]} s=""
+    ((n > 1)) && s=s
+    if [[ -z "${ST_SLOW[failed_ok]:-}" ]]; then ST_CHK_BAD+=("systemctl did not answer"$'\t'"systemctl --failed")
+    elif ((n)); then ST_CHK_BAD+=("$n failed unit$s: ${ST_FAILED[*]}"$'\t'"systemctl --failed")
+    else ST_CHK_OK+=(units); fi
+  fi
+  case "${ST_SLOW[docker]:-}" in
+    "") ;;
+    down) ST_CHK_BAD+=("docker daemon not reachable"$'\t'"docker info") ;;
+    *) ST_CHK_OK+=(docker) ;;
+  esac
+  case "${ST_SLOW[unattended]:-}" in
+    "" | absent) ;;
+    active) ST_CHK_OK+=(unattended) ;;
+    *) ST_CHK_BAD+=("unattended-upgrades ${ST_SLOW[unattended]}"$'\t'"sudo systemctl enable --now unattended-upgrades") ;;
+  esac
+  n=${ST_SLOW[upgradable]:-} s=""
+  ((${n:-0} > 1)) && s=s
+  if [[ -z "$n" ]]; then :
+  elif ((n > 0)); then ST_CHK_NOTE+=("$n update$s")
+  else ST_CHK_OK+=(updates); fi
+  return 0
+}
+
+# _status_check_lines WIDTH — ST_LINES: the passed checks on as few lines as fit WIDTH
+# ("✓ reboot ✓ kernel ✓ units · 1 update"), then one "! problem: command" line per problem (the
+# command on a line of its own when both do not fit).
+_status_check_lines() {
+  local w=$1 e i text hint line="" len=0
+  local -a items=() lens=()
+  ST_LINES=()
+  for e in "${ST_CHK_OK[@]}"; do items+=("$C_GREEN✓$C_RESET $e") lens+=($((2 + ${#e}))); done
+  for e in "${ST_CHK_NOTE[@]}"; do items+=("$C_DIM·$C_RESET $e") lens+=($((2 + ${#e}))); done
+  for i in "${!items[@]}"; do
+    if ((len && len + 1 + lens[i] > w)); then ST_LINES+=("$line"); line="" len=0; fi
+    ((len)) && line+=" " len=$((len + 1))
+    line+=${items[i]} len=$((len + lens[i]))
+  done
+  ((len)) && ST_LINES+=("$line")
+  for e in "${ST_CHK_BAD[@]}"; do
+    text=${e%%$'\t'*} hint=${e#*$'\t'}
+    if ((4 + ${#text} + ${#hint} <= w)); then
+      ST_LINES+=("$C_YELLOW!$C_RESET $text: $hint")
+    else
+      # Too long for one line: the command goes on its own line rather than cut either.
+      _status_trunc text "$text" $((w - 3))
+      _status_trunc hint "$hint" $((w - 2))
+      ST_LINES+=("$C_YELLOW!$C_RESET $text:" "  $hint")
+    fi
+  done
+  return 0
+}
+
 _status_panel_sys() {
-  local up t pkgs w=$((ST_W - 9)) n e pid name age cwd kind d kb orphan port addr
+  local up t w=$((ST_W - 9)) n e pid name age cwd kind d kb orphan port addr
   local nd=$((ST_TOPN >= 4 ? 3 : ST_TOPN - 1)) older
   _status_age older "$ST_LINGER_AGE"
   older=">$older"
   _status_title "◆ System"
   _status_dur up "$ST_UP"
   _status_row Uptime "$up"
-  if ((ST_REBOOT)); then
-    _status_trunc pkgs "${ST_REBOOT_PKGS:-unknown}" $((w - 12))
-    _status_bad "required: $pkgs"
-  else
-    _status_ok "not required"
-  fi
-  _status_row Reboot "$REPLY"
-  if [[ -z "${ST_SLOW[at]:-}" ]]; then
-    _status_row Kernel "${C_DIM}checking…$C_RESET"
-    _status_row Units "${C_DIM}checking…$C_RESET"
-    _status_row Updates "${C_DIM}checking…$C_RESET"
-  else
-    if ((ST_KPENDING)); then
-      _status_trunc t "${ST_SLOW[kernel_newest_abi]} installed, running ${ST_SLOW[kernel_running_abi]}" $((w - 2))
-      _status_bad "$t"
-    else
-      _status_trunc t "${ST_SLOW[kernel_running]}" $((w - 2))
-      _status_ok "$t"
-    fi
-    _status_row Kernel "$REPLY"
-    if [[ "${ST_SLOW[systemd]:-}" == absent ]]; then
-      REPLY="${C_DIM}no systemd$C_RESET"
-    elif [[ -z "${ST_SLOW[failed_ok]:-}" ]]; then
-      _status_warn "systemctl did not answer"
-    elif ((${#ST_FAILED[@]})); then
-      _status_trunc t "${ST_FAILED[*]}" $((w - 14))
-      _status_bad "${#ST_FAILED[@]} failed: $t"
-    else
-      _status_ok "none failed"
-    fi
-    _status_row Units "$REPLY"
-    n=${ST_SLOW[upgradable]:-}
-    if [[ -z "$n" ]]; then t="${C_DIM}apt not available$C_RESET"
-    elif ((n > 0)); then t="$C_YELLOW$n$C_RESET upgradable"
-    else t="$C_GREEN✓$C_RESET current"; fi
-    case "${ST_SLOW[unattended]:-}" in
-      "") ;;
-      active) t+=" · unattended $C_GREEN✓$C_RESET" ;;
-      absent) t+=" · ${C_DIM}no unattended-upgrades$C_RESET" ;;
-      *) t+=" · unattended $C_YELLOW${ST_SLOW[unattended]}$C_RESET" ;;
-    esac
-    _status_row Updates "$t"
-    if [[ -n "${ST_SLOW[docker]:-}" ]]; then
-      if [[ "${ST_SLOW[docker]}" == down ]]; then
-        _status_row Docker "${C_DIM}daemon not reachable$C_RESET"
-      else
-        read -r n t <<<"${ST_SLOW[docker]}"
-        _status_row Docker "$n running · $t stopped"
-      fi
-    fi
-  fi
+  _status_checks
+  _status_check_lines "$w"
+  t=Checks
+  for e in "${ST_LINES[@]}"; do _status_row "$t" "$e"; t=""; done
 
   if ((${#ST_LINGER[@]})); then
     _status_row Lingering "${#ST_LINGER[@]} $older · $(mm_human $((ST_LINGER_KB * 1024)))"
