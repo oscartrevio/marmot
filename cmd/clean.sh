@@ -1,7 +1,8 @@
 # shellcheck shell=bash
-# mm clean [--days N] [--whitelist] — remove caches, old temp files, package and Docker leftovers.
-# Regenerable caches are removed; temp files (personal data) go to the Trash; the Trash keeps items
-# for 7 days. Tool-driven cleans (npm, apt, docker...) add measured sizes on top of mm_rm's totals.
+# mm clean [--whitelist] — remove caches, old builds, package and Docker leftovers.
+# Regenerable caches are removed; the Trash keeps items for 7 days. Shared temp folders (/tmp,
+# /var/tmp) are only reported: other programs keep runtime state there and the OS ages them.
+# Tool-driven cleans (npm, apt, docker...) add measured sizes on top of mm_rm's totals.
 # What counts as a cache, an old build, or a store to only report comes from lib/catalog.sh.
 
 # shellcheck source=../lib/catalog.sh
@@ -14,26 +15,24 @@ _CLEAN_CATS=0            # categories that freed something
 _CLEAN_CAT_MARK=""       # "bytes items" snapshot at category start
 _CLEAN_MIN_TOOL=1048576  # below this a tool cache is not worth running the tool for
 _CLEAN_TRASH_DAYS=7      # Trash retention: items trashed longer ago than this are removed for good
-_CLEAN_TMP_SKIP=('.X*' '.ICE*' '.font*' 'tmux-*' 'systemd-private-*' 'snap-private-*' '.mount_*'
-  'ssh-*' 'fnm_multishells' 'marmot-*')
 
 _clean_usage() {
   cat <<EOF
-Usage: mm clean [--days N] [--whitelist] [--dry-run] [--debug]
+Usage: mm clean [--whitelist] [--dry-run] [--debug]
 
 Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Cargo downloads,
 Gradle build cache, Deno, Bazel, Zig, Prisma, Electron, ... see lib/catalog.sh), old
 Playwright/Puppeteer/Cypress browser builds, old versions of coding-agent CLIs (the active one
 and one previous are kept), apt/journal/snap leftovers, old kernels, stopped Docker
 containers/dangling images/old build cache, and stale editor server builds.
-Idle temp files are moved to the Trash (restore with trash-restore); Trash items deleted more
-than 7 days ago are removed for good. Agent sessions, model stores, dependency repositories,
+Trash items deleted more than 7 days ago are removed for good. /tmp and /var/tmp are not
+swept: they hold other programs' runtime state, and the OS ages them (systemd-tmpfiles); their
+size and the OS policy are reported. Agent sessions, model stores, dependency repositories,
 Node versions and Docker volumes are never touched: they are listed with their size under
 "Kept for you to review". Steps that cannot be undone (Trash sweep, packages, containers) ask
 first and are skipped without a terminal.
 
 Options:
-  --days N      /tmp entries must be idle at least N days (default 7; /var/tmp: at least 30)
   --whitelist   edit protected paths ($MM_WHITELIST_FILE)
   -n, --dry-run show what would be cleaned; change nothing
 
@@ -385,65 +384,7 @@ _clean_pnpm() {
   mm_ok "pnpm store" "pruned, $(mm_human "$freed")"
 }
 
-# ---------------------------------------------------------------- 3. temporary files
-
-# Temp entries are personal data: they go to the Trash (restorable), never straight to rm. Scan roots
-# come from a private test override; persistent roots get at least 30 idle days (systemd-tmpfiles
-# ages /var/tmp out at 30d and tools keep state there across reboots).
-_clean_tmp() {
-  local days="$1" dir name path pat idle rc n b kept fail min offfs tdev
-  local -a dirs moved
-  _clean_check_overrides
-  read -r -a dirs <<<"${_CLEAN_TMP_DIRS:-/tmp /var/tmp}"
-  _clean_cat "Temporary files"
-  tdev=$(_clean_trash_dev)
-  for dir in "${dirs[@]}"; do
-    [[ -d "$dir" ]] || continue
-    min=$days
-    [[ " ${_CLEAN_TMP_PERSIST:-/var/tmp} " == *" $dir "* ]] && (( min < 30 )) && min=30
-    # mm_rm --trash only renames within one filesystem; say so once instead of refusing every item.
-    offfs=0; [[ "$(stat -c %d -- "$dir" 2>/dev/null)" == "$tdev" ]] || offfs=1
-    n=0 b=0 kept=0 fail=0 moved=()
-    while IFS= read -r -d '' name; do
-      for pat in "${_CLEAN_TMP_SKIP[@]}"; do
-        # shellcheck disable=SC2053
-        [[ "$name" == $pat ]] && continue 2
-      done
-      path="$dir/$name"
-      idle=$(mm_idle_days "$path")
-      (( idle >= min )) || continue
-      if (( offfs )); then kept=$((kept + 1)) b=$((b + $(mm_size "$path"))); continue; fi
-      mm_rm --trash "$path" "$dir"; rc=$?
-      case $rc in
-        0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)); moved+=("$MM_LAST_BYTES"$'\t'"$path") ;;
-        1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
-        *) fail=$((fail + 1)) ;;
-      esac
-    done < <(find "$dir" -mindepth 1 -maxdepth 1 -user "$EUID" ! -type s ! -mmin -$((min * 1440)) -printf '%f\0' 2>/dev/null)
-    if (( offfs && kept )); then
-      mm_skip "$dir" "$(_clean_detail "$kept" items "$b") idle ${min}+ days kept: Trash is on another filesystem"
-    elif (( n + kept + fail == 0 )); then
-      mm_ok "$dir" "nothing idle for ${min}+ days"
-    else
-      mm_ok "$dir" "$(_clean_detail "$n" items "$b" "$kept" "$fail") idle ${min}+ days, moved to Trash"
-    fi
-    if (( ${#moved[@]} )); then
-      while IFS=$'\t' read -r b path; do
-        mm_debug "biggest: $(mm_human "$b") $path"
-      done < <(printf '%s\n' "${moved[@]}" | sort -rn | head -5)
-    fi
-  done
-  _clean_cat_end
-}
-
-# _clean_trash_dev — device id of the Trash files dir (or its nearest existing ancestor).
-_clean_trash_dev() {
-  local p="$MM_TRASH_DIR/files"
-  while [[ ! -e "$p" && "$p" == /?* ]]; do p=$(dirname -- "$p"); done
-  stat -c %d -- "$p" 2>/dev/null
-}
-
-# ---------------------------------------------------------------- 4. system
+# ---------------------------------------------------------------- 3. system
 
 _clean_system() {
   _clean_cat "System"
@@ -580,7 +521,7 @@ _clean_snaps() {
   mm_ok "Old snap revisions" "$(_clean_detail "$n" revisions "$b")"
 }
 
-# ---------------------------------------------------------------- 5. docker
+# ---------------------------------------------------------------- 4. docker
 
 _clean_docker() {
   command -v docker >/dev/null || return 0
@@ -662,7 +603,7 @@ _clean_docker_volumes() {
     "docker volume inspect <name>; remove by hand: docker volume rm <name>"
 }
 
-# ---------------------------------------------------------------- 6. editor servers
+# ---------------------------------------------------------------- 5. editor servers
 
 # Remote-editor servers (VS Code family) unpack one build per editor update and never remove old ones.
 _CLEAN_EDITOR_SERVERS=(
@@ -715,7 +656,7 @@ _clean_editor_builds() {
   mm_ok "$label" "$(_clean_detail "$n" "old builds" "$bytes" "$kept" "$fail"), newest kept"
 }
 
-# ---------------------------------------------------------------- 7. kept for you to review
+# ---------------------------------------------------------------- 6. kept for you to review
 
 # _clean_review LABEL DETAIL [HINT] — queue a line for "Kept for you to review".
 _clean_review() { _CLEAN_REVIEW+=("$1"$'\t'"$2"$'\t'"${3:-}"); }
@@ -773,9 +714,74 @@ _clean_review_catalog() {
   done
 }
 
+# Shared temp folders are never swept: other programs keep runtime state there (sockets, locks,
+# the working files of running builds and agents), and the OS ages them with systemd-tmpfiles.
+# They are reported with their size and that policy. Directories in tmpfiles.d precedence order.
+_CLEAN_TMPFILES_DIRS=(/etc/tmpfiles.d /run/tmpfiles.d /usr/local/lib/tmpfiles.d /usr/lib/tmpfiles.d)
+
+# _clean_tmpfiles_age PATH — "AGE<TAB>FILE" for the tmpfiles.d line systemd-tmpfiles applies to
+# PATH, nothing when no line configures it. Per tmpfiles.d(5): a file replaces same-named files in
+# later directories (/etc over /run over /usr/lib; a /dev/null symlink masks), and across names the
+# first file in lexicographic order that configures PATH wins. AGE is "-" when not set.
+_clean_tmpfiles_age() {
+  local d f base hit
+  local -A conf=()
+  for d in "${_CLEAN_TMPFILES_DIRS[@]}"; do
+    for f in "$d"/*.conf; do
+      [[ -e "$f" || -L "$f" ]] || continue
+      base=${f##*/}
+      [[ -n "${conf[$base]+x}" ]] || conf[$base]=$f
+    done
+  done
+  (( ${#conf[@]} )) || return 0
+  while IFS= read -r base; do
+    hit=$(awk -v p="$1" '$2 == p && $1 ~ /^[dDevqQC][-!=~^+]*$/ { print (NF >= 6 ? $6 : "-"); exit }' \
+      "${conf[$base]}" 2>/dev/null)
+    [[ -n "$hit" ]] && { printf '%s\t%s\n' "$hit" "${conf[$base]}"; return 0; }
+  done < <(printf '%s\n' "${!conf[@]}" | LC_ALL=C sort)
+}
+
+# _clean_tmpfiles_runs — 0 when systemd is the init system, so its tmpfiles timer ages temp folders.
+_clean_tmpfiles_runs() { [[ -d /run/systemd/system ]]; }
+
+# _clean_review_tmp — /tmp and /var/tmp: size (every user's files when root or passwordless sudo,
+# else only what this user can read) and the OS aging policy, with a fix when nothing ages them.
+_clean_review_tmp() {
+  local dir all=0 size age file detail hint fs suggest name
+  if (( EUID != 0 )) && command -v sudo >/dev/null && sudo -n true 2>/dev/null; then all=1; fi
+  for dir in /tmp /var/tmp; do
+    [[ -d "$dir" ]] || continue
+    size=$(MM_SIZE_SUDO=$all mm_size "$dir")
+    detail=$(mm_human "$size")
+    (( EUID != 0 && ! all )) && detail+=" (your files)"
+    fs=$(awk -v d="$dir" '$2 == d { t = $3 } END { print t }' /proc/self/mounts 2>/dev/null)
+    [[ "$fs" == tmpfs ]] && detail+=", tmpfs (emptied at reboot)"
+    age="" file="" hint=""
+    IFS=$'\t' read -r age file < <(_clean_tmpfiles_age "$dir")
+    if ! _clean_tmpfiles_runs; then
+      detail+=" · not aged: systemd-tmpfiles does not run here"
+    elif [[ -n "$age" && "$age" != - ]]; then
+      detail+=" · the OS removes entries unused for $age ($file)"
+    else
+      detail+=" · never aged by the OS"
+      suggest=10d; [[ "$dir" == /var/tmp ]] && suggest=30d
+      name=${dir#/}; name=${name//\//-}-age.conf
+      if [[ -z "$file" ]]; then
+        hint="to age it: echo 'q $dir 1777 root root $suggest' | sudo tee /etc/tmpfiles.d/$name"
+      elif [[ "$file" == /etc/tmpfiles.d/* ]]; then
+        hint="to age it: set an age (e.g. $suggest) on the $dir line of $file"
+      else
+        hint="to age it: sudo cp $file /etc/tmpfiles.d/ and set an age (e.g. $suggest) on its $dir line"
+      fi
+    fi
+    _clean_review "Shared temp $dir" "$detail" "$hint"
+  done
+}
+
 _clean_review_print() {
   _clean_review_agents
   _clean_review_catalog
+  _clean_review_tmp
   (( ${#_CLEAN_REVIEW[@]} )) || return 0
   mm_section "Kept for you to review"
   local row label detail hint
@@ -789,32 +795,15 @@ _clean_review_print() {
 
 # ---------------------------------------------------------------- main
 
-# _clean_check_overrides — the private temp-scan test overrides may only point below /tmp or
-# /var/tmp, and never at, above, or inside $HOME (which can itself live under /tmp).
-_clean_check_overrides() {
-  local d r
-  for d in ${_CLEAN_TMP_DIRS:-} ${_CLEAN_TMP_PERSIST:-}; do
-    r=$(realpath -e -- "$d" 2>/dev/null) || mm_die "_CLEAN_TMP_* entry does not exist: $d"
-    [[ "$r" == /tmp/?* || "$r" == /var/tmp/?* ]] || mm_die "_CLEAN_TMP_* entry must be below /tmp or /var/tmp: $d"
-    [[ "$r" == "$HOME" || "$HOME" == "$r"/* || "$r" == "$HOME"/* ]] && mm_die "_CLEAN_TMP_* entry overlaps \$HOME: $d"
-  done
-  return 0
-}
-
 mm_cmd_main() {
-  local days=7
   while (( $# )); do
     case "$1" in
       --whitelist) mm_whitelist_edit; return ;;
-      --days) [[ "${2:-}" =~ ^[0-9]+$ ]] || mm_die "--days needs a number"; days="$2"; shift ;;
-      --days=*) days="${1#*=}"; [[ "$days" =~ ^[0-9]+$ ]] || mm_die "--days needs a number" ;;
       -h|--help) _clean_usage; return 0 ;;
       *) mm_die "unknown option: $1 (see mm clean --help)" ;;
     esac
     shift
   done
-  (( days >= 1 )) || mm_die "--days must be at least 1"
-  _clean_check_overrides
 
   mm_header "Clean Your System"
   mm_catalog_load
@@ -825,7 +814,6 @@ mm_cmd_main() {
   _clean_user
   _clean_dev
   _clean_builds
-  _clean_tmp "$days"
   _clean_system
   _clean_docker
   _clean_editors

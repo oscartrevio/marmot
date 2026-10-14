@@ -3,7 +3,7 @@
 _mo() {
   local -a commands global
   commands=(
-    'clean:Remove caches, old temp files, logs, and package/Docker leftovers'
+    'clean:Remove caches, old builds, logs, and package/Docker leftovers'
     'status:Live system health dashboard'
     'analyze:Interactive disk explorer'
     'optimize:Updates, trim, swap reset, orphaned processes'
@@ -18,7 +18,7 @@ _mo() {
     return
   fi
   case $words[2] in
-    clean)     _arguments $global '--whitelist[edit protected paths]' '--days[temp idle days]:days' ;;
+    clean)     _arguments $global '--whitelist[edit protected paths]' ;;
     status)    _arguments '--once[single snapshot]' '--json[machine-readable]' '--agent[plain text for AI agents]' '--view[layout]:view:(compact full)' '--interval[refresh seconds]:seconds' ;;
     analyze|analyse) _files -/ ;;
     optimize)  _arguments $global ;;

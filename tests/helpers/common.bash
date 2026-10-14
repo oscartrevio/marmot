@@ -112,7 +112,7 @@ mm_log_rows() {
 mm_age() { find "$1" -exec touch -c -h -d "$2 days ago" {} +; }
 
 # mm_test_clock DAYS — move marmot's notion of "now" DAYS days into the future for child bash
-# processes (mm_idle_days and friends call `date +%s`).
+# processes (age checks such as the Trash retention sweep call `date +%s`).
 mm_test_clock() {
   export MM_TEST_CLOCK_SHIFT=$(( $1 * 86400 ))
   date() {

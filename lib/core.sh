@@ -143,17 +143,6 @@ mm_frees() {
 # mm_free_bytes [MOUNT] — available bytes on the filesystem holding MOUNT (default /).
 mm_free_bytes() { df -B1 --output=avail "${1:-/}" 2>/dev/null | awk 'NR == 2 { printf "%.0f\n", $1 }'; }
 
-# mm_idle_days PATH — whole days since the newest activity anywhere in PATH's tree: mtime and
-# ctime of every entry (ctime catches fresh extractions/moves that keep old mtimes) and atime of
-# regular files (reads). Directory atimes are ignored: our own scans would refresh them.
-mm_idle_days() {
-  local newest
-  newest=$(find "$1" -xdev \( -type f -printf '%A@\n' -o -true \) -printf '%T@\n%C@\n' 2>/dev/null |
-    sort -n | tail -1)
-  [[ -n "$newest" ]] || { echo 0; return; }
-  echo $(( ( $(date +%s) - ${newest%.*} ) / 86400 ))
-}
-
 # mm_sysline — "Ubuntu 24.04.5 LTS · 8 cores · 31GB RAM | Free: 37.0GB | Up 3d 4h 12m".
 mm_sysline() {
   local os mem s up=""
