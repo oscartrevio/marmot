@@ -25,15 +25,17 @@ Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Carg
 Gradle build cache, Deno, Bazel, Zig, Prisma, Electron, ... see lib/catalog.sh), old
 Playwright/Puppeteer/Cypress browser builds, old versions of coding-agent CLIs (the active one
 and one previous are kept), gcloud and Azure CLI logs older than 7 days (their credentials are
-never touched), apt/journal/snap leftovers, old kernels, stopped Docker containers, dangling
-images, images no container uses (pulled or built 30+ days ago), old build cache, and stale
-editor server builds.
+never touched), apt/journal/snap leftovers, old kernels, rotated system logs and crash dumps
+last written 7+ days ago (/var/log, /var/crash, systemd-coredump, your apport reports; never
+live or open logs, never the journal files), stopped Docker containers, dangling images, images
+no container uses (pulled or built 30+ days ago), old build cache, and stale editor server
+builds.
 Trash items deleted more than 7 days ago are removed for good. /tmp and /var/tmp are not
 swept: they hold other programs' runtime state, and the OS ages them (systemd-tmpfiles); their
 size and the OS policy are reported. Model stores, dependency repositories, Node versions,
 Docker volumes and agent state are never touched: they are listed with their size under
-"Kept for you to review". Steps that cannot be undone (Trash sweep, packages, containers,
-images) ask first and are skipped without a terminal.
+"Kept for you to review". Steps that cannot be undone (Trash sweep, packages, logs, crash dumps,
+containers, images) ask first and are skipped without a terminal.
 
 Agent sessions are kept unless you opt in: with a retention of N days, session files (and
 rotated logs in agent state) last written more than N days ago and not in use move to the
@@ -602,7 +604,8 @@ _clean_cloud_log_rm() {
 
 _clean_system() {
   _clean_cat "System"
-  if ! mm_can_sudo; then mm_skip "System cleanup" "needs sudo"; return; fi
+  _clean_user_crash_reports
+  if ! mm_can_sudo; then mm_skip "System cleanup" "needs sudo"; _clean_cat_end; return; fi
   local busy
   if busy=$(mm_apt_busy); then
     mm_skip "APT cleanup" "$busy"
@@ -614,6 +617,8 @@ _clean_system() {
   fi
   _clean_journal
   _clean_snaps
+  _clean_rotated_logs
+  _clean_crash_dumps
   _clean_cat_end
 }
 
@@ -733,6 +738,133 @@ _clean_snaps() {
   done
   _clean_track "$b" "$n"
   mm_ok "Old snap revisions" "$(_clean_detail "$n" revisions "$b")"
+}
+
+# ---------------------------------------------------------------- 3b. old logs and crash dumps
+# Rotated logs and crash dumps lie in trees mm_rm never deletes in (/var/log, /var/crash,
+# /var/lib), so they are removed as root by _CLEAN_ROOT_RM, a fixed script that re-checks every
+# listed file right before deleting it. The roots are plain variables (tests point them at a
+# sandbox after sourcing; nothing in the environment can change them).
+_CLEAN_LOG_ROOT=/var/log
+_CLEAN_CRASH_ROOTS=(/var/crash /var/lib/systemd/coredump)
+_CLEAN_OLD_DAYS=7   # rotated logs and crash dumps last written longer ago than this are offered
+
+# Run as root: print the target of every open file descriptor (NUL-separated), then "-" as an end
+# marker. Without the marker the list is incomplete (sudo failed) and nothing may be deleted.
+_CLEAN_OPEN_FDS='find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null; printf -- "-\0"'
+
+# Run as root with MINUTES, then DEV:INODE PATH pairs: delete each PATH that is still the same
+# regular file, still unmodified for MINUTES, and open by no process.
+_CLEAN_ROOT_RM='min=$1; shift; rc=0
+declare -A open=()
+while IFS= read -r -d "" t; do open[$t]=1; done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null)
+while (( $# >= 2 )); do
+  id=$1 p=$2; shift 2
+  [[ -z ${open[$p]+x} ]] || continue
+  [[ "$(find "$p" -maxdepth 0 -type f -mmin "+$min" -printf "%D:%i" 2>/dev/null)" == "$id" ]] || continue
+  rm -f -- "$p" || rc=1 # SAFE: a listed, confirmed old log or dump, re-checked (same inode, still old, not open) just above
+done
+exit $rc'
+
+# _clean_rotated_logs — rotated copies under /var/log (*.1, *.2.gz, *.gz, *.old) unmodified for
+# 7+ days. Live logs never match (they are *.log or have no suffix), open files are kept, and the
+# journal is left to journald's own vacuum above.
+_clean_rotated_logs() {
+  if mm_proc_running logrotate; then mm_skip "Rotated logs" "logrotate busy"; return 0; fi
+  _clean_root_files "Rotated logs" "rotated logs" "" "$_CLEAN_LOG_ROOT" -- \
+    -name journal -type d -prune -o \( -name '*.[0-9]' -o -name '*.[0-9].gz' -o -name '*.gz' -o -name '*.old' \)
+}
+
+# _clean_crash_dumps — apport reports and kernel dumps in /var/crash and systemd-coredump cores,
+# unmodified for 7+ days (hidden files such as apport's lock are left alone).
+_clean_crash_dumps() {
+  local hint=""
+  command -v coredumpctl >/dev/null && hint="inspect cores first with: coredumpctl list"
+  _clean_root_files "Crash dumps" "crash dumps" "$hint" "${_CLEAN_CRASH_ROOTS[@]}" -- ! -name '.*'
+}
+
+# _clean_root_files LABEL NOUN HINT ROOT... -- FIND_EXPR... — regular files under the ROOTs (one
+# filesystem, listed as root) that FIND_EXPR selects, unmodified for _CLEAN_OLD_DAYS days and open
+# by no process: listed with count, size and the largest, confirmed on a terminal, then removed
+# by _CLEAN_ROOT_RM. Sizes are allocated blocks, each inode counted once and only when every link
+# to it goes; freed is measured afterwards from the files actually gone.
+_clean_root_files() {
+  local label="$1" noun="$2" hint="$3" min=$((_CLEAN_OLD_DAYS * 1440)) r rec id nl blk p rest
+  local n=0 b=0 held=0 marker=0 top="" line removed=0 freed=0
+  shift 3
+  local -a roots=() pairs=() paths=() sizes=()
+  local -A open=() isize=() nlink=() listed=() left=() gone=()
+  while (( $# )) && [[ "$1" != -- ]]; do
+    r=$(realpath -e -- "$1" 2>/dev/null) && [[ -d "$r" && "$r" != / ]] && roots+=("$r")
+    shift
+  done
+  shift
+  (( ${#roots[@]} )) || return 0
+  while IFS= read -r -d '' p; do
+    if [[ "$p" == - ]]; then marker=1; elif [[ -n "$p" ]]; then open[$p]=1; fi
+  done < <(mm_sudo bash -c "$_CLEAN_OPEN_FDS" 2>/dev/null)
+  (( marker )) || { mm_skip "$label" "cannot see which files are open"; return 0; }
+  while IFS= read -r -d '' rec; do
+    id=${rec%%$'\t'*} rest=${rec#*$'\t'}
+    nl=${rest%%$'\t'*} rest=${rest#*$'\t'}
+    blk=${rest%%$'\t'*} p=${rest#*$'\t'}
+    [[ "$id" =~ ^[0-9]+:[0-9]+$ && "$nl" =~ ^[0-9]+$ && "$blk" =~ ^[0-9]+$ ]] || continue
+    [[ "$p" == /* && "$p" != *[[:cntrl:]]* ]] || continue
+    if [[ -n "${open[$p]+x}" ]]; then held=$((held + 1)); continue; fi
+    pairs+=("$id" "$p") paths+=("$p") sizes+=("$((blk * 512))"$'\t'"$p")
+    [[ -n "${isize[$id]+x}" ]] || { isize[$id]=$((blk * 512)) nlink[$id]=$nl listed[$id]=0; }
+    listed[$id]=$(( ${listed[$id]} + 1 ))
+  done < <(mm_sudo find "${roots[@]}" -xdev \( "$@" \) -type f -mmin "+$min" -printf '%D:%i\t%n\t%b\t%p\0' 2>/dev/null)
+  n=${#paths[@]}
+  for id in "${!isize[@]}"; do (( ${listed[$id]} >= ${nlink[$id]} )) && b=$((b + ${isize[$id]})); done
+  local note=""
+  (( held )) && note=", $held open kept"
+  if (( n == 0 )); then mm_ok "$label" "nothing older than $_CLEAN_OLD_DAYS days$note"; return 0; fi
+  while IFS= read -r line; do
+    top+="${top:+, }${line#*$'\t'} ($(mm_human "${line%%$'\t'*}"))"
+  done < <(printf '%s\n' "${sizes[@]}" | sort -rn | head -3)
+  mm_act "$label: $n files older than $_CLEAN_OLD_DAYS days, $(mm_human "$b")$note; largest: $top"
+  [[ -n "$hint" ]] && mm_info "  $hint"
+  _clean_ask "$label" "Permanently delete $n $noun older than $_CLEAN_OLD_DAYS days ($(mm_human "$b"))?" || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _clean_track "$b" "$n"; mm_ok "$label" "$(_clean_detail "$n" files "$b")$note"; return 0
+  fi
+  mm_run "remove $n $noun" mm_sudo bash -c "$_CLEAN_ROOT_RM" _ "$min" "${pairs[@]}"
+  while IFS= read -r -d '' p; do left[$p]=1; done < <(mm_sudo find "${paths[@]}" -maxdepth 0 -printf '%p\0' 2>/dev/null)
+  local i
+  for ((i = 0; i < ${#pairs[@]}; i += 2)); do
+    id=${pairs[i]} p=${pairs[i + 1]}
+    [[ -z "${left[$p]+x}" ]] || continue
+    removed=$((removed + 1)) gone[$id]=$(( ${gone[$id]:-0} + 1 ))
+    mm_log remove "$p" "${isize[$id]}"
+  done
+  for id in "${!gone[@]}"; do (( ${gone[$id]} >= ${nlink[$id]} )) && freed=$((freed + ${isize[$id]})); done
+  _clean_track "$freed" "$removed"
+  mm_ok "$label" "$(_clean_detail "$removed" files "$freed" $((n - removed)))$note"
+}
+
+# _clean_user_crash_reports — the user's own apport reports (~/.local/share/apport): entries with
+# nothing written for 7+ days, removed permanently through mm_rm after a confirmation.
+_clean_user_crash_reports() {
+  local dir="${XDG_DATA_HOME:-$HOME/.local/share}/apport" min=$((_CLEAN_OLD_DAYS * 1440)) e b n=0 freed=0 kept=0 fail=0
+  local -a old=()
+  [[ -d "$dir" ]] || return 0
+  while IFS= read -r -d '' e; do
+    [[ -z "$(find "$e" -mmin "-$min" -print -quit 2>/dev/null)" ]] && old+=("$e")
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  if (( ${#old[@]} == 0 )); then mm_ok "Your crash reports" "nothing older than $_CLEAN_OLD_DAYS days"; return 0; fi
+  b=$(mm_size "${old[@]}")
+  mm_act "Your crash reports: ${#old[@]} older than $_CLEAN_OLD_DAYS days, $(mm_human "$b") (${dir/#$HOME/\~})"
+  _clean_ask "Your crash reports" "Permanently delete ${#old[@]} crash reports older than $_CLEAN_OLD_DAYS days ($(mm_human "$b"))?" || return 0
+  for e in "${old[@]}"; do
+    mm_rm "$e" "$dir"
+    case $? in
+      0) n=$((n + 1)) freed=$((freed + MM_LAST_BYTES)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      *) fail=$((fail + 1)) ;;
+    esac
+  done
+  mm_ok "Your crash reports" "$(_clean_detail "$n" reports "$freed" "$kept" "$fail")"
 }
 
 # ---------------------------------------------------------------- 4. docker

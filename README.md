@@ -7,8 +7,8 @@ of git worktrees. Inspired by [Mole](https://github.com/tw93/Mole), which does t
 
 ```text
 mm clean       caches, old browser builds, old agent CLI versions, gcloud/Azure CLI logs,
-               apt/snap/journal, old kernels, Docker leftovers, stale editor servers; reports /tmp
-               and how the OS ages it
+               apt/snap/journal, old kernels, rotated system logs and crash dumps (7+ days),
+               Docker leftovers, stale editor servers; reports /tmp and how the OS ages it
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
 mm status      live health dashboard, agent sessions first: CPU, memory, disk and inodes,
                network/VPN, your link's latency, lingering dev servers and ports, updates,
