@@ -178,7 +178,7 @@ fake_apt() {
 @test "without a terminal apt never upgrades (nor runs apt-get update)" {
   load_optimize
   fake_apt "Inst curl [1] (2 Ubuntu:24.04/noble-updates [amd64])"
-  _optimize_apt_busy() { return 1; }
+  mm_apt_busy() { return 1; }
   run _optimize_updates
   [ "$status" -eq 0 ]
   [ ! -s "$CALLS" ]

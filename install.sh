@@ -41,7 +41,7 @@ check() {
   [[ "$(uname -s)" == Linux ]] || die "marmot runs on Linux (Ubuntu/Debian)."
   (( BASH_VERSINFO[0] >= 5 )) || die "bash 5.0 or newer is required (found $BASH_VERSION)."
   local c missing=()
-  for c in find awk sed grep stat realpath du df ps pgrep git; do command -v "$c" >/dev/null || missing+=("$c"); done
+  for c in find awk sed grep stat realpath du df git; do command -v "$c" >/dev/null || missing+=("$c"); done
   (( ${#missing[@]} == 0 )) || die "missing required tools: ${missing[*]}"
   command -v apt-get >/dev/null || warn "no apt-get: system-package steps will be skipped (marmot targets Ubuntu/Debian)."
   local opt=()
