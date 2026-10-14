@@ -381,6 +381,35 @@ $HOME/.cache/pip removable" ]
   [ "$status" -eq 1 ]
 }
 
+@test "MM_NO_SUDO=1 never runs sudo: no sudo checks, mm_sudo fails, in-use sees your own processes" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  mm_test_fake sudo "printf '%s\n' \"\$*\" >>'$SB/sudo.calls'; exit 0"   # passwordless sudo
+  MM_NO_SUDO=1
+  MM_TTY=1 run mm_can_sudo
+  [ "$status" -eq 1 ]
+  run mm_sudo true
+  [ "$status" -ne 0 ]
+  mm_inuse_refresh >/dev/null
+  [ "$MM_INUSE_PARTIAL" = 1 ]
+  [ ! -e "$SB/sudo.calls" ]
+}
+
+@test "skips and errors of a run are collected for its summary, failed deletes included" {
+  mkdir -p "$SB/root/x"
+  mm_skip "Thing" "needs sudo" >/dev/null
+  mm_err "it broke" 2>/dev/null
+  [ "${MM_SKIPS[0]}" = $'Thing\tneeds sudo' ]
+  [ "${MM_ERRORS[0]}" = "it broke" ]
+  mm_inuse_refresh
+  rm() { return 1; }   # the delete itself fails
+  local rc=0
+  mm_rm "$SB/root/x" "$SB/root" || rc=$?
+  unset -f rm
+  [ "$rc" -eq 2 ]
+  [ "${#MM_ERRORS[@]}" -eq 2 ]
+  [[ "${MM_ERRORS[1]}" == "$SB/root/x"*"rm failed"* ]]
+}
+
 # ---------------------------------------------------------------- agent waiver and config
 
 @test "MM_AGENT_WAIVER acts inside the one agent directory given as the allowed root" {

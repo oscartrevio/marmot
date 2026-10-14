@@ -22,7 +22,7 @@ MM_LOG_FILE="${MM_LOG_FILE:-$MM_STATE_DIR/operations.log}"
 # (trash-cli) or any desktop file manager can put them back.
 MM_TRASH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
 
-: "${MM_DRY_RUN:=0}" "${MM_DEBUG:=0}"
+: "${MM_DRY_RUN:=0}" "${MM_DEBUG:=0}" "${MM_NO_SUDO:=0}"
 MM_CMD="${MM_CMD:-marmot}"
 # Byte counts below are what a delete really releases (mm_frees): files hard-linked from outside
 # the item (pnpm's store, cp -al copies) stay on disk and are not counted.
@@ -32,6 +32,9 @@ MM_COUNT=0     # items removed or trashed by mm_rm
 MM_SKIPPED=0   # items refused by mm_rm
 MM_SKIP_REASON=""
 MM_LAST_BYTES=0  # bytes the last successful mm_rm freed (or moved to the Trash)
+# Every mm_skip ("label<TAB>reason") and every error (mm_err, a failed mm_rm) of this run, for
+# summaries an unattended run writes down (mm schedule run).
+MM_SKIPS=() MM_ERRORS=()
 # MM_TTY=1 when the user ran marmot from a terminal (stdin is a tty and /dev/tty opens). Decided once
 # here, at startup: inside pipelines and $(...) stdin/stdout are not the terminal, so later -t
 # checks lie. Prompts and pickers talk to /dev/tty directly.
@@ -58,11 +61,14 @@ mm_header() {
 mm_section() { printf '\n%s➤ %s%s\n' "$C_BOLD$C_BLUE" "$1" "$C_RESET"; }
 # mm_ok LABEL [DETAIL]
 mm_ok()   { printf '  %s✓%s %s%s\n' "$C_GREEN" "$C_RESET" "$1" "${2:+ · $2}"; }
-# mm_skip LABEL REASON
-mm_skip() { printf '  %s◎%s %s · %sskipped (%s)%s\n' "$C_DIM" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"; }
+# mm_skip LABEL REASON — also recorded in MM_SKIPS.
+mm_skip() {
+  MM_SKIPS+=("$1"$'\t'"$2")
+  printf '  %s◎%s %s · %sskipped (%s)%s\n' "$C_DIM" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"
+}
 mm_act()  { printf '  %s→%s %s\n' "$C_CYAN" "$C_RESET" "$1"; }
 mm_warn() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1"; }
-mm_err()  { printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; }
+mm_err()  { MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; }
 mm_info() { printf '  %s\n' "$1"; }
 mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$C_DIM" "$1" "$C_RESET" >&2; return 0; }
 mm_die()  { mm_err "$1"; exit "${2:-1}"; }
@@ -237,15 +243,20 @@ mm_cg_cores() {
 
 # ---------------------------------------------------------------- sudo
 
+# MM_NO_SUDO=1 (unattended runs: mm schedule run) means never run sudo, not even `sudo -n`: only
+# root counts as able to, mm_sudo fails, and in-use detection sees only this user's processes.
+
 # mm_can_sudo — 0 if root, or sudo is installed and either works without a password or can prompt
 # on a tty.
 mm_can_sudo() {
   (( EUID == 0 )) && return 0
+  [[ "$MM_NO_SUDO" == 1 ]] && return 1
   command -v sudo >/dev/null && { sudo -n true 2>/dev/null || [[ "$MM_TTY" == 1 ]]; }
 }
 # mm_sudo CMD... — run as root; prompts only when needed.
 mm_sudo() {
   if (( EUID == 0 )); then "$@"
+  elif [[ "$MM_NO_SUDO" == 1 ]]; then mm_err "not run without sudo: $*"; return 1
   elif sudo -n true 2>/dev/null; then sudo -n "$@"
   else sudo "$@"; fi
 }
@@ -256,9 +267,9 @@ MM_INUSE=""        # newline-separated snapshot; kept in memory so a killed run 
 MM_INUSE_TAKEN=0
 # mm_inuse_refresh — snapshot every path any process has as cwd, root, exe, open fd, mapping, or
 # bound unix socket, plus every mount point and bind-mount source (per mount namespace), so a
-# target containing a mount is never removed through it. Sees all processes with sudo; otherwise
-# only this user's (MM_INUSE_PARTIAL=1, warned). An empty snapshot is fatal: it would mean "nothing
-# is in use".
+# target containing a mount is never removed through it. Sees all processes as root or with
+# passwordless sudo; otherwise only this user's (MM_INUSE_PARTIAL=1, warned). An empty snapshot is
+# fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
   local script='declare -A ns=(); { for p in /proc/[0-9]*; do
       readlink "$p/cwd" "$p/root" "$p/exe"
@@ -269,7 +280,7 @@ mm_inuse_refresh() {
     awk '"'"'NR > 1 && $8 ~ /^\// { print $8 }'"'"' /proc/net/unix; } 2>/dev/null |
     sed "s/ (deleted)\$//" | grep "^/" | sort -u'
   MM_INUSE_PARTIAL=0
-  if (( EUID == 0 )) || sudo -n true 2>/dev/null; then
+  if (( EUID == 0 )) || { [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; }; then
     MM_INUSE=$(mm_sudo bash -c "$script")
   else
     MM_INUSE_PARTIAL=1
@@ -279,7 +290,8 @@ mm_inuse_refresh() {
   [[ -n "$MM_INUSE" ]] || mm_die "could not list in-use paths; refusing to delete anything"
   if [[ "$MM_INUSE_PARTIAL" == 1 && -z "${_MM_PARTIAL_WARNED:-}" ]]; then
     _MM_PARTIAL_WARNED=1
-    mm_warn "No passwordless sudo: only your own processes are checked for in-use paths"
+    if [[ "$MM_NO_SUDO" == 1 ]]; then mm_warn "Running without sudo: only your own processes are checked for in-use paths"
+    else mm_warn "No passwordless sudo: only your own processes are checked for in-use paths"; fi
   fi
   mm_debug "in-use snapshot: $(mm_inuse_paths | wc -l) paths (partial=$MM_INUSE_PARTIAL)"
 }
@@ -502,7 +514,7 @@ mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 # never falls back to a permanent delete.
 # Returns 0 done (or would be, in dry-run), 1 refused (MM_SKIP_REASON set), 2 action failed.
 # Updates MM_FREED or MM_TRASHED (by mm_frees), MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals
-# other than "missing" and failures are written to the operations log.
+# other than "missing" and failures are written to the operations log; failures also to MM_ERRORS.
 # MM_AGENT_WAIVER=DIR mm_rm ... (for that one call) acts inside one agent's own session, state or
 # logs directory, which agent state protection otherwise covers: DIR must be exactly one directory
 # listed in lib/agents.sh and must be ALLOWED_ROOT. Only the agent state entries containing DIR are
@@ -555,7 +567,7 @@ mm_rm() {
       _mm_trash "$real" "$bytes" || return $?
     else
       if ! rm -rf --one-file-system -- "$real" 2>/dev/null; then # SAFE: mm_rm's single sink, after every check above
-        MM_SKIP_REASON="rm failed"; mm_log failed "$real" "$bytes" "rm failed"; return 2
+        MM_SKIP_REASON="rm failed"; MM_ERRORS+=("$real: rm failed"); mm_log failed "$real" "$bytes" "rm failed"; return 2
       fi
       mm_log remove "$real" "$bytes"
     fi
@@ -599,7 +611,8 @@ _mm_trash() {
   done
   if ! mv -T -- "$real" "$files/$name" 2>/dev/null; then
     rm -f -- "$info/$name.trashinfo" # SAFE: the .trashinfo this call just created
-    MM_SKIP_REASON="move to Trash failed"; mm_log failed "$real" "$bytes" "move to Trash failed"; return 2
+    MM_SKIP_REASON="move to Trash failed"; MM_ERRORS+=("$real: move to Trash failed")
+    mm_log failed "$real" "$bytes" "move to Trash failed"; return 2
   fi
   mm_log trash "$real" "$bytes" "$files/$name"
 }
