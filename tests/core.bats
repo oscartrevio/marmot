@@ -556,3 +556,21 @@ refused_all() {
   [ -e "$g/open.log" ]
   [ -e "$g/cli/b.log" ]
 }
+
+# ---------------------------------------------------------------- kubectl cache carve-out
+
+@test "carve-out: kubectl's discovery and HTTP caches open; ~/.kube/config and plugin caches stay shut" {
+  local k="$HOME/.kube"
+  mkdir -p "$k/cache/discovery/api.example.com_443/apps/v1" "$k/cache/http" "$k/cache/oidc-login" "$k/cache/kubelogin"
+  echo 'apiVersion: v1' >"$k/config"; echo '{}' >"$k/cache/discovery/api.example.com_443/apps/v1/serverresources.json"
+  echo r >"$k/cache/http/0a1b2c"; echo t >"$k/cache/oidc-login/abc"; echo t >"$k/cache/kubelogin/def.json"
+  echo s >"$k/cache/discovery/server.key"
+  mm_inuse_refresh
+  run try_rm "$k/cache/discovery/api.example.com_443" "$k/cache/discovery"
+  [ "$output" = "0 " ]
+  run try_rm "$k/cache/http/0a1b2c" "$k/cache/http"
+  [ "$output" = "0 " ]
+  refused_all "$k" "$k/config" "$k/cache" "$k/cache/discovery" "$k/cache/http"
+  refused_all "$k/cache" "$k/cache/oidc-login" "$k/cache/oidc-login/abc" "$k/cache/kubelogin/def.json"
+  refused_all "$k/cache/discovery" "$k/cache/discovery/server.key"
+}
