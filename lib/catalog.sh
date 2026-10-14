@@ -42,7 +42,7 @@
 #   caches                                          discovery/http caches
 #   every coding agent's state (lib/agents.sh)      settings, credentials, session transcripts
 # npm, pnpm, yarn, bun, uv (when installed) and the Go module cache are cleaned through their own
-# tools by cmd/clean.sh.
+# tools by cmd/clean.sh, like the mise, conda and Homebrew caches and (opt-in) the nix store.
 #
 # Users can add rows to $MM_CONFIG_DIR/catalog in the same format: cache rows only, and only for
 # directories inside $HOME (other rows are rejected with a warning).

@@ -109,6 +109,10 @@ Settings in `~/.config/marmot/config` (`$XDG_CONFIG_HOME` is honored):
 # their state) last written more than N days ago and not in use move to the Trash on every
 # `mm clean`, also without a terminal. `mm clean --sessions N` does the same for one run.
 sessions_keep_days = 30
+# nix garbage collection, off by default (old profile generations are your rollback points).
+# With it on, `mm clean` deletes nix profile generations older than 30 days and collects the
+# store paths nothing refers to any more.
+nix_gc = on
 ```
 
 Environment: `MM_STATUS_LINGER_AGE`, `MM_STATUS_VPN_IFACES`, `MM_OPTIMIZE_ORPHAN_AGE`,

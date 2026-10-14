@@ -25,7 +25,8 @@ Usage: mm clean [--whitelist] [--dry-run] [--debug]
 Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Cargo downloads,
 Gradle build cache and daemon logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, RubyGems,
 Bundler, Composer, CPAN, Hex, opam, Android, kubectl discovery, Jupyter runtime files when no
-Jupyter runs, ... see lib/catalog.sh), old
+Jupyter runs, ... see lib/catalog.sh), the mise, conda and Homebrew caches through their own
+cleanup commands (nix garbage collection only with nix_gc = on in the config file), old
 Playwright/Puppeteer/Cypress browser builds, old versions of coding-agent CLIs (the active one
 and one previous are kept), gcloud and Azure CLI logs older than 7 days (their credentials are
 never touched), apt/journal/snap leftovers, old kernels, rotated system logs and crash dumps
@@ -352,6 +353,10 @@ _clean_dev() {
   command -v yarn >/dev/null && _clean_yarn
   command -v uv >/dev/null && _clean_uv
   command -v go >/dev/null && _clean_go_modcache
+  command -v mise >/dev/null && _clean_mise
+  command -v conda >/dev/null && _clean_conda
+  command -v brew >/dev/null && _clean_brew
+  command -v nix-collect-garbage >/dev/null && _clean_nix
   _clean_catalog_caches
   _clean_cloud_logs
   _clean_cat_end
@@ -709,6 +714,98 @@ _clean_cloud_log_rm() {
     *) fail=$((fail + 1)) ;;
   esac
   return 0
+}
+
+# ---------------------------------------------------------------- mise, conda, Homebrew, nix
+
+# mise keeps downloads and version lists in its cache folder; installed tools live elsewhere
+# (~/.local/share/mise), so clearing it only costs re-downloads.
+_clean_mise() {
+  local dir="${MISE_CACHE_DIR:-$(mm_catalog_expand %CACHE%)/mise}"
+  _clean_tool "mise cache" mise "${dir%/}" mise cache clear
+}
+
+# conda: package tarballs, the index cache and log files of every package cache it can write.
+# Extracted packages, which environments hard-link to, stay. The dry-run figure counts exactly
+# those entries; a real run is measured on the package caches.
+_clean_conda() {
+  local label="conda package cache" busy d est before after freed
+  local -a dirs=() parts=()
+  while IFS= read -r d; do
+    [[ -d "$d" && -w "$d" ]] || continue
+    if mm_whitelisted "$d"; then mm_skip "$label" "whitelisted"; return; fi
+    dirs+=("$d")
+  done < <(env -C / timeout 30 conda config --show pkgs_dirs 2>/dev/null | awk '/^[[:space:]]*- / { sub(/^[[:space:]]*- /, ""); print }')
+  (( ${#dirs[@]} )) || return 0
+  if busy=$(_clean_busy "conda mamba micromamba"); then mm_skip "$label" "$busy busy"; return; fi
+  mapfile -d '' -t parts < <(find "${dirs[@]}" -mindepth 1 -maxdepth 1 \
+    \( -name '*.tar.bz2' -o -name '*.conda' -o -name cache -o -name .logs \) -print0 2>/dev/null)
+  est=$(mm_size "${parts[@]}")
+  if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$est"))"; return; fi
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") of tarballs, index cache and logs"; return
+  fi
+  before=$(mm_size "${dirs[@]}")
+  mm_run "$label" env -C / conda clean --yes --index-cache --tarballs --logfiles || return 0
+  after=$(mm_size "${dirs[@]}"); freed=$(( before > after ? before - after : 0 ))
+  _clean_track "$freed" 1
+  mm_ok "$label" "cleaned, $(mm_human "$freed")"
+}
+
+# Homebrew (on Linux, linuxbrew): old versions of installed formulae and downloads older than 30
+# days. The dry-run figure is brew's own (`brew cleanup -n`); a real run is measured on the Cellar
+# and the download cache.
+_clean_brew() {
+  local label="Homebrew cleanup" busy cache cellar size est before after freed
+  local -a brew=(env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 timeout 300 brew)
+  if busy=$(_clean_busy "brew f:Homebrew/brew\.(sh|rb)"); then mm_skip "$label" "$busy busy"; return; fi
+  cache=$("${brew[@]}" --cache 2>/dev/null) cellar=$("${brew[@]}" --cellar 2>/dev/null)
+  [[ "$cache" == /* && "$cellar" == /* ]] || { mm_skip "$label" "brew paths unknown"; return; }
+  if mm_whitelisted "$cache" || mm_whitelisted "$cellar"; then mm_skip "$label" "whitelisted"; return; fi
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    # "This operation would free approximately 1.2GB of disk space." (binary units)
+    size=$("${brew[@]}" cleanup --prune=30 -n 2>/dev/null | grep -oE 'free approximately [0-9.]+[KMGT]?B' | tail -1)
+    size=${size##* }
+    est=$(_clean_to_bytes "${size/B/iB}")
+    if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean"; return; fi
+    _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") (brew's estimate)"; return
+  fi
+  before=$(mm_size "$cache" "$cellar")
+  mm_run "$label" env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew cleanup --prune=30 || return 0
+  after=$(mm_size "$cache" "$cellar"); freed=$(( before > after ? before - after : 0 ))
+  _clean_track "$freed" 1
+  mm_ok "$label" "cleaned, $(mm_human "$freed")"
+}
+
+# nix is opt-in (nix_gc = on in $MM_CONFIG_FILE): deleting profile generations removes rollback
+# points, a choice only the user can make. With it on, generations older than 30 days go and the
+# store paths nothing refers to any more are collected; nix reports what that freed (a dry run
+# cannot know it).
+_clean_nix_enabled() {
+  local v
+  v=$(mm_config nix_gc) || return 1
+  [[ "${v,,}" == on || "${v,,}" == yes || "${v,,}" == true || "$v" == 1 ]]
+}
+
+_clean_nix() {
+  local label="nix store" busy log out freed
+  if ! _clean_nix_enabled; then mm_skip "$label" "opt-in: nix_gc = on in ${MM_CONFIG_FILE/#$HOME/\~}"; return; fi
+  if busy=$(_clean_busy "nix nix-build nix-shell nix-env nix-store nix-instantiate nix-collect-garbage"); then
+    mm_skip "$label" "$busy busy"; return
+  fi
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    mm_ok "$label" "would delete generations older than 30 days and collect garbage (size known after the run)"; return
+  fi
+  log=$(mktemp -t marmot-nix.XXXXXX) || return 0
+  if mm_run "nix-collect-garbage --delete-older-than 30d" env -C / bash -c \
+       'set -o pipefail; nix-collect-garbage --delete-older-than 30d 2>&1 | tee "$1"' _ "$log"; then
+    # "1234 store paths deleted, 567.89 MiB freed"
+    out=$(grep -oE '[0-9.]+ (bytes|KiB|MiB|GiB|TiB) freed' "$log" | tail -1)
+    freed=$(_clean_to_bytes "${out% freed}")
+    _clean_track "$freed" 1
+    mm_ok "$label" "collected, $(mm_human "$freed")"
+  fi
+  rm -f -- "$log" # SAFE: the mktemp copy of nix's output created above
 }
 
 # ---------------------------------------------------------------- 3. system
