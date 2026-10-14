@@ -15,6 +15,7 @@ _CLEAN_CATS=0            # categories that freed something
 _CLEAN_CAT_MARK=""       # "bytes items" snapshot at category start
 _CLEAN_MIN_TOOL=1048576  # below this a tool cache is not worth running the tool for
 _CLEAN_TRASH_DAYS=7      # Trash retention: items trashed longer ago than this are removed for good
+_CLEAN_IMAGE_DAYS=30     # unused Docker images built and pulled longer ago than this are offered
 
 _clean_usage() {
   cat <<EOF
@@ -23,14 +24,15 @@ Usage: mm clean [--whitelist] [--dry-run] [--debug]
 Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Cargo downloads,
 Gradle build cache, Deno, Bazel, Zig, Prisma, Electron, ... see lib/catalog.sh), old
 Playwright/Puppeteer/Cypress browser builds, old versions of coding-agent CLIs (the active one
-and one previous are kept), apt/journal/snap leftovers, old kernels, stopped Docker
-containers/dangling images/old build cache, and stale editor server builds.
+and one previous are kept), apt/journal/snap leftovers, old kernels, stopped Docker containers,
+dangling images, images no container uses (pulled or built 30+ days ago), old build cache, and
+stale editor server builds.
 Trash items deleted more than 7 days ago are removed for good. /tmp and /var/tmp are not
 swept: they hold other programs' runtime state, and the OS ages them (systemd-tmpfiles); their
 size and the OS policy are reported. Agent sessions, model stores, dependency repositories,
 Node versions and Docker volumes are never touched: they are listed with their size under
-"Kept for you to review". Steps that cannot be undone (Trash sweep, packages, containers) ask
-first and are skipped without a terminal.
+"Kept for you to review". Steps that cannot be undone (Trash sweep, packages, containers,
+images) ask first and are skipped without a terminal.
 
 Options:
   --whitelist   edit protected paths ($MM_WHITELIST_FILE)
@@ -540,6 +542,8 @@ _clean_docker() {
     _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
   fi
 
+  _clean_docker_images
+
   # Build cache unused for 7 days.
   b=$(timeout 30 docker builder du --filter until=168h 2>/dev/null | awk '/^Reclaimable:/ { print $2 }')
   b=$(_clean_to_bytes "${b:-0}")
@@ -584,6 +588,79 @@ _clean_docker_containers() {
   mm_run "docker rm $n containers" timeout 300 docker rm "${pick[@]}" || return 0 # SAFE: listed, confirmed set of containers stopped 7+ days; no -f, so running ones are refused
   _clean_track "$b" "$n"
   mm_ok "Stopped containers" "$(_clean_detail "$n" containers "$b") stopped 7+ days"
+}
+
+# Unused images: tagged images no container (running, stopped or never started) was created from,
+# built and last pulled or tagged 30+ days ago. Listed with the space only they hold (`docker
+# system df -v` unique size), confirmed, then removed one by one with `docker image rm` naming
+# every tag (an ID with several tags would need -f). Without -f the daemon still refuses an image
+# a container uses or that other images build on. Space freed is `docker system df` before/after.
+_clean_docker_images() {
+  local now cutoff out row id tags created tagged t last what n=0 b=0 est before after freed ok=0 fail=0
+  local -A used=() uniq=()
+  local -a cids=() ids=() lines=() rm_tags=() argv=()
+  now=$(date +%s); cutoff=$((now - _CLEAN_IMAGE_DAYS * 86400))
+  # Fail closed: an image whose container went unseen would be offered.
+  if ! out=$(timeout 30 docker ps -aq --no-trunc 2>/dev/null); then mm_skip "Unused images" "cannot list containers"; return; fi
+  [[ -n "$out" ]] && mapfile -t cids <<<"$out"
+  if (( ${#cids[@]} )); then
+    if ! out=$(timeout 60 docker container inspect -f '{{.Image}}' "${cids[@]}" 2>/dev/null); then
+      mm_skip "Unused images" "containers changed while listing"; return
+    fi
+    while IFS= read -r id; do [[ -n "$id" ]] && used[$id]=1; done <<<"$out"
+  fi
+  mapfile -t ids < <(timeout 30 docker image ls -q --no-trunc 2>/dev/null | awk 'NF && !seen[$0]++')
+  (( ${#ids[@]} )) || { mm_ok "Unused images" "none"; return; }
+  while IFS=$'\t' read -r id est; do [[ -n "$id" ]] && uniq[$id]=$(_clean_to_bytes "$est"); done < <(timeout 60 docker system df -v \
+    --format $'{{range .Images}}{{.ID}}\t{{.UniqueSize}}\n{{end}}' 2>/dev/null)
+  # `join` rejects RepoTags on older clients (Docker 27 decodes it as []interface{}); range works.
+  if ! out=$(timeout 60 docker image inspect -f $'{{.Id}}\t{{range .RepoTags}}{{.}} {{end}}\t{{.Created}}\t{{.Metadata.LastTagTime}}' \
+    "${ids[@]}" 2>/dev/null); then
+    mm_skip "Unused images" "cannot inspect images"; return
+  fi
+  while IFS=$'\t' read -r id tags created tagged; do
+    tags=${tags% }
+    [[ -n "$id" && -n "$tags" && -z "${used[$id]+x}" ]] || continue
+    t=$(date -d "$created" +%s 2>/dev/null) || continue
+    # Pulling or tagging counts as use: a base image built long ago may have been pulled today.
+    # Docker's classic image store records no pull time (LastTagTime stays zero until a local
+    # `docker tag`); then only the build date is known, and the listing says so.
+    what="built"
+    if last=$(date -d "$tagged" +%s 2>/dev/null) && (( last > 0 )); then
+      what="last pulled or tagged"; (( last > t )) && t=$last
+    fi
+    (( t > 0 && t < cutoff )) || continue
+    est=${uniq[$id]:-0}
+    rm_tags+=("$tags") n=$((n + 1)) b=$((b + est))
+    read -r row _ <<<"$tags"
+    [[ "$tags" == *" "* ]] && row+=" (+$(( $(wc -w <<<"$tags") - 1 )) tags)"
+    lines+=("$row · $what $(( (now - t) / 86400 ))d ago, $(mm_human "$est")")
+  done <<<"$out"
+  if (( n == 0 )); then mm_ok "Unused images" "none unused for ${_CLEAN_IMAGE_DAYS}+ days"; return; fi
+  for row in "${lines[@]:0:10}"; do mm_act "$row"; done
+  (( n > 10 )) && mm_act "(+$((n - 10)) more)"
+  _clean_ask "Unused images" "Remove $n images no container uses ($(mm_human "$b"))?" || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _clean_track "$b" "$n"; mm_ok "Unused images" "$(_clean_detail "$n" images "$b") unused for ${_CLEAN_IMAGE_DAYS}+ days"; return
+  fi
+  before=$(_clean_docker_images_bytes)
+  for tags in "${rm_tags[@]}"; do
+    read -r -a argv <<<"$tags"
+    if mm_run "docker image rm $tags" timeout 300 docker image rm "${argv[@]}"; then # SAFE: listed, confirmed image unused by every container; no -f, so the daemon refuses images in use
+      ok=$((ok + 1))
+    else
+      fail=$((fail + 1))
+    fi
+  done
+  after=$(_clean_docker_images_bytes); freed=$(( before > after ? before - after : 0 ))
+  _clean_track "$freed" "$ok"
+  mm_ok "Unused images" "$(_clean_detail "$ok" images "$freed" 0 "$fail") unused for ${_CLEAN_IMAGE_DAYS}+ days"
+}
+
+# _clean_docker_images_bytes — the Images total of `docker system df` (4 significant digits).
+_clean_docker_images_bytes() {
+  _clean_to_bytes "$(timeout 60 docker system df --format $'{{.Type}}\t{{.Size}}' 2>/dev/null |
+    awk -F'\t' '$1 == "Images" { print $2; exit }')"
 }
 
 # Volumes are never pruned (they hold databases); unused ones are listed for review.
