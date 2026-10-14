@@ -11,6 +11,7 @@ _mo() {
     'uninstall:Remove packages plus their leftovers'
     'schedule:Run a safe cleanup on a timer'
     'history:Show what marmot has changed'
+    'update:Update marmot from its git checkout'
   )
   global=('(-n --dry-run)'{-n,--dry-run}'[preview only]' '--debug[verbose logs]')
 
@@ -34,6 +35,7 @@ _mo() {
       else
         _arguments $global '(--daily --weekly)--daily[enable: run every day]' '(--daily --weekly)--weekly[enable: run every week]'
       fi ;;
+    update)    _arguments $global '--check[only report; exit 10 when an update is available]' ;;
   esac
 }
 
