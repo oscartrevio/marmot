@@ -1276,3 +1276,23 @@ firebase_and_agent_browser() {
   [ "$status" -eq 0 ]
   exist "$F/cloud-firestore-emulator-v1.19.7.jar" "$F/ui-v1.14.0" "$A/chrome-99.0.4844.51"
 }
+
+# ---------------------------------------------------------------- more stores to review
+
+@test "Ivy, sbt, pub, torch, W&B and Terraform plugin stores are listed for review, never touched" {
+  local h="$HOME" f
+  local -a files=("$h/.ivy2/cache/org.scala-lang/scala-library/jars/scala-library-2.13.12.jar"
+    "$h/.sbt/boot/scala-2.12.18/lib/scala-library.jar" "$h/.pub-cache/hosted/pub.dev/http-1.2.0/pubspec.yaml"
+    "$h/.cache/torch/hub/checkpoints/resnet50.pth" "$h/.cache/wandb/artifacts/obj/md5/ab/cd"
+    "$h/.local/share/wandb/artifacts/staging/f" "$h/.terraform.d/plugin-cache/registry.terraform.io/hashicorp/aws/5.31.0/linux_amd64/p")
+  for f in "${files[@]}"; do mkdir -p "$(dirname "$f")"; echo x >"$f"; done
+  mm_age "$h" 400
+  mm_test_clock 400
+  full_run
+  [ "$status" -eq 0 ]
+  exist "${files[@]}"
+  [ -z "$(mm_log_rows remove | grep -E '/(\.ivy2|\.sbt|\.pub-cache|torch|wandb|\.terraform\.d)/')" ]
+  for f in '~/.ivy2' '~/.sbt' '~/.pub-cache' '~/.cache/torch' '~/.cache/wandb' '~/.local/share/wandb' '~/.terraform.d/plugin-cache'; do
+    grep -qF "$f" <<<"${output#*Kept for you to review}" || { echo "not reviewed: $f"; false; }
+  done
+}

@@ -34,12 +34,16 @@
 #
 # Deliberately NOT listed as caches (they are what tools restore from, or hold user data):
 #   ~/.m2/repository, ~/.nuget/packages, ~/.ivy2   dependency stores builds resolve from
+#   ~/.sbt, ~/.pub-cache                            (these are reported instead)
 #   ~/.cargo/registry/src, ~/.cargo/bin, ~/.rustup  extracted crate sources rust-analyzer reads,
 #                                                   installed binaries and toolchains
 #   ~/.gradle/caches/modules-2, ~/.gradle/wrapper   dependency store and Gradle distributions
 #   %CACHE%/deno/location_data                      web storage of Deno programs
 #   %CACHE%/pypoetry/virtualenvs                    live project virtualenvs
-#   %CACHE%/huggingface, ~/.ollama                  downloaded models (reported instead)
+#   %CACHE%/huggingface, ~/.ollama, %CACHE%/torch   downloaded models (reported instead)
+#   %CACHE%/wandb, %DATA%/wandb                     W&B artifacts and uploads in flight (reported)
+#   ~/.terraform.d/plugin-cache                     initialized projects symlink their providers
+#                                                   into it (reported instead)
 #   ~/.kube/cache/oidc-login and other plugin       login token caches next to kubectl's
 #   caches                                          discovery/http caches
 #   every coding agent's state (lib/agents.sh)      settings, credentials, session transcripts
@@ -121,6 +125,18 @@ report|NuGet packages|~/.nuget/packages|||dotnet nuget locals global-packages --
 report|Gradle distributions|~/.gradle/wrapper/dists||count|remove versions no project uses
 report|Rust toolchains|~/.rustup/toolchains||count|rustup toolchain list, then rustup toolchain uninstall <name>
 report|Podman storage|%DATA%/containers|||podman system df, then podman system prune
+report|Ivy cache|~/.ivy2|||resolve target for sbt and Ant builds; remove modules under ~/.ivy2/cache no project uses
+report|sbt boot and launchers|~/.sbt|||remove versions under ~/.sbt/boot that no project uses
+report|Dart/Flutter pub cache|$PUB_CACHE|||dart pub cache clean (or flutter pub cache clean); projects fetch again with pub get
+report|Dart/Flutter pub cache|~/.pub-cache|||dart pub cache clean (or flutter pub cache clean); projects fetch again with pub get
+report|PyTorch hub models|$TORCH_HOME|||downloaded model weights: remove the checkpoints under hub/ you no longer use
+report|PyTorch hub models|%CACHE%/torch|||downloaded model weights: remove the checkpoints under hub/ you no longer use
+report|W&B artifact cache|$WANDB_CACHE_DIR|||wandb artifact cache cleanup 1GB (keeps the most recently used 1GB)
+report|W&B artifact cache|%CACHE%/wandb|||wandb artifact cache cleanup 1GB (keeps the most recently used 1GB)
+report|W&B staged uploads|$WANDB_DATA_DIR|||files staged for upload; remove once your runs have synced (wandb sync)
+report|W&B staged uploads|%DATA%/wandb|||files staged for upload; remove once your runs have synced (wandb sync)
+report|Terraform plugin cache|$TF_PLUGIN_CACHE_DIR|||initialized projects link into it: remove old provider versions, then terraform init where needed
+report|Terraform plugin cache|~/.terraform.d/plugin-cache|||initialized projects link into it: remove old provider versions, then terraform init where needed
 report|fnm Node versions|$FNM_DIR/node-versions||count|fnm list, then fnm uninstall <version>
 report|fnm Node versions|%DATA%/fnm/node-versions||count|fnm list, then fnm uninstall <version>
 report|fnm Node versions|~/.fnm/node-versions||count|fnm list, then fnm uninstall <version>
