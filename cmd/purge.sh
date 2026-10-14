@@ -32,18 +32,25 @@ _PURGE_SKIP_HOME=(snap go/pkg anaconda3 miniconda3 miniforge3 mambaforge microma
 _PURGE_MAXDEPTH=8
 _PURGE_SCAN_TIMEOUT=60
 _PURGE_GIT_TIMEOUT=20
-# Abandoned worktrees: idle days before a clean worktree is offered, by branch state.
-_PURGE_WT_MERGED_DAYS=14
+# Worktrees: a finished one (its work landed) is offered once idle this many seconds; an unmerged
+# one only after this many days. Branches are kept either way.
+_PURGE_WT_FINISHED_IDLE=3600
 _PURGE_WT_UNMERGED_DAYS=30
+# gh (pull request state): per-call time limit; _PURGE_GH caches "logged in" for one run.
+_PURGE_GH_TIMEOUT=10
+_PURGE_GH=""
 
 _purge_usage() {
   cat <<EOF
 Usage: mm purge [DIR...] [options]
 
-1. Abandoned git worktrees: linked worktrees that git reports clean, that are not locked or in
-   use, and whose commits are on a branch or tag, idle ${_PURGE_WT_MERGED_DAYS}+ days (branch merged or
-   upstream gone) or ${_PURGE_WT_UNMERGED_DAYS}+ days (unmerged; the branch is kept). Removed with
-   \`git worktree remove\` (never --force), only after you confirm on a terminal.
+1. Finished and abandoned git worktrees: linked worktrees that git reports clean (no untracked
+   files either), that are not locked or in use, and whose commits are on a branch or tag.
+   Finished ones are offered once idle 1+ hour: the branch is merged into the default branch
+   (also squash- or rebase-merged), its upstream branch was deleted, or its pull request is
+   merged or closed (asked through gh when it is installed and logged in). Unmerged ones after
+   ${_PURGE_WT_UNMERGED_DAYS}+ idle days. Removed with \`git worktree remove\` (never --force; the branch is kept),
+   only after you confirm on a terminal.
 2. Build artifacts (node_modules, .next, target, dist, venvs, caches). Projects idle longer
    than --days are selected by default. Never touched: projects with a running process inside
    them, anything git tracks, and anything whose git state can't be read. Virtualenvs (venv,
@@ -306,6 +313,11 @@ _purge_age() {
   else echo "$(( d / 365 ))y"; fi
 }
 
+# _purge_idle_label SECONDS — "5h" under a day, else like _purge_age.
+_purge_idle_label() {
+  if (( $1 < 86400 )); then echo "$(( $1 / 3600 ))h"; else _purge_age $(( $1 / 86400 )); fi
+}
+
 _purge_tilde() { printf '%s' "${1/#"$HOME"/"~"}"; }
 
 # _purge_clock — a monotonic-enough stamp in microseconds, for the scan timer.
@@ -438,7 +450,7 @@ _purge_default_ref() {
   done
 }
 
-# _purge_wt_idle WORKTREE — whole days since the worktree's newest activity: its own and its
+# _purge_wt_idle WORKTREE — seconds since the worktree's newest activity: its own and its
 # top-level files' mtimes (artifacts are not descended into), its git dir's index/HEAD, and the
 # HEAD commit time.
 _purge_wt_idle() {
@@ -450,7 +462,7 @@ _purge_wt_idle() {
   } | sort -n | tail -n1)
   newest="${newest%.*}"
   [[ "$newest" =~ ^[0-9]+$ ]] || { echo 0; return; }
-  echo $(( ( $(date +%s) - newest ) / 86400 ))
+  echo $(( $(date +%s) - newest ))
 }
 
 # _purge_wt_clean WORKTREE — 0 clean (ignored files allowed), 1 has changes, 2 unknown.
@@ -461,88 +473,153 @@ _purge_wt_clean() {
   [[ -z "$out" ]]
 }
 
-# _purge_wt_eval I — decide worktree I. Sets _WT_STATE (offer | keep | recent | skip),
-# _WT_WHY (keep reason), _WT_IDLE (days), _WT_MERGE (merged | upstream gone | unmerged).
+# _purge_wt_landed COMMON HEAD BRANCH — how a worktree's work reached the default branch, by git
+# alone (read-only, no fetch): "merged" (HEAD is an ancestor), "rebase-merged" (git cherry: every
+# commit has an equivalent patch there), "squash-merged" (the branch's whole diff from the merge
+# base has the patch id of one commit there: what git cherry reports for a commit-tree of the
+# branch tree on the merge base, without writing that commit), "upstream gone" (its upstream
+# branch was deleted); else "unmerged".
+_purge_wt_landed() {
+  local c="$1" head="$2" br="$3" def out mb want track
+  def=$(_purge_default_ref "$c")
+  if [[ -n "$def" ]]; then
+    _purge_gitcmd --git-dir="$c" merge-base --is-ancestor "$head" "$def" && { echo merged; return; }
+    out=$(_purge_gitcmd --git-dir="$c" cherry "$def" "$head")
+    if [[ -n "$out" && "$out" != "+"* && "$out" != *$'\n+'* ]]; then echo rebase-merged; return; fi
+    if mb=$(_purge_gitcmd --git-dir="$c" merge-base "$def" "$head") && [[ -n "$mb" ]]; then
+      want=$(_purge_gitcmd --git-dir="$c" diff --no-color --no-ext-diff --no-textconv "$mb" "$head" |
+        _purge_gitcmd patch-id --stable | cut -d' ' -f1)
+      if [[ -n "$want" ]] && _purge_gitcmd --git-dir="$c" log --no-color --no-ext-diff --no-textconv \
+           --no-merges -p --format='commit %H' "$mb..$def" | _purge_gitcmd patch-id --stable |
+           cut -d' ' -f1 | grep -qxF -- "$want"; then
+        echo squash-merged; return
+      fi
+    fi
+  fi
+  if [[ -n "$br" ]]; then
+    track=$(_purge_gitcmd --git-dir="$c" for-each-ref --format='%(upstream:track)' "refs/heads/$br")
+    [[ "$track" == "[gone]" ]] && { echo "upstream gone"; return; }
+  fi
+  echo unmerged
+}
+
+# _purge_gh_ready — 0 if gh is installed and holds a login (checked offline, once per run).
+_purge_gh_ready() {
+  if [[ -z "$_PURGE_GH" ]]; then
+    _PURGE_GH=0
+    command -v gh >/dev/null &&
+      GH_PROMPT_DISABLED=1 timeout "$_PURGE_GH_TIMEOUT" gh auth token </dev/null >/dev/null 2>&1 && _PURGE_GH=1
+  fi
+  (( _PURGE_GH ))
+}
+
+# _purge_pr_state WORKTREE BRANCH — state of the pull request for BRANCH (its upstream branch
+# name when it has one) per gh: OPEN, MERGED or CLOSED. Nothing when gh is missing or logged out,
+# finds no PR, fails or times out; gh never gets a terminal to prompt on.
+_purge_pr_state() {
+  _purge_gh_ready || return 0
+  local name
+  name=$(_purge_git "$1" for-each-ref --format='%(upstream:lstrip=3)' "refs/heads/$2")
+  env -C "$1" -u GIT_DIR -u GIT_WORK_TREE GH_PROMPT_DISABLED=1 GH_NO_UPDATE_NOTIFIER=1 GH_PAGER=cat \
+    timeout "$_PURGE_GH_TIMEOUT" gh pr view "${name:-$2}" --json state --jq .state </dev/null 2>/dev/null
+}
+
+# _purge_wt_eval I — decide worktree I. Sets _WT_STATE, _WT_WHY (keep reason), _WT_IDLE (seconds)
+# and _WT_MERGE (a _purge_wt_landed label, "PR merged", "PR closed" or "unmerged"):
+#   offer   clean, unlocked, not in use, commits reachable, idle >= 1h, and finished (its work
+#           landed) or unmerged and idle >= 30 days
+#   keep    would be offered but one of those checks fails (_WT_WHY says which)
+#   active  idle < 1h, or unmerged and idle < 30 days (not shown)
+#   skip    the main worktree, or not a worktree of this repository
 _purge_wt_eval() {
   local i="$1" w="${_WT_PATH[$1]}" c="${_WT_COMMON[$1]}" head="${_WT_HEAD[$1]}" br="${_WT_BRANCH[$1]}"
-  local rc def track need
+  local rc why="" holders
   _WT_STATE=skip _WT_WHY="" _WT_IDLE=0 _WT_MERGE=""
   [[ "${_WT_IS_MAIN[$i]}" == 0 ]] || return 0
   [[ "$w" == /?* && "$w" != *[[:cntrl:]]* && -d "$w" && ! -L "$w" ]] || return 0
   # the directory must really be a worktree of this repository
   [[ "$(_purge_common_dir "$w/.git")" == "$c" ]] || { mm_debug "not a worktree of $c: $w"; return 0; }
   _WT_IDLE=$(_purge_wt_idle "$w")
-  (( _WT_IDLE >= _PURGE_WT_MERGED_DAYS )) || { _WT_STATE=recent; return 0; }
-  _WT_STATE=keep
-  mm_protected "$w" >/dev/null && { _WT_WHY="protected"; return 0; }
-  [[ "${_WT_LOCKED[$i]}" == 1 ]] && { _WT_WHY="locked"; return 0; }
-  mm_in_use "$w" && { _WT_WHY="in use"; return 0; }
+  (( _WT_IDLE >= _PURGE_WT_FINISHED_IDLE )) || { _WT_STATE=active; return 0; }
   # Agent state (e.g. ~/.cursor/worktrees) is waived here only: git itself vouches for the content.
-  MM_KEEP_AGENT_STATE=0 mm_whitelisted "$w" && { _WT_WHY="whitelisted"; return 0; }
-  rc=0; _purge_wt_clean "$w" || rc=$?
-  case "$rc" in
-    0) ;;
-    1) _WT_WHY="uncommitted or untracked changes"; return 0 ;;
-    *) _WT_WHY="could not verify git state"; return 0 ;;
-  esac
-  [[ "$head" =~ ^[0-9a-f]{7,64}$ ]] || { _WT_WHY="could not verify git state"; return 0; }
-  if [[ -z "$br" ]]; then
+  if mm_protected "$w" >/dev/null; then why="protected"
+  elif [[ "${_WT_LOCKED[$i]}" == 1 ]]; then why="locked"
+  elif mm_in_use "$w"; then why="in use"
+  elif MM_KEEP_AGENT_STATE=0 mm_whitelisted "$w"; then why="whitelisted"
+  else
+    rc=0; _purge_wt_clean "$w" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) why="uncommitted or untracked changes" ;;
+      *) why="could not verify git state" ;;
+    esac
+  fi
+  [[ -n "$why" || "$head" =~ ^[0-9a-f]{7,64}$ ]] || why="could not verify git state"
+  if [[ -z "$why" && -z "$br" ]]; then
     # detached: removing it must not orphan commits no branch or tag holds
-    local holders
-    holders=$(_purge_gitcmd --git-dir="$c" for-each-ref --contains "$head" --count=1 --format=x refs/heads refs/tags) ||
-      { _WT_WHY="could not verify git state"; return 0; }
-    [[ -n "$holders" ]] || { _WT_WHY="detached HEAD with commits on no branch or tag"; return 0; }
+    if ! holders=$(_purge_gitcmd --git-dir="$c" for-each-ref --contains "$head" --count=1 --format=x refs/heads refs/tags); then
+      why="could not verify git state"
+    elif [[ -z "$holders" ]]; then
+      why="detached HEAD with commits on no branch or tag"
+    fi
   fi
   _WT_MERGE=unmerged
-  def=$(_purge_default_ref "$c")
-  if [[ -n "$def" ]] && _purge_gitcmd --git-dir="$c" merge-base --is-ancestor "$head" "$def"; then
-    _WT_MERGE=merged
-  elif [[ -n "$br" ]]; then
-    track=$(_purge_gitcmd --git-dir="$c" for-each-ref --format='%(upstream:track)' "refs/heads/$br") || track=""
-    [[ "$track" == "[gone]" ]] && _WT_MERGE="upstream gone"
+  [[ "$head" =~ ^[0-9a-f]{7,64}$ ]] && _WT_MERGE=$(_purge_wt_landed "$c" "$head" "$br")
+  # gh is a network call: only for worktrees that could be offered
+  if [[ -z "$why" && "$_WT_MERGE" == unmerged && -n "$br" ]]; then
+    case "$(_purge_pr_state "$w" "$br")" in
+      MERGED) _WT_MERGE="PR merged" ;;
+      CLOSED) _WT_MERGE="PR closed" ;;
+    esac
   fi
-  need=$_PURGE_WT_MERGED_DAYS; [[ "$_WT_MERGE" == unmerged ]] && need=$_PURGE_WT_UNMERGED_DAYS
-  if (( _WT_IDLE < need )); then _WT_WHY="unmerged, idle ${_WT_IDLE}d of ${need}d"; return 0; fi
+  if [[ "$_WT_MERGE" == unmerged ]] && (( _WT_IDLE < _PURGE_WT_UNMERGED_DAYS * 86400 )); then
+    _WT_STATE=active; return 0
+  fi
+  if [[ -n "$why" ]]; then _WT_STATE=keep _WT_WHY="$why"; return 0; fi
   _WT_STATE=offer
 }
 
-# _purge_worktrees YES ROOT... — the "Abandoned worktrees" section for every linked worktree
-# reachable from ROOTs. Removes only after a terminal confirmation; never with --yes or in a dry
-# run. Sets _PURGE_WT_DONE / _PURGE_WT_BYTES (removed) and _PURGE_WT_OFFERED / _PURGE_WT_OFFER_BYTES,
-# all counted in frees (mm_size_frees), and _PURGE_WT_PNPM (offered pnpm-managed worktrees).
+# _purge_worktrees YES ROOT... — the worktrees section for every linked worktree reachable from
+# ROOTs: finished ones (work landed) and abandoned ones (unmerged, idle 30+ days). Removes only
+# after a terminal confirmation; never with --yes or in a dry run. Sets _PURGE_WT_DONE /
+# _PURGE_WT_BYTES (removed) and _PURGE_WT_OFFERED / _PURGE_WT_OFFER_BYTES, all counted in frees
+# (mm_size_frees), _PURGE_WT_FINISHED (offered finished ones) and _PURGE_WT_PNPM (offered
+# pnpm-managed worktrees).
 _purge_worktrees() {
   local yes="$1"; shift
-  local i n=0 recent=0 sz fr pn line idx desc
+  local i n=0 active=0 sz fr pn line idx desc
   local -a offer=() lines=() sel=()
   local -A size=() label=() pnpm=()
   _PURGE_WT_DONE=0 _PURGE_WT_BYTES=0 _PURGE_WT_OFFERED=0 _PURGE_WT_OFFER_BYTES=0 _PURGE_WT_PNPM=()
+  _PURGE_WT_FINISHED=0
   for i in "${!_WT_PATH[@]}"; do
     [[ "${_WT_IS_MAIN[$i]}" == 0 ]] && _purge_covered "${_WT_PATH[$i]}" "$@" && n=$((n + 1))
   done
   (( n )) || return 0
   (( MM_INUSE_TAKEN )) || mm_inuse_refresh
-  mm_section "Abandoned worktrees"
+  mm_section "Finished and abandoned worktrees"
   for i in "${!_WT_PATH[@]}"; do
     { [[ "${_WT_IS_MAIN[$i]}" == 0 ]] && _purge_covered "${_WT_PATH[$i]}" "$@"; } || continue
     _purge_wt_eval "$i"
+    desc="${_WT_BRANCH[$i]:+branch ${_WT_BRANCH[$i]}}"; desc="${desc:-detached}"
+    if [[ "$_WT_MERGE" == unmerged ]]; then desc+=" · unmerged (branch kept)"; else desc+=" · $_WT_MERGE"; fi
     case "$_WT_STATE" in
-      recent) recent=$((recent + 1)) ;;
-      keep) _purge_kept "$(_purge_tilde "${_WT_PATH[$i]}")" "$_WT_WHY" ;;
+      active) active=$((active + 1)) ;;
+      keep) _purge_kept "$(_purge_tilde "${_WT_PATH[$i]}") · $desc" "$_WT_WHY" ;;
       offer)
         read -r sz fr < <(mm_size_frees "${_WT_PATH[$i]}")
         size[$i]=${fr:-0} pn=0
         _purge_pnpm_managed "${_WT_PATH[$i]}" && { pn=1 pnpm[$i]=1; _PURGE_WT_PNPM+=("${_WT_PATH[$i]}"); }
-        desc="${_WT_BRANCH[$i]:+branch ${_WT_BRANCH[$i]}}"; desc="${desc:-detached}"
-        [[ "$_WT_MERGE" == unmerged ]] && desc+=" · unmerged (branch kept)" || desc+=" · $_WT_MERGE"
-        label[$i]="$(_purge_tilde "${_WT_PATH[$i]}") · $desc · idle $(_purge_age "$_WT_IDLE") · $(_purge_size_label "${sz:-0}" "${size[$i]}" "$pn")"
+        label[$i]="$(_purge_tilde "${_WT_PATH[$i]}") · $desc · idle $(_purge_idle_label "$_WT_IDLE") · $(_purge_size_label "${sz:-0}" "${size[$i]}" "$pn")"
         printf '  %s●%s %s\n' "$C_YELLOW" "$C_RESET" "${label[$i]}"
         offer+=("$i")
         _PURGE_WT_OFFERED=$((_PURGE_WT_OFFERED + 1)) _PURGE_WT_OFFER_BYTES=$((_PURGE_WT_OFFER_BYTES + size[$i]))
+        [[ "$_WT_MERGE" == unmerged ]] || _PURGE_WT_FINISHED=$((_PURGE_WT_FINISHED + 1))
         ;;
     esac
   done
-  (( recent )) && mm_info "${C_DIM}$recent active worktree$( (( recent > 1 )) && echo s) (idle < ${_PURGE_WT_MERGED_DAYS}d) not shown${C_RESET}"
-  (( ${#offer[@]} )) || { mm_ok "No abandoned worktrees"; return 0; }
+  (( active )) && mm_info "${C_DIM}$active worktree$( (( active > 1 )) && echo s) in progress not shown (idle < 1h, or unmerged and idle < ${_PURGE_WT_UNMERGED_DAYS}d)${C_RESET}"
+  (( ${#offer[@]} )) || { mm_ok "No finished or abandoned worktrees"; return 0; }
 
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_info "${C_DIM}A real run asks before removing them (git worktree remove; branches are kept).${C_RESET}"
@@ -686,8 +763,8 @@ mm_cmd_main() {
   mm_info "${C_DIM}Scanned ${shown[*]}${extra[*]:+ + ${#extra[@]} worktree dirs elsewhere} in $((dt / 10)).$((dt % 10))s · artifacts idle > ${days}d are stale${C_RESET}"
   for r in "${timed[@]}"; do mm_warn "Scan of $(_purge_tilde "$r") stopped after ${_PURGE_SCAN_TIMEOUT}s: results are partial"; done
 
-  # ---- abandoned worktrees (before artifacts: removing one takes its artifacts with it)
-  _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=()
+  # ---- finished and abandoned worktrees (before artifacts: removing one takes its artifacts with it)
+  _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=() _PURGE_GH=""
   _purge_worktrees "$yes" "${roots[@]}"
 
   # ---- validate artifacts
@@ -911,7 +988,7 @@ _purge_banner() {
     (( MM_TRASHED )) && trash=" | Would move to Trash: $(mm_human "$MM_TRASHED")"
     if (( _PURGE_WT_OFFERED )); then
       est=0; (( ${#_PURGE_WT_PNPM[@]} )) && est=$(_purge_store_frees "${_PURGE_WT_PNPM[@]}")
-      wt="Abandoned worktrees: $_PURGE_WT_OFFERED (frees $(mm_human "$_PURGE_WT_OFFER_BYTES")"
+      wt="Worktrees to remove: $_PURGE_WT_OFFERED, $_PURGE_WT_FINISHED finished (frees $(mm_human "$_PURGE_WT_OFFER_BYTES")"
       (( ${est:-0} > 0 )) && wt+=" + ~$(mm_human "$est") from the pnpm store"
       wt+=", removed only after you confirm)"
     fi
