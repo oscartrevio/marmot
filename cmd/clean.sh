@@ -322,6 +322,7 @@ _clean_dev() {
   command -v bun >/dev/null && _clean_bun
   command -v yarn >/dev/null && _clean_yarn
   command -v uv >/dev/null && _clean_uv
+  command -v go >/dev/null && _clean_go_modcache
   _clean_catalog_caches
   _clean_cat_end
 }
@@ -508,6 +509,19 @@ _clean_uv() {
   dir=$(env -C / timeout 15 uv cache dir 2>/dev/null | tail -1)
   [[ "$dir" == /* ]] || { mm_skip "uv cache" "cache dir unknown"; return; }
   _clean_tool --prune "uv cache" "uv uvx" "$dir" uv cache prune
+}
+
+# Go module cache (GOMODCACHE, default ~/go/pkg/mod) through `go clean -modcache`, which copes with
+# the read-only permissions Go gives module files. Builds download missing modules again (checked
+# against go.sum), so it is a cache like npm's. Skipped while go, gopls or dlv runs (a build, the
+# language server or a debug session reads module sources), and with GOPROXY=off, where nothing
+# could be downloaded back. GOTOOLCHAIN=local: never fetch a toolchain just to clean.
+_clean_go_modcache() {
+  local -a env=()
+  mapfile -t env < <(env -C / GOTOOLCHAIN=local timeout 15 go env GOMODCACHE GOPROXY 2>/dev/null)
+  [[ "${env[0]:-}" == /* ]] || { mm_skip "Go module cache" "location unknown"; return; }
+  if [[ "${env[1]:-}" == off ]]; then mm_skip "Go module cache" "GOPROXY=off, modules could not be downloaded again"; return; fi
+  _clean_tool "Go module cache" "go gopls dlv" "${env[0]}" GOTOOLCHAIN=local go clean -modcache
 }
 
 # ---------------------------------------------------------------- 3. system
