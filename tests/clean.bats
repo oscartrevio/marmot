@@ -76,7 +76,9 @@ blob() { mkdir -p "$(dirname "$1")"; head -c 1100000 /dev/urandom >"$1"; }
 fake_tools() {
   fake_rec npm
   fake_rec bun
-  fake_rec pnpm '[[ "$*" == "store path" ]] && echo "$SB/store"; exit 0'
+  # like pnpm 9: a probe file goes into the working directory first
+  fake_rec pnpm '[[ -w . ]] || { echo "EACCES: permission denied" >&2; exit 243; }
+[[ "$*" == "store path" ]] && echo "$SB/store"; exit 0'
   fake_rec yarn 'case "$*" in --version) echo 1.22.22 ;; "cache dir") echo "$SB/yarncache" ;; esac'
   blob "$HOME/.npm/_cacache/blob"; blob "$HOME/.bun/install/cache/blob"
   blob "$SB/store/blob"; blob "$SB/yarncache/blob"
@@ -252,7 +254,7 @@ fake_tools() {
   exist "$HOME/.npm/_cacache/blob" "$SB/store/blob" "$SB/yarncache/blob"
 }
 
-@test "tool cleans run from / so a project's yarnrc/npmrc/.yarn/cache never applies" {
+@test "tool cleans run outside the project, so a project's yarnrc/npmrc/.yarn/cache never applies" {
   fake_tools
   mkdir -p "$SB/project/.yarn/cache"; echo 'cacheFolder: .yarn/cache' >"$SB/project/.yarnrc.yml"
   src
@@ -260,12 +262,13 @@ fake_tools() {
   cd "$SB/project"
   run _clean_dev
   grep -qxF '/ npm cache clean --force' "$CALLS"
-  grep -qxF '/ pnpm store path' "$CALLS"
-  grep -qxF '/ pnpm store prune' "$CALLS"
+  # pnpm writes into its working directory: it runs from HOME, not from a read-only /
+  grep -qxF "$HOME pnpm store path" "$CALLS"
+  grep -qxF "$HOME pnpm store prune" "$CALLS"
   grep -qxF '/ yarn cache dir' "$CALLS"
   grep -qxF '/ yarn cache clean' "$CALLS"
   grep -qxF '/ bun pm cache rm' "$CALLS"
-  none grep -v '^/ ' "$CALLS"
+  none grep -vE "^(/|$HOME) " "$CALLS"
 }
 
 # ---------------------------------------------------------------- docker

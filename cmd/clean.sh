@@ -365,19 +365,21 @@ _clean_yarn() {
   _clean_tool "yarn cache" yarn "$dir" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 yarn cache clean
 }
 
+# pnpm writes a probe file into its working directory before it answers anything, so it runs from
+# $HOME: from / every non-root user got EACCES and the store was never pruned.
 _clean_pnpm() {
   local store before after freed
-  store=$(env -C / timeout 15 pnpm store path 2>/dev/null) || return 0
+  store=$(env -C "$HOME" timeout 15 pnpm store path 2>/dev/null) || return 0
   [[ -d "$store" ]] || return 0
   if mm_whitelisted "$store"; then mm_skip "pnpm store" "whitelisted"; return; fi
   if mm_proc_running pnpm; then mm_skip "pnpm store" "pnpm busy"; return; fi
   before=$(mm_size "$store")
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    mm_run "pnpm store prune" env -C / pnpm store prune
+    mm_run "pnpm store prune" env -C "$HOME" pnpm store prune
     mm_ok "pnpm store" "$(mm_human "$before") store, would prune unreferenced packages (size unknown until run)"
     return
   fi
-  mm_run "pnpm store prune" env -C / pnpm store prune || return 0
+  mm_run "pnpm store prune" env -C "$HOME" pnpm store prune || return 0
   after=$(mm_size "$store"); freed=$(( before > after ? before - after : 0 ))
   _clean_track "$freed" 1
   mm_ok "pnpm store" "pruned, $(mm_human "$freed")"
