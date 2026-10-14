@@ -2,7 +2,7 @@
 _mm() {
   local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]:-}
   if (( COMP_CWORD == 1 )); then
-    mapfile -t COMPREPLY < <(compgen -W "clean status analyze optimize purge uninstall history --help --version" -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W "clean status analyze optimize purge uninstall schedule history --help --version" -- "$cur")
     return
   fi
   local opts="--dry-run -n --debug --help"
@@ -15,6 +15,12 @@ _mm() {
     analyze)   opts+=" --json" ;;
     purge)     opts+=" --yes -y --all --days --paths" ;;
     history)   opts="--json --all --limit -l --help" ;;
+    schedule)
+      if (( COMP_CWORD == 2 )) && [[ "$cur" != -* ]]; then
+        mapfile -t COMPREPLY < <(compgen -W "status enable disable run" -- "$cur"); return
+      fi
+      opts="--dry-run -n --help"
+      [[ "${COMP_WORDS[2]:-}" == enable ]] && opts+=" --daily --weekly" ;;
   esac
   if [[ "$cur" == -* ]]; then
     mapfile -t COMPREPLY < <(compgen -W "$opts" -- "$cur")
