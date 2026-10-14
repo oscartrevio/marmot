@@ -26,7 +26,7 @@ _optimize_ago() {
 }
 
 # _optimize_meminfo KEY — value in bytes from /proc/meminfo.
-_optimize_meminfo() { awk -v k="$1:" '$1 == k { print $2 * 1024; exit }' /proc/meminfo; }
+_optimize_meminfo() { awk -v k="$1:" '$1 == k { printf "%.0f\n", $2 * 1024; exit }' /proc/meminfo; }
 
 # ---------------------------------------------------------------- diagnosis (read-only)
 
@@ -37,7 +37,7 @@ _optimize_cpu_ticks() {
     comm = substr($0, RSTART + 1, RLENGTH - 2)
     n = split(substr($0, RSTART + RLENGTH + 1), f, " ")
     if (n < 20) next
-    printf "%s:%s\t%d\t%s\n", $1, f[20], f[12] + f[13], comm
+    printf "%s:%s\t%.0f\t%s\n", $1, f[20], f[12] + f[13], comm
   }'
 }
 
@@ -103,7 +103,7 @@ _optimize_diagnose() {
   # Memory hogs: top 3 processes by RSS + swap.
   local hogs
   hogs=$(cat /proc/[0-9]*/status 2>/dev/null | awk '
-    function emit() { if (name != "" && kb > 0) printf "%d\t%s (%s)\n", kb * 1024, name, pid }
+    function emit() { if (name != "" && kb > 0) printf "%.0f\t%s (%s)\n", kb * 1024, name, pid }
     /^Name:/ { emit(); name = substr($0, 7); pid = ""; kb = 0; next }
     /^Pid:/ { pid = $2 }
     /^(VmRSS|VmSwap):/ { kb += $2 }
@@ -291,7 +291,7 @@ _optimize_updates() {
 
 # ---------------------------------------------------------------- swap
 
-_optimize_swap_total() { awk 'NR > 1 { t += $3 } END { print t * 1024 }' /proc/swaps; }
+_optimize_swap_total() { awk 'NR > 1 { t += $3 } END { printf "%.0f\n", t * 1024 }' /proc/swaps; }
 
 _optimize_swap() {
   mm_section "Memory"
@@ -381,7 +381,7 @@ _optimize_orphans() {
     _optimize_cwd_deleted "$pid" || continue
     age=$(mm_proc_age "$pid") || continue
     (( age >= min_age )) || continue
-    bytes=$(awk '/^(VmRSS|VmSwap):/ { kb += $2 } END { print kb * 1024 }' "$p/status" 2>/dev/null)
+    bytes=$(awk '/^(VmRSS|VmSwap):/ { kb += $2 } END { printf "%.0f\n", kb * 1024 }' "$p/status" 2>/dev/null)
     # The process may exit mid-scan: skip it quietly.
     { comm=$(<"$p/comm"); } 2>/dev/null || continue
     cwd=$(readlink "$p/cwd" 2>/dev/null) || continue; cwd=${cwd% (deleted)}
