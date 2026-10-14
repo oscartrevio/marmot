@@ -1,6 +1,7 @@
 #!/usr/bin/env bats
-# mm optimize: orphan detection/kill guards, terminal-only confirmations, apt subset safety,
-# swap reset restoring every device, and a dry run that changes nothing.
+# mm optimize: orphan detection/kill guards, orphaned headless browsers, terminal-only
+# confirmations, apt subset safety, swap reset restoring every device, and a dry run that changes
+# nothing.
 
 setup() {
   load helpers/common
@@ -12,6 +13,7 @@ setup() {
 teardown() {
   local p
   for p in ${EXTRA_PIDS:-}; do kill $(mm_test_pids --parent "$p") "$p" 2>/dev/null; done
+  for p in ${FAKE_PIDS:-}; do kill -KILL "$p" 2>/dev/null; done
   mm_test_teardown
 }
 
@@ -257,4 +259,159 @@ fake_apt() {
   [ ! -s "$CALLS" ]
   alive "$ORPHAN"
   [ ! -e "$XDG_STATE_HOME/marmot/operations.log" ]
+}
+
+# ---------------------------------------------------------------- orphaned automation browsers
+
+# load_browsers — load_optimize, with browser scans limited to this test's fake browsers.
+load_browsers() {
+  load_optimize
+  eval "$(declare -f _optimize_browsers | sed '1s/_optimize_browsers/_optimize_browsers_all/')"
+  _optimize_browsers() { _optimize_browsers_all | awk -F'\t' -v ok=" ${FAKES:-} " 'index(ok, " " $1 " ")'; }
+}
+
+# TEST_REAPER — a subreaper named tini (comm and argv[0]) that runs its arguments, then adopts
+# whatever they leave behind and reaps it when it exits. Orphans of the test go to it, not to
+# whichever subreaper runs the suite (systemd --user, a container init, an agent's node or bun
+# process, bats itself), whose name decides what optimize may treat as orphaned.
+TEST_REAPER='import ctypes, signal, subprocess, sys
+libc = ctypes.CDLL(None)
+if libc.prctl(36, 1) or libc.prctl(15, b"tini"):   # PR_SET_CHILD_SUBREAPER, PR_SET_NAME
+    sys.exit("prctl failed")
+subprocess.run(sys.argv[1:], close_fds=False)
+signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+while True:
+    signal.pause()'
+
+# fake_browser orphan|attached|stubborn ARGS... — a fake Chromium: a copy of bash named chrome
+# whose argv carries ARGS, with one --type=renderer child that exits when its parent does (like
+# Chromium's). orphan/stubborn: started through setsid -f under TEST_REAPER, so its parent exits
+# at once and the reaper adopts it; stubborn also ignores SIGTERM. attached: a child of the test
+# shell. Sets BROWSER and RENDERER.
+fake_browser() {
+  local mode=$1 hold="$BATS_TEST_TMPDIR/hold" id i p body reaper=""
+  shift
+  command -v python3 >/dev/null || skip "python3 not installed"
+  # The id names this test's sandbox: fakes left by other runs never match it.
+  FAKES_N=$(( ${FAKES_N:-0} + 1 )); id="$SB/$FAKES_N"
+  mkdir -p "$SB/bin"
+  [[ -x "$SB/bin/chrome" ]] || cp "$(command -v bash)" "$SB/bin/chrome"
+  [[ -p "$hold" ]] || mkfifo "$hold"
+  body='[[ $FAKE_MODE == stubborn ]] && trap "" TERM
+exec 4> >(exec "$0" -c "read -r" "$0" --type=renderer); read -t 600 -u 3'
+  if [[ "$mode" == attached ]]; then
+    FAKE_MODE=$mode "$SB/bin/chrome" -c "$body" "$SB/bin/chrome" "$@" "--fake-id=$id" 3<>"$hold" </dev/null >/dev/null 2>&1 &
+  else
+    (FAKE_MODE=$mode exec -a tini python3 -c "$TEST_REAPER" setsid -f "$SB/bin/chrome" -c "$body" \
+      "$SB/bin/chrome" "$@" "--fake-id=$id" 3<>"$hold" </dev/null >/dev/null 2>&1) &
+    reaper=$!
+    FAKE_PIDS+=" $reaper"
+  fi
+  BROWSER="" RENDERER=""
+  for ((i = 0; i < 100; i++)); do
+    for p in $(mm_test_pids --comm chrome --cmdline-has "--fake-id=$id"); do
+      RENDERER=$(mm_test_pids --parent "$p" --cmdline-has --type=renderer)
+      [[ -n "$RENDERER" ]] && { BROWSER=$p; break 2; }
+    done
+    sleep 0.05
+  done
+  [[ -n "$BROWSER" ]] || { echo "fake browser did not start" >&2; return 1; }
+  FAKES+=" $BROWSER" FAKE_PIDS="$BROWSER $RENDERER $FAKE_PIDS"
+  if [[ -n "$reaper" && "$(_optimize_stat_field "$BROWSER" 2)" != "$reaper" ]]; then
+    echo "fake browser $BROWSER was not adopted by the test reaper $reaper" >&2; return 1
+  fi
+}
+
+@test "browsers: an orphaned headless browser is found, only its main process, with its renderer in its tree" {
+  load_browsers
+  fake_browser orphan --headless=new --user-data-dir="$SB/prof"
+  run _optimize_browsers
+  [ "$(cut -f1 <<<"$output")" = "$BROWSER" ]
+  [[ "$output" == *$'\t'"$SB/prof"$'\t'* ]]
+  [[ "$(cut -f8 <<<"$output")" == "$RENDERER:"* ]]
+}
+
+@test "browsers: Playwright and Puppeteer profiles mark automation browsers even without --headless" {
+  load_browsers
+  fake_browser orphan --user-data-dir="$SB/tmp/playwright_chromiumdev_profile-Xy12"
+  local pw=$BROWSER
+  fake_browser orphan --user-data-dir="$SB/tmp/puppeteer_dev_chrome_profile-Ab34/"
+  run _optimize_browsers
+  [ "$(cut -f1 <<<"$output" | sort)" = "$(printf '%s\n' "$pw" "$BROWSER" | sort)" ]
+}
+
+@test "browsers: one still attached to its launcher, or a headed browser on its own profile, is kept" {
+  load_browsers
+  fake_browser attached --headless --user-data-dir="$SB/tmp/playwright_chromiumdev_profile-a"
+  fake_browser orphan --user-data-dir="$SB/my-profile"
+  run _optimize_browsers
+  [ -z "$output" ]
+}
+
+@test "browsers: an orphan younger than the age threshold is kept" {
+  load_browsers
+  fake_browser orphan --headless
+  MM_OPTIMIZE_ORPHAN_AGE=3600 run _optimize_browsers
+  [ -z "$output" ]
+  mm_test_clock 1
+  MM_OPTIMIZE_ORPHAN_AGE=3600 run _optimize_browsers
+  [ "$(cut -f1 <<<"$output")" = "$BROWSER" ]
+}
+
+@test "browsers: the picked browser gets SIGTERM and its whole tree stops" {
+  load_browsers
+  fake_browser orphan --headless
+  local renderer=$RENDERER
+  mm_confirm() { return 0; }
+  MM_TTY=1 run _optimize_browser_task
+  [ "$status" -eq 0 ]
+  dead "$BROWSER"
+  dead "$renderer"
+  [ "$(mm_log_rows run | cut -f1)" = "kill -TERM $BROWSER (chrome)" ]
+}
+
+@test "browsers: only the browsers marked in the picker are stopped" {
+  load_browsers
+  fake_browser orphan --headless
+  local keep=$BROWSER
+  fake_browser orphan --headless
+  local victim=$BROWSER
+  _optimize_have_fzf() { return 0; }
+  mm_pick() { grep "^$victim "; }
+  MM_TTY=1 run _optimize_browser_task
+  dead "$victim"
+  alive "$keep"
+}
+
+@test "browsers: one that ignores SIGTERM gets SIGKILL" {
+  load_browsers
+  fake_browser stubborn --headless
+  mm_confirm() { return 0; }
+  MM_TTY=1 run _optimize_browser_task
+  dead "$BROWSER"
+  mm_log_rows run | cut -f1 | grep -qx "kill -KILL $BROWSER (chrome)"
+}
+
+@test "browsers: a pid whose start time differs from the scan is never signalled" {
+  load_browsers
+  fake_browser orphan --headless
+  # The scan saw another process under this pid (same pid, other start time).
+  _optimize_browsers() { _optimize_browsers_all | awk -F'\t' -v OFS='\t' -v ok=" $FAKES " 'index(ok, " " $1 " ") { $2 = $2 "1"; print }'; }
+  mm_confirm() { return 0; }
+  MM_TTY=1 run _optimize_browser_task
+  alive "$BROWSER"
+  [ -z "$(mm_log_rows run)" ]
+}
+
+@test "browsers: without a terminal, or in a dry run, nothing is offered or signalled" {
+  load_browsers
+  fake_browser orphan --headless
+  record_offers
+  run _optimize_browser_task
+  [ "$status" -eq 0 ]
+  MM_DRY_RUN=1 MM_TTY=1 run _optimize_browser_task
+  [[ "$output" == *"$BROWSER"* ]]
+  [ ! -s "$CALLS" ]
+  alive "$BROWSER"
+  [ -z "$(mm_log_rows run)" ]
 }

@@ -14,7 +14,8 @@ mm status      live health dashboard, agent sessions first: CPU, memory, disk an
                network/VPN, your link's latency, lingering dev servers and ports, updates,
                pending reboot (`v` switches to the full panel view)
 mm analyze     disk overview, then a read-only explorer; move what you pick to the Trash
-mm optimize    upgrades, swap reset, stranded processes, SSD trim, DNS flush, reboot check
+mm optimize    upgrades, swap reset, stranded processes, orphaned headless browsers, SSD trim,
+               DNS flush, reboot check
 mm uninstall   apt/snap/npm/bun/pipx packages and ~/.local/bin tools, plus their leftovers
 mm history     everything marmot changed, refused or moved to the Trash
 ```

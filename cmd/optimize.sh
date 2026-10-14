@@ -1,6 +1,7 @@
 # shellcheck shell=bash
 # mm optimize — performance diagnosis plus bounded maintenance: apt/snap updates, swap reset,
-# processes stranded in deleted worktrees, SSD trim, DNS flush, failed units, pending reboot.
+# processes stranded in deleted worktrees, orphaned headless browsers, SSD trim, DNS flush, failed
+# units, pending reboot.
 
 _OPTIMIZE_APPLIED=0 _OPTIMIZE_UNCHANGED=0 _OPTIMIZE_SKIPPED=0 _OPTIMIZE_ATTENTION=0
 _OPTIMIZE_GIB=1073741824
@@ -521,6 +522,213 @@ _optimize_orphan_task() {
   fi
 }
 
+# ---------------------------------------------------------------- orphaned automation browsers
+# Playwright, Puppeteer and agent browser tools start headless Chromium and stop it when their
+# script ends. A script that crashes or is killed leaves the browser, its renderers and its GPU
+# process running with nobody connected to them.
+
+# Chromium-family program names (argv[0] basename, or comm: at most 15 characters).
+_OPTIMIZE_CHROMIUM='chrome|chromium|chromium-browser|headless_shell|chrome-headless-shell|chrome-headless|msedge'
+# Programs that drive browsers: a browser whose parent is one of them is in use, even when that
+# parent is PID 1 (a container running node or python as its init).
+_OPTIMIZE_DRIVERS='node|nodejs|bun|deno|python[0-9.]*|java|ruby|php|dotnet|chromedriver|msedgedriver|MainThread'
+# Init and subreapers: where the kernel hands a process whose parent exited.
+_OPTIMIZE_REAPERS='systemd|init|tini|docker-init|dumb-init|catatonit|s6-svscan|runsvdir'
+
+# _optimize_browser_root PID — prints "NAME<TAB>PROFILE" and returns 0 if PID is the main process
+# of an automation browser: a Chromium-family program without --type= (renderer, GPU, zygote and
+# utility processes carry one), started --headless or on a throwaway automation profile
+# (--user-data-dir=…/playwright_chromiumdev_profile-*, puppeteer_dev_chrome_profile-*,
+# *_dev_*profile*). PROFILE is that --user-data-dir, empty when none was given.
+_optimize_browser_root() {
+  local -a argv=()
+  local comm name a headless=0 profile=""
+  { mapfile -d '' -t argv <"/proc/$1/cmdline"; IFS= read -r comm <"/proc/$1/comm"; } 2>/dev/null || return 1
+  (( ${#argv[@]} )) || return 1
+  name=${argv[0]##*/}
+  if [[ ! "$name" =~ ^($_OPTIMIZE_CHROMIUM)$ ]]; then
+    [[ "$comm" =~ ^($_OPTIMIZE_CHROMIUM)$ ]] || return 1
+    name=$comm
+  fi
+  for a in "${argv[@]:1}"; do
+    case $a in
+      --type=*) return 1 ;;
+      --headless|--headless=*) headless=1 ;;
+      --user-data-dir=*) profile=${a#--user-data-dir=} ;;
+    esac
+  done
+  profile=${profile%/}
+  case ${profile##*/} in
+    playwright_chromiumdev_profile-*|puppeteer_dev_chrome_profile-*|*_dev_*profile*) ;;
+    *) (( headless )) || return 1 ;;
+  esac
+  printf '%s\t%s\n' "$name" "$profile"
+}
+
+# _optimize_service_main PID — 0 if PID is the oldest process of a systemd service's cgroup: a
+# browser run as a service on purpose, not one left behind (a leftover shares its cgroup with the
+# older program that started it).
+_optimize_service_main() {
+  local cg start q s
+  cg=$(awk -F: '$1 == 0 { print $3; exit }' "/proc/$1/cgroup" 2>/dev/null)
+  [[ "$cg" == *.service && -r "/sys/fs/cgroup$cg/cgroup.procs" ]] || return 1
+  start=$(_optimize_starttime "$1")
+  [[ "$start" =~ ^[0-9]+$ ]] || return 1
+  while IFS= read -r q; do
+    s=$(_optimize_starttime "$q")
+    [[ "$s" =~ ^[0-9]+$ ]] && (( s < start )) && return 1
+  done <"/sys/fs/cgroup$cg/cgroup.procs"
+  return 0
+}
+
+# _optimize_browser_orphaned PID — 0 if nothing that could have launched PID is its parent any
+# more: the parent is gone, started after PID (so PID was handed to it), or is init (PID 1) or a
+# subreaper (systemd --user, tini, docker-init, ...) that is not itself a program that drives
+# browsers. A parent outside this PID namespace (ppid 0), an unreadable parent, or a browser that
+# is a systemd service's own process is not an orphan.
+_optimize_browser_orphaned() {
+  local ppid start pstart pcomm="" pname
+  local -a pargv=()
+  ppid=$(_optimize_stat_field "$1" 2); start=$(_optimize_starttime "$1")
+  [[ "$ppid" =~ ^[0-9]+$ && "$start" =~ ^[0-9]+$ ]] && (( ppid > 0 )) || return 1
+  _optimize_service_main "$1" && return 1
+  [[ -d "/proc/$ppid" ]] || return 0
+  pstart=$(_optimize_starttime "$ppid")
+  { IFS= read -r pcomm <"/proc/$ppid/comm"; mapfile -d '' -n 1 -t pargv <"/proc/$ppid/cmdline"; } 2>/dev/null
+  [[ "$pstart" =~ ^[0-9]+$ && -n "$pcomm" ]] || return 1
+  (( pstart > start )) && return 0
+  pname=${pargv[0]:-}; pname=${pname##*/}
+  [[ "$pcomm" =~ ^($_OPTIMIZE_DRIVERS)$ || "$pname" =~ ^($_OPTIMIZE_DRIVERS)$ ]] && return 1
+  (( ppid == 1 )) || [[ "$pcomm" =~ ^($_OPTIMIZE_REAPERS)$ ]]
+}
+
+# _optimize_mem_bytes PID... — proportional memory (PSS plus swapped PSS: pages shared with other
+# processes are split among them) of the PIDs together; resident + swap where smaps_rollup is
+# missing (Linux < 4.14). cat skips processes that exit mid-read.
+_optimize_mem_bytes() {
+  local pid file=smaps_rollup keys='Pss|SwapPss' files=()
+  [[ -r "/proc/$1/smaps_rollup" ]] || file=status keys='VmRSS|VmSwap'
+  for pid; do files+=("/proc/$pid/$file"); done
+  cat -- "${files[@]}" 2>/dev/null | awk -v k="^($keys):\$" '$1 ~ k { kb += $2 } END { printf "%.0f\n", kb * 1024 }'
+}
+
+# _optimize_browsers — "pid<TAB>start<TAB>age<TAB>bytes<TAB>name<TAB>profile<TAB>parent<TAB>tree" for
+# this user's orphaned automation browsers older than MM_OPTIMIZE_ORPHAN_AGE seconds (default
+# 3600). Only the browser's main process is listed; tree holds "pid:start" of every process under
+# it, bytes the memory of all of them. profile is "-" without --user-data-dir (tab-separated
+# read collapses empty fields).
+_optimize_browsers() {
+  local min_age=${MM_OPTIMIZE_ORPHAN_AGE:-3600} p pid st info name profile age tree c parent
+  local -a f=() queue=() more=() pids=()
+  local -A mine=() kids=() start=()
+  for pid in $(_optimize_ancestors); do mine[$pid]=1; done
+  for p in /proc/[0-9]*; do
+    { IFS= read -r st <"$p/stat"; } 2>/dev/null || continue
+    read -r -a f <<<"${st##*) }"
+    pid=${p#/proc/}; start[$pid]=${f[19]}; kids[${f[1]}]+=" $pid"
+  done
+  for pid in "${!start[@]}"; do
+    [[ -z "${mine[$pid]:-}" && -O "/proc/$pid" ]] || continue
+    info=$(_optimize_browser_root "$pid") || continue
+    _optimize_browser_orphaned "$pid" || continue
+    age=$(mm_proc_age "$pid") || continue
+    (( age >= min_age )) || continue
+    IFS=$'\t' read -r name profile <<<"$info"; profile=${profile:--}
+    { parent=$(<"/proc/$(_optimize_stat_field "$pid" 2)/comm"); } 2>/dev/null || parent="?"
+    tree="" pids=("$pid")
+    read -r -a queue <<<"${kids[$pid]:-}"
+    while (( ${#queue[@]} )); do
+      c=${queue[0]}; queue=("${queue[@]:1}")
+      tree+="${tree:+ }$c:${start[$c]}" pids+=("$c")
+      read -r -a more <<<"${kids[$c]:-}"; queue+=("${more[@]}")
+    done
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$pid" "${start[$pid]}" "$age" \
+      "$(_optimize_mem_bytes "${pids[@]}")" "$name" "$profile" "$parent" "$tree"
+  done
+}
+
+# _optimize_running PID START — 0 if the same process (pid + start time) still runs (not a zombie).
+_optimize_running() { _optimize_alive "$1" "$2" && [[ "$(_optimize_stat_field "$1" 1)" != Z ]]; }
+
+# _optimize_browser_line ROW — the one-line display (and picker entry) for a browser row; pid first.
+_optimize_browser_line() {
+  local pid age bytes name profile parent tree n=1
+  IFS=$'\t' read -r pid _ age bytes name profile parent tree <<<"$1"
+  [[ -n "$tree" ]] && n=$(( $(wc -w <<<"$tree") + 1 ))
+  [[ "$profile" == - ]] && profile="(no profile dir)"
+  printf '%-7s %-14s %-6s %9s  %s · %s processes · parent %s\n' "$pid" "$name" \
+    "$(_optimize_ago "$age" | sed 's/ ago//')" "$(mm_human "$bytes")" "$profile" "$n" "$parent"
+}
+
+_optimize_browser_task() {
+  mm_section "Orphaned Browsers"
+  local rows=() row pid start bytes name tree total=0
+  mapfile -t rows < <(_optimize_browsers)
+  if (( ${#rows[@]} == 0 )); then
+    _optimize_unchanged "Orphaned browsers" "none (no headless browser of yours outlived the script that started it)"
+    return
+  fi
+  for row in "${rows[@]}"; do
+    IFS=$'\t' read -r _ _ _ bytes _ <<<"$row"; total=$((total + bytes))
+    printf '  %s•%s %s\n' "$C_YELLOW" "$C_RESET" "$(_optimize_browser_line "$row")"
+  done
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _optimize_applied "" "Would offer ${#rows[@]} orphaned headless browsers for SIGTERM ($(mm_human "$total") RAM+swap; you pick which, interactively)"
+    return
+  fi
+  if [[ "$MM_TTY" != 1 ]]; then
+    _optimize_skipped "Orphaned browsers" "needs interactive confirmation"
+    return
+  fi
+
+  local picked=() chosen=()
+  if (( ${#rows[@]} == 1 )) || ! _optimize_have_fzf; then
+    for row in "${rows[@]}"; do
+      mm_confirm "Stop browser $(_optimize_browser_line "$row")?" && picked+=("${row%%$'\t'*}")
+    done
+  else
+    mapfile -t picked < <(for row in "${rows[@]}"; do _optimize_browser_line "$row"; done |
+      mm_pick "TAB: mark browsers to stop · Enter: confirm · Esc: none" | awk '{ print $1 }')
+  fi
+  for row in "${rows[@]}"; do
+    for pid in "${picked[@]}"; do [[ "${row%%$'\t'*}" == "$pid" ]] && chosen+=("$row"); done
+  done
+  if (( ${#chosen[@]} == 0 )); then
+    _optimize_skipped "Orphaned browsers" "none selected"
+    return
+  fi
+
+  # Every signal goes to a pid only while it still has the start time seen in the scan: a pid
+  # reused by another process in the meantime is never touched.
+  local procs=() names=() freed=0 n=0 forced=0 left p i member
+  for row in "${chosen[@]}"; do
+    IFS=$'\t' read -r pid start _ bytes name _ _ tree <<<"$row"
+    if ! _optimize_running "$pid" "$start" || ! _optimize_browser_root "$pid" >/dev/null ||
+       ! _optimize_browser_orphaned "$pid"; then
+      continue
+    fi
+    mm_run "kill -TERM $pid ($name)" kill -TERM "$pid" || continue
+    n=$((n + 1)) freed=$((freed + bytes))
+    procs+=("$pid:$start") names+=("$name")
+    for member in $tree; do procs+=("$member") names+=("$name"); done
+  done
+  (( n )) || { _optimize_skipped "Orphaned browsers" "already gone or changed"; return; }
+  for (( i = 0; i < 25; i++ )); do
+    left=0
+    for p in "${procs[@]}"; do _optimize_running "${p%%:*}" "${p#*:}" && { left=1; break; }; done
+    (( left )) || break
+    sleep 0.2
+  done
+  for i in "${!procs[@]}"; do
+    p=${procs[$i]}
+    _optimize_running "${p%%:*}" "${p#*:}" || continue
+    mm_run "kill -KILL ${p%%:*} (${names[$i]})" kill -KILL "${p%%:*}" && forced=$((forced + 1))
+  done
+  local note=""
+  (( forced )) && note="; $forced processes ignored SIGTERM and got SIGKILL"
+  _optimize_applied "Stopped $n orphaned browsers ($(mm_human "$freed") RAM+swap$note)" ""
+}
+
 # ---------------------------------------------------------------- disk, network, services
 
 # _optimize_last_trim — epoch of the last fstrim.service run (falls back to the timer's
@@ -609,16 +817,20 @@ Usage: mm optimize [--dry-run]
 
 Diagnose performance (load, pressure, swap, CPU and memory hogs), then:
   apt upgrade (snap refresh reported only) · swap reset when RAM allows · SIGTERM processes
-  stranded in deleted directories (older than 1h) · fstrim / (unless trimmed <24h ago) ·
-  DNS cache flush · report failed units and pending reboots (never reboots).
+  stranded in deleted directories (older than 1h) · stop orphaned headless browsers (Playwright,
+  Puppeteer and agent Chromium whose script is gone, older than 1h: SIGTERM, then SIGKILL for
+  the same process if it ignores it) · fstrim / (unless trimmed <24h ago) · DNS cache flush ·
+  report failed units and pending reboots (never reboots).
 
 Options:
   -n, --dry-run   Show what would be applied; runs nothing (not even apt-get update)
 
-Confirmations (upgrades, swap reset, SIGTERM) need a terminal; without one they are skipped.
+Confirmations (upgrades, swap reset, SIGTERM, browsers) need a terminal; without one they are
+skipped.
 
 Environment:
-  MM_OPTIMIZE_ORPHAN_AGE   minimum process age in seconds for orphan detection (default 3600)
+  MM_OPTIMIZE_ORPHAN_AGE   minimum process age in seconds for orphaned processes and browsers
+                           (default 3600)
 EOF
 }
 
@@ -635,6 +847,7 @@ mm_cmd_main() {
   _optimize_updates
   _optimize_swap
   _optimize_orphan_task
+  _optimize_browser_task
   _optimize_disk
   _optimize_network
   _optimize_services
