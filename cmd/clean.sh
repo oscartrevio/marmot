@@ -27,7 +27,8 @@ Gradle build cache and daemon logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, R
 Bundler, Composer, CPAN, Hex, opam, Android, kubectl discovery, Jupyter runtime files when no
 Jupyter runs, ... see lib/catalog.sh), the mise, conda and Homebrew caches through their own
 cleanup commands (nix garbage collection only with nix_gc = on in the config file), old
-Playwright/Puppeteer/Cypress browser builds, old versions of coding-agent CLIs (the active one
+Playwright/Puppeteer/Cypress browser builds, Firebase emulators and agent-browser Chrome builds,
+old versions of coding-agent CLIs (the active one
 and one previous are kept), gcloud and Azure CLI logs older than 7 days (their credentials are
 never touched), apt/journal/snap leftovers, old kernels, rotated system logs and crash dumps
 last written 7+ days ago (/var/log, /var/crash, systemd-coredump, your apport reports; never
@@ -213,10 +214,11 @@ _clean_playwright_refs() {
 _clean_revisions_row() {
   local label="$1" dir="$2" spec="$4" busy depth regex refs="" rel prod ver n=0 b=0 kept=0 fail=0 refkept=0
   local -A newest=() keep=()
-  local -a rels=() prods=() vers=()
+  local -a rels=() prods=() vers=() types=(-type d)
   _clean_home_dir "$label" "$dir" || return 0
   if busy=$(_clean_busy "$3"); then mm_skip "$label" "$busy busy"; return 0; fi
   depth=${spec%%:*} regex=${spec#*:}
+  [[ "$regex" == *:files ]] && { regex=${regex%:files}; types=(\( -type d -o -type f \)); }
   [[ "$regex" == *:refs=* ]] && { refs=${regex##*:refs=}; regex=${regex%:refs=*}; }
   [[ "$depth" =~ ^[1-9]$ ]] || { mm_debug "$label: bad spec $spec"; return 0; }
   while IFS= read -r -d '' rel; do
@@ -226,7 +228,7 @@ _clean_revisions_row() {
     if [[ -z "${newest[$prod]+x}" || "$(printf '%s\n%s\n' "${newest[$prod]}" "$ver" | sort -V | tail -1)" == "$ver" ]]; then
       newest[$prod]=$ver
     fi
-  done < <(find "$dir" -mindepth "$depth" -maxdepth "$depth" -type d -printf '%P\0' 2>/dev/null)
+  done < <(find "$dir" -mindepth "$depth" -maxdepth "$depth" "${types[@]}" -printf '%P\0' 2>/dev/null)
   (( ${#rels[@]} )) || return 0
   if [[ "$refs" == playwright ]]; then
     while IFS= read -r rel; do keep[$rel]=1; done < <(_clean_playwright_refs "$dir")
@@ -388,12 +390,17 @@ _clean_catalog_caches() {
 
 # Old browser/test-runner builds and old coding-agent CLI versions (catalog revisions + versions).
 # Rows only print when they find something, so output is buffered and the section is shown only
-# when non-empty (no row here prompts).
+# when non-empty (no row here prompts). A folder named by several rows is handled once.
 _clean_builds() {
-  local i buf
+  local i buf real
+  local -A seen=()
   buf=$(mktemp -t marmot-clean.XXXXXX) || return 0
   _CLEAN_CAT_MARK="$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES)) $((MM_COUNT + _CLEAN_TOOL_ITEMS))"
   for i in "${!MM_CAT_KIND[@]}"; do
+    [[ "${MM_CAT_KIND[$i]}" == revisions || "${MM_CAT_KIND[$i]}" == versions ]] || continue
+    real=$(realpath -e -- "${MM_CAT_PATH[$i]}" 2>/dev/null) || continue
+    [[ -z "${seen[$real]+x}" ]] || continue
+    seen[$real]=1
     case ${MM_CAT_KIND[$i]} in
       revisions) _clean_revisions_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}" "${MM_CAT_SPEC[$i]}" ;;
       versions) _clean_versions_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_SPEC[$i]}" ;;

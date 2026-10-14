@@ -1237,3 +1237,42 @@ pkg_tools() { _clean_mise; _clean_conda; _clean_brew; }
   grep -qxF '/ nix-collect-garbage --delete-older-than 30d' "$CALLS"
   [ "$_CLEAN_TOOL_BYTES" -eq 3670016 ]
 }
+
+# ---------------------------------------------------------------- Firebase emulators, agent-browser builds
+
+# firebase_and_agent_browser — two versions of several Firebase emulators (jars, a UI zip plus its
+# unpacked folder, a never-versioned snapshot) and three agent-browser Chrome builds.
+firebase_and_agent_browser() {
+  F="$HOME/.cache/firebase/emulators" A="$HOME/.agent-browser/browsers"
+  mkdir -p "$F/ui-v1.14.0/server" "$F/ui-v1.15.0/server" "$F/ui-vSNAPSHOT/server" \
+    "$A/chrome-99.0.4844.51/chrome-linux64" "$A/chrome-131.0.6778.85/chrome-linux64" "$A/chrome-152.0.7977.82/chrome-linux64"
+  local v
+  for v in v1.19.7 v1.22.0; do echo j >"$F/cloud-firestore-emulator-$v.jar"; done
+  for v in v4.10.0 v4.11.2; do echo j >"$F/firebase-database-emulator-$v.jar"; done
+  echo z >"$F/ui-v1.14.0.zip"; echo z >"$F/ui-v1.15.0.zip"; echo s >"$F/ui-v1.14.0/server/server.mjs"
+  for v in 99.0.4844.51 131.0.6778.85 152.0.7977.82; do echo c >"$A/chrome-$v/chrome-linux64/chrome"; done
+  echo '{}' >"$HOME/.agent-browser/config.json"
+}
+
+@test "Firebase emulators and agent-browser: older versions go; the newest, snapshots and builds in use stay" {
+  firebase_and_agent_browser
+  mm_test_bg "$SB" bash -c 'exec 7<"$1"; sleep 30' _ "$F/firebase-database-emulator-v4.10.0.jar"
+  catalog
+  _clean_busy() { return 1; }   # isolate from tools running on the host
+  run _clean_builds
+  [ "$status" -eq 0 ]
+  gone "$F/cloud-firestore-emulator-v1.19.7.jar" "$F/ui-v1.14.0" "$F/ui-v1.14.0.zip" \
+    "$A/chrome-99.0.4844.51" "$A/chrome-131.0.6778.85"
+  exist "$F/cloud-firestore-emulator-v1.22.0.jar" "$F/firebase-database-emulator-v4.11.2.jar" \
+    "$F/firebase-database-emulator-v4.10.0.jar" "$F/ui-v1.15.0/server" "$F/ui-v1.15.0.zip" "$F/ui-vSNAPSHOT/server" \
+    "$A/chrome-152.0.7977.82/chrome-linux64/chrome" "$HOME/.agent-browser/config.json"
+}
+
+@test "Firebase emulators and agent-browser builds are kept while the tools run" {
+  firebase_and_agent_browser
+  busy_proc firebase; busy_proc agent-browser
+  catalog
+  run _clean_builds
+  [ "$status" -eq 0 ]
+  exist "$F/cloud-firestore-emulator-v1.19.7.jar" "$F/ui-v1.14.0" "$A/chrome-99.0.4844.51"
+}
