@@ -251,12 +251,38 @@ mm_whitelist_init() {
   [[ -f "$MM_WHITELIST_FILE" ]] || printf '%s' "$MM_DEFAULT_WHITELIST" >"$MM_WHITELIST_FILE"
 }
 
-# mm_keep_patterns — every protection pattern: built-ins, agent state, then the whitelist file.
+# Carve-outs: folders inside a built-in protected tree that hold only logs or caches, so mm_rm may
+# act on entries strictly inside them (never on the folder itself). Only the built-in patterns
+# above are skipped for such entries; protected trees, agent state, the whitelist file and in-use
+# checks still apply, and anything that looks like credentials is refused anyway
+# (mm_credential_like, checking every name from the carve-out down).
+# A carve-out that is not a canonical path (symlinks, trailing slash, dot segments) gets no
+# waiver, so a link cannot point it at other data.
+# gcloud and Azure CLI log folders (CLOUDSDK_CONFIG and AZURE_CONFIG_DIR move their config folder).
+MM_CLEAN_CARVEOUTS=("${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}/logs" "${AZURE_CONFIG_DIR:-$HOME/.azure}/logs")
+
+# mm_carveout PATH — 0 if PATH lies strictly inside a carve-out and may skip the built-in patterns,
+# 1 if it lies in none, 2 if it does but looks like or holds credentials (keep it).
+mm_carveout() {
+  local path="${1%/}" c
+  for c in "${MM_CLEAN_CARVEOUTS[@]}"; do
+    [[ "$c" == /?* && "$path" == "$c"/?* ]] || continue
+    # Resolved paths only: a symlinked carve-out (or entry parent) gets no waiver.
+    [[ -d "$c" && "$(realpath -e -- "$c" 2>/dev/null)" == "$c" ]] || return 1
+    [[ "$(realpath -e -- "$(dirname -- "$path")" 2>/dev/null)" == "$(dirname -- "$path")" ]] || return 1
+    mm_credential_like "$path" "$c" && return 2
+    return 0
+  done
+  return 1
+}
+
+# mm_keep_patterns [--carveout] — every protection pattern: built-ins, agent state, then the
+# whitelist file. --carveout leaves the built-ins out (for entries mm_carveout waives).
 # MM_KEEP_AGENT_STATE=0 leaves agent state out; only for removing git worktrees that git reports
 # clean (agents such as Cursor keep their worktrees inside their state dir). _MM_WAIVED (set by
 # mm_rm for MM_AGENT_WAIVER) leaves out only the agent state entries that contain that directory.
 mm_keep_patterns() {
-  printf '%s\n' "${MM_BUILTIN_KEEP[@]}"
+  [[ "${1:-}" == --carveout ]] || printf '%s\n' "${MM_BUILTIN_KEEP[@]}"
   if [[ "${MM_KEEP_AGENT_STATE:-1}" != 0 ]]; then
     local p
     while IFS= read -r p; do
@@ -269,12 +295,14 @@ mm_keep_patterns() {
 
 # mm_whitelisted PATH — 0 if removing PATH would touch a protected entry (built-in, agent state,
 # or whitelist file): PATH or an ancestor matches it, or it lies under PATH. Globs follow [[ == ]]
-# rules (* crosses /).
+# rules (* crosses /). Inside a carve-out the built-ins are skipped (see mm_carveout).
 mm_whitelisted() {
   mm_whitelist_init 2>/dev/null
   # Fail closed: an unreadable whitelist must not mean "nothing is protected".
   [[ -r "$MM_WHITELIST_FILE" ]] || { mm_err "cannot read whitelist $MM_WHITELIST_FILE: refusing"; return 0; }
-  local path="${1%/}" pat probe lit
+  local path="${1%/}" pat probe lit carve="" rc=0
+  mm_carveout "$path" || rc=$?
+  case $rc in 0) carve=--carveout ;; 2) return 0 ;; esac
   while IFS= read -r pat || [[ -n "$pat" ]]; do
     pat="${pat%%#*}"; pat="${pat%"${pat##*[![:space:]]}"}"; pat="${pat#"${pat%%[![:space:]]*}"}"
     [[ -n "$pat" ]] || continue
@@ -294,7 +322,7 @@ mm_whitelisted() {
        [[ -n "$(find "$path" -xdev -path "$pat" -print -quit 2>/dev/null)" ]]; then
       return 0
     fi
-  done < <(mm_keep_patterns)
+  done < <(mm_keep_patterns ${carve:+"$carve"})
   return 1
 }
 
@@ -356,23 +384,30 @@ mm_protected() {
   return 1
 }
 
-# mm_credential_like PATH — 0 if PATH's name, or any name under it, looks like a key, token or
-# credentials file. Agent state mixes these with sessions and logs (~/.claude/.credentials.json,
-# ~/.codex/auth.json), so the agent waiver below refuses them whatever their age.
+# mm_credential_like PATH [BASE] — 0 if PATH's name, any name under it, or (when PATH lies inside
+# BASE) any folder name between BASE and PATH looks like a key, token, credentials file or
+# credential config; case-insensitive. A subfolder find cannot read counts as a match (fail
+# closed). Agent state mixes these with sessions and logs (~/.claude/.credentials.json,
+# ~/.codex/auth.json), and cloud CLIs keep them next to their logs (gcloud credentials.db,
+# access_tokens.db, legacy_credentials/, configurations/), so the agent waiver and the carve-outs
+# refuse them whatever their age.
 _MM_CREDENTIAL_NAMES=('*credential*' '*secret*' '*token*' '*oauth*' '*apikey*' '*api_key*' '*api-key*'
-  'auth.json' 'auth-*.json' '*.pem' '*.key' '*.p12' '*.pfx' '*.kdbx' 'id_rsa*' 'id_dsa*' 'id_ecdsa*'
-  'id_ed25519*' '.netrc' '.git-credentials')
+  'auth*.json' '*.pem' '*.key' '*.p12' '*.pfx' '*.kdbx' 'id_rsa*' 'id_dsa*' 'id_ecdsa*'
+  'id_ed25519*' '.netrc' '.git-credentials' 'configurations')
 mm_credential_like() {
-  local name="${1##*/}" pat
-  name=${name,,}
-  for pat in "${_MM_CREDENTIAL_NAMES[@]}"; do
-    # shellcheck disable=SC2053
-    [[ "$name" == $pat ]] && return 0
-  done
+  local rel="${1##*/}" name pat hit
+  [[ -n "${2:-}" && "$1" == "${2%/}"/?* ]] && rel=${1#"${2%/}"/}
+  while IFS= read -r -d / name; do
+    for pat in "${_MM_CREDENTIAL_NAMES[@]}"; do
+      # shellcheck disable=SC2053
+      [[ "${name,,}" == $pat ]] && return 0
+    done
+  done <<<"$rel/"
   [[ -d "$1" && ! -L "$1" ]] || return 1
   local -a expr=()
   for pat in "${_MM_CREDENTIAL_NAMES[@]}"; do expr+=(-o -iname "$pat"); done
-  [[ -n "$(find "$1" -xdev -mindepth 1 \( "${expr[@]:1}" \) -print -quit 2>/dev/null)" ]]
+  hit=$(find "$1" -xdev -mindepth 1 \( "${expr[@]:1}" \) -print -quit 2>/dev/null) || return 0
+  [[ -n "$hit" ]]
 }
 
 # mm_identity PATH — "device:inode:ctime" of PATH itself (a final symlink is not followed).
