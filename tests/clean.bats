@@ -1296,3 +1296,55 @@ firebase_and_agent_browser() {
     grep -qF "$f" <<<"${output#*Kept for you to review}" || { echo "not reviewed: $f"; false; }
   done
 }
+
+# ---------------------------------------------------------------- editor server leftovers
+
+# vscode_leftovers — $V: a VS Code server with an obsolete (updated) extension, a .obsolete entry for
+# a folder that is gone and one that tries to leave the folder, a cached VSIX, an old and a new log.
+vscode_leftovers() {
+  V="$HOME/.vscode-server"
+  local x
+  for x in ms-python.python-2024.1.0-linux-x64 ms-python.python-2024.2.0-linux-x64 esbenp.prettier-vscode-10.1.0; do
+    mkdir -p "$V/extensions/$x"; echo '{}' >"$V/extensions/$x/package.json"
+  done
+  printf '{"ms-python.python-2024.1.0-linux-x64":true,"esbenp.prettier-vscode-9.0.0":true,"../../.ssh":true}' \
+    >"$V/extensions/.obsolete"
+  mkdir -p "$HOME/.ssh" "$V/data/CachedExtensionVSIXs"; echo k >"$HOME/.ssh/id_ed25519"
+  echo v >"$V/data/CachedExtensionVSIXs/ms-python.python-2024.2.0-linux-x64"
+  cloud_log "$V/data/logs/20260101T100000/exthost1/remoteexthost.log" 20
+  old_dirs "$V/data/logs/20260101T100000/exthost1" "$V/data/logs/20260101T100000"
+  cloud_log "$V/data/logs/20260201T100000/remoteagent.log" 1
+}
+
+@test "editor servers: obsolete extensions, cached VSIX packages and week-old logs go; the rest stays" {
+  vscode_leftovers
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_editors
+  [ "$status" -eq 0 ]
+  gone "$V/extensions/ms-python.python-2024.1.0-linux-x64" "$V/data/CachedExtensionVSIXs/ms-python.python-2024.2.0-linux-x64" \
+    "$V/data/logs/20260101T100000"
+  exist "$V/extensions/ms-python.python-2024.2.0-linux-x64/package.json" "$V/extensions/esbenp.prettier-vscode-10.1.0/package.json" \
+    "$V/data/logs/20260201T100000/remoteagent.log" "$HOME/.ssh/id_ed25519" "$V/data/CachedExtensionVSIXs"
+}
+
+@test "editor servers: obsolete extensions wait while the server runs" {
+  vscode_leftovers
+  mm_test_bg "$V/data" sleep 60
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_editors
+  [ "$status" -eq 0 ]
+  exist "$V/extensions/ms-python.python-2024.1.0-linux-x64/package.json"
+}
+
+@test "JetBrains remote backends: the newest of each IDE and backends in use are kept" {
+  local d="$HOME/.cache/JetBrains/RemoteDev/dist" b
+  for b in a1_ideaIU-2023.3.2:40 b2_ideaIU-2024.1.1:20 c3_ideaIU-2024.2.0:10 d4_PyCharm-2024.1.4:50 e5_PyCharm-2023.2.1:60; do
+    mkdir -p "$d/${b%%:*}/bin"; echo s >"$d/${b%%:*}/bin/remote-dev-server.sh"; touch -d "${b##*:} days ago" "$d/${b%%:*}"
+  done
+  mm_test_bg "$d/a1_ideaIU-2023.3.2/bin" sleep 60
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_editors
+  [ "$status" -eq 0 ]
+  gone "$d/b2_ideaIU-2024.1.1" "$d/e5_PyCharm-2023.2.1"
+  exist "$d/a1_ideaIU-2023.3.2" "$d/c3_ideaIU-2024.2.0" "$d/d4_PyCharm-2024.1.4"
+}

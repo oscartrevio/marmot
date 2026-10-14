@@ -33,8 +33,9 @@ and one previous are kept), gcloud and Azure CLI logs older than 7 days (their c
 never touched), apt/journal/snap leftovers, old kernels, rotated system logs and crash dumps
 last written 7+ days ago (/var/log, /var/crash, systemd-coredump, your apport reports; never
 live or open logs, never the journal files), stopped Docker containers, dangling images, images
-no container uses (pulled or built 30+ days ago), old build cache, and stale editor server
-builds.
+no container uses (pulled or built 30+ days ago), old build cache, stale editor server builds
+with their obsolete extensions, cached VSIX packages and week-old logs, and old JetBrains
+remote backends (the newest of each IDE is kept).
 Trash items deleted more than 7 days ago are removed for good. /tmp and /var/tmp are not
 swept: they hold other programs' runtime state, and the OS ages them (systemd-tmpfiles); their
 size and the OS policy are reported. The one exception: temp profiles and files that
@@ -1251,9 +1252,11 @@ _CLEAN_EDITOR_SERVERS=(
 )
 
 _clean_editors() {
-  local row name dir p any=0
+  local row name dir p any=0 jb
   local -a roots
+  jb="$(mm_catalog_expand %CACHE%)/JetBrains/RemoteDev/dist"
   for row in "${_CLEAN_EDITOR_SERVERS[@]}"; do [[ -d "${row#*|}" ]] && any=1; done
+  [[ -d "$jb" ]] && any=1
   (( any )) || return 0
   _clean_cat "Editor servers"
   for row in "${_CLEAN_EDITOR_SERVERS[@]}"; do
@@ -1262,7 +1265,9 @@ _clean_editors() {
     roots=("$dir/cli/servers" "$dir/bin")
     for p in "$dir/bin"/*/; do [[ -d "$p" ]] && roots+=("${p%/}"); done
     _clean_editor_builds "$name server builds" "${roots[@]}"
+    _clean_editor_leftovers "$name" "$dir"
   done
+  [[ -d "$jb" ]] && _clean_jetbrains_backends "JetBrains remote backends" "$jb"
   _clean_cat_end
 }
 
@@ -1290,6 +1295,64 @@ _clean_editor_builds() {
   (( total )) || return 0
   if (( n + kept + fail == 0 )); then mm_ok "$label" "only the current build installed"; return; fi
   mm_ok "$label" "$(_clean_detail "$n" "old builds" "$bytes" "$kept" "$fail"), newest kept"
+}
+
+# _clean_editor_leftovers NAME DIR — inside a VS Code-family server: extension folders it marked
+# obsolete (uninstalled, or replaced by an update; listed in extensions/.obsolete and removed by
+# the server only when it next starts), the VSIX packages it keeps after installing, and session
+# logs last written 7+ days ago. Obsolete extensions wait while the server runs: its extension
+# host may still load files from them.
+_clean_editor_leftovers() {
+  local name="$1" dir="$2" ext="$2/extensions" e label="$1 obsolete extensions" n=0 b=0 kept=0 fail=0
+  if [[ -f "$ext/.obsolete" && ! -L "$ext/.obsolete" ]]; then
+    if mm_in_use "$dir"; then
+      mm_skip "$label" "server running"
+    else
+      while IFS= read -r e; do
+        [[ "$e" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && -d "$ext/$e" && ! -L "$ext/$e" ]] || continue
+        mm_rm "$ext/$e" "$ext"
+        case $? in
+          0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
+          1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+          *) fail=$((fail + 1)) ;;
+        esac
+      done < <(_clean_obsolete_names "$ext/.obsolete")
+      (( n + kept + fail )) && mm_ok "$label" "$(_clean_detail "$n" extensions "$b" "$kept" "$fail")"
+    fi
+  fi
+  [[ -d "$dir/data/CachedExtensionVSIXs" ]] && _clean_contents "$name cached extension packages" "$dir/data/CachedExtensionVSIXs"
+  [[ -d "$dir/data/logs" ]] && _clean_cloud_log_dir "$name server logs" "$dir/data/logs"
+  return 0
+}
+
+# _clean_obsolete_names FILE — the folder names VS Code's .obsolete JSON map sets to true.
+_clean_obsolete_names() {
+  grep -oE '"[^"\\]+"[[:space:]]*:[[:space:]]*true' -- "$1" 2>/dev/null | sed -E 's/^"([^"]+)".*/\1/'
+}
+
+# _clean_jetbrains_backends LABEL ROOT — JetBrains Gateway unpacks one IDE backend per version into
+# ~/.cache/JetBrains/RemoteDev/dist (<hash>_<product>-<build>). Keep the newest (by mtime) of each
+# product and any backend in use; remove the rest.
+_clean_jetbrains_backends() {
+  local label="$1" root="$2" name prod total=0 n=0 b=0 kept=0 fail=0
+  local -A newest=()
+  local -a entries=()
+  mapfile -t entries < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%T@\t%f\n' 2>/dev/null |
+    sort -rn | cut -f2-)
+  for name in "${entries[@]}"; do
+    total=$((total + 1))
+    prod=${name#*_}; prod=${prod%%-[0-9]*}
+    if [[ -z "${newest[$prod]+x}" ]]; then newest[$prod]=$name; continue; fi
+    mm_rm "$root/$name" "$root"
+    case $? in
+      0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      *) fail=$((fail + 1)) ;;
+    esac
+  done
+  (( total )) || return 0
+  if (( n + kept + fail == 0 )); then mm_ok "$label" "only the current build of each IDE installed"; return; fi
+  mm_ok "$label" "$(_clean_detail "$n" "old backends" "$b" "$kept" "$fail"), newest of each IDE kept"
 }
 
 # ---------------------------------------------------------------- automation-browser temp files
