@@ -117,12 +117,14 @@ _clean_busy() {
   return 1
 }
 
-# _clean_tool LABEL "BUSY_PROC..." SIZE_DIR CMD... — run a tool's own cache clean, measured by what
-# it frees in SIZE_DIR: files hard-linked from outside (a store linked into projects) stay on disk,
-# so they are not counted. CMD runs from / so project-local config (.npmrc, .yarnrc.yml, committed
-# .yarn/cache) never applies. Dry-run estimates what removing all of SIZE_DIR would free. Callers
-# only invoke it when the tool is installed.
+# _clean_tool [--prune] LABEL "BUSY_PROC..." SIZE_DIR CMD... — run a tool's own cache clean,
+# measured by what it frees in SIZE_DIR: files hard-linked from outside (uv links its cache into
+# virtualenvs) stay on disk, so they are not counted. CMD runs from / so project-local config
+# (.npmrc, .yarnrc.yml, committed .yarn/cache) never applies. Dry-run estimates what removing all
+# of SIZE_DIR would free; with --prune CMD removes only entries nothing uses, which no tool can
+# preview, so dry-run claims no bytes. Callers only invoke it when the tool is installed.
 _clean_tool() {
+  local prune=0; [[ "$1" == --prune ]] && { prune=1; shift; }
   local label="$1" procs="$2" dir="$3" busy size before after freed; shift 3
   [[ -d "$dir" ]] || { mm_ok "$label" "nothing to clean"; return; }
   if mm_whitelisted "$dir"; then mm_skip "$label" "whitelisted"; return; fi
@@ -130,12 +132,16 @@ _clean_tool() {
   read -r size before < <(mm_size_frees "$dir")
   if (( size < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$size"))"; return; fi
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    mm_run "$label" env -C / "$@"; _clean_track "$before" 1; mm_ok "$label" "$(mm_human "$before")"; return
+    mm_run "$label" env -C / "$@"
+    if (( prune )); then
+      mm_ok "$label" "$(mm_human "$size") cache, would prune unused entries (size unknown until run)"; return
+    fi
+    _clean_track "$before" 1; mm_ok "$label" "$(mm_human "$before")"; return
   fi
   mm_run "$label" env -C / "$@" || return 0
   after=$(mm_frees "$dir"); freed=$(( before > after ? before - after : 0 ))
   _clean_track "$freed" 1
-  mm_ok "$label" "cleaned, $(mm_human "$freed")"
+  if (( prune )); then mm_ok "$label" "pruned, $(mm_human "$freed")"; else mm_ok "$label" "cleaned, $(mm_human "$freed")"; fi
 }
 
 # _clean_home_dir LABEL DIR — 0 if DIR is a non-empty directory that resolves strictly inside $HOME
@@ -315,17 +321,21 @@ _clean_dev() {
   command -v pnpm >/dev/null && _clean_pnpm
   command -v bun >/dev/null && _clean_bun
   command -v yarn >/dev/null && _clean_yarn
+  command -v uv >/dev/null && _clean_uv
   _clean_catalog_caches
   _clean_cat_end
 }
 
 # Catalog "cache" rows (built-in and the user's): emptied directly, whether or not the tool is
-# still installed (then they are pure leftovers).
+# still installed (then they are pure leftovers). A row with spec tool:CMD is left to CMD's own
+# clean above while CMD is installed.
 _clean_catalog_caches() {
   local r i
   for r in "${MM_CAT_REJECTED[@]}"; do mm_warn "catalog row ignored: $r"; done
   for i in "${!MM_CAT_KIND[@]}"; do
-    [[ "${MM_CAT_KIND[$i]}" == cache ]] && _clean_cache_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}"
+    [[ "${MM_CAT_KIND[$i]}" == cache ]] || continue
+    [[ "${MM_CAT_SPEC[$i]}" == tool:?* ]] && command -v "${MM_CAT_SPEC[$i]#tool:}" >/dev/null && continue
+    _clean_cache_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}"
   done
   return 0
 }
@@ -486,6 +496,18 @@ _clean_sessions() {
     mm_ok "${MM_AGENT_NAME[$i]} sessions" "$old"
   done
   _clean_cat_end
+}
+
+# uv's own prune: removes cache buckets older uv versions left behind, unpacked archives no wheel
+# points to, and cached `uv run --with` environments; wheels current projects install from stay.
+# Never --ci (that also drops downloaded wheels) or --force (that ignores uv's in-use lock). The
+# location comes from `uv cache dir`, asked from / so UV_CACHE_DIR and the user's uv.toml apply
+# but no project's.
+_clean_uv() {
+  local dir
+  dir=$(env -C / timeout 15 uv cache dir 2>/dev/null | tail -1)
+  [[ "$dir" == /* ]] || { mm_skip "uv cache" "cache dir unknown"; return; }
+  _clean_tool --prune "uv cache" "uv uvx" "$dir" uv cache prune
 }
 
 # ---------------------------------------------------------------- 3. system

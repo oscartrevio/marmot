@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # cmd/clean.sh: shared temp report, Trash retention sweep, tool cleans, Docker, dry-run.
 
-# Busy-tool tests start processes named after real tools (uv, pnpm, npx); clean's busy check sees
-# the whole machine, so tests in this file must not run concurrently with each other.
+# Busy-tool tests start processes named after real tools (pip, pnpm, npx, uv); clean's busy
+# check sees the whole machine, so tests in this file must not run concurrently with each other.
 setup_file() { export BATS_NO_PARALLELIZE_WITHIN_FILE=true; }
 
 setup() {
@@ -106,8 +106,9 @@ fake_tools() {
   fake_rec pnpm '[[ -w . ]] || { echo "EACCES: permission denied" >&2; exit 243; }
 [[ "$*" == "store path" ]] && echo "$SB/store"; exit 0'
   fake_rec yarn 'case "$*" in --version) echo 1.22.22 ;; "cache dir") echo "$SB/yarncache" ;; esac'
+  fake_rec uv '[[ "$*" == "cache dir" ]] && echo "$SB/uvcache"; exit 0'
   blob "$HOME/.npm/_cacache/blob"; blob "$HOME/.bun/install/cache/blob"
-  blob "$SB/store/blob"; blob "$SB/yarncache/blob"
+  blob "$SB/store/blob"; blob "$SB/yarncache/blob"; blob "$SB/uvcache/blob"
 }
 
 # ---------------------------------------------------------------- shared temp folders
@@ -333,23 +334,23 @@ busy_proc() {
 }
 
 @test "a catalog cache is emptied permanently but its folder is kept" {
-  mkdir -p "$HOME/.cache/uv/wheels-v1/pkg" "$HOME/.cache/uv/archive-v0"
-  echo x >"$HOME/.cache/uv/wheels-v1/pkg/w.whl"; echo y >"$HOME/.cache/uv/archive-v0/a"
+  mkdir -p "$HOME/.cache/pip/http-v2/a" "$HOME/.cache/pip/wheels"
+  echo x >"$HOME/.cache/pip/http-v2/a/body"; echo y >"$HOME/.cache/pip/wheels/w.whl"
   catalog
   run _clean_catalog_caches
-  [ -d "$HOME/.cache/uv" ]
-  [ -z "$(ls -A "$HOME/.cache/uv")" ]
-  [ ! -e "$XDG_DATA_HOME/Trash/files/wheels-v1" ]          # regenerable: removed, not trashed
-  [ "$(mm_log_rows remove | grep -c "^$HOME/.cache/uv/")" -eq 2 ]
+  [ -d "$HOME/.cache/pip" ]
+  [ -z "$(ls -A "$HOME/.cache/pip")" ]
+  [ ! -e "$XDG_DATA_HOME/Trash/files/wheels" ]          # regenerable: removed, not trashed
+  [ "$(mm_log_rows remove | grep -c "^$HOME/.cache/pip/")" -eq 2 ]
 }
 
 @test "a catalog cache is skipped while its tool runs" {
-  mkdir -p "$HOME/.cache/uv/wheels-v1"; echo x >"$HOME/.cache/uv/wheels-v1/w"
-  busy_proc uv
+  mkdir -p "$HOME/.cache/pip/wheels"; echo x >"$HOME/.cache/pip/wheels/w"
+  busy_proc pip
   catalog
   run _clean_catalog_caches
-  [ -e "$HOME/.cache/uv/wheels-v1/w" ]
-  [[ "$output" == *"uv cache · skipped (uv busy)"* ]]
+  [ -e "$HOME/.cache/pip/wheels/w" ]
+  [[ "$output" == *"pip cache · skipped (pip busy)"* ]]
 }
 
 @test "a whitelisted catalog cache is skipped" {
@@ -608,7 +609,15 @@ sessions_run() {
   [ -e "$HOME/.claude/projects/p1/old.jsonl" ]
 }
 
-# ---------------------------------------------------------------- tool cache cleans: bytes freed
+# ---------------------------------------------------------------- tool cache cleans: bytes freed, uv
+
+# hide_tool NAME — NAME is not installed: drop its stub and every PATH directory holding it.
+hide_tool() {
+  rm -f "$BATS_TEST_TMPDIR/stubs/$1"
+  local d p="" IFS=:
+  for d in $PATH; do [[ -x "$d/$1" ]] || p+="${p:+:}$d"; done
+  PATH=$p
+}
 
 @test "tool cleans count only what they free: cache files hard-linked from elsewhere stay on disk" {
   fake_tools
@@ -623,4 +632,51 @@ sessions_run() {
   [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]        # dry-run matches the run
   [ "$_CLEAN_TOOL_BYTES" -ge 1100000 ]       # the unlinked blob
   [ "$_CLEAN_TOOL_BYTES" -lt 2200000 ]       # not the one a link outside keeps
+}
+
+@test "uv installed: its cache is pruned by uv from /, never removed by marmot" {
+  fake_tools
+  fake_rec uv '[[ "$*" == "cache dir" ]] && echo "$SB/uvcache"; [[ "$*" == "cache prune" ]] && rm -rf "$SB/uvcache/archive-v0"; exit 0'
+  blob "$SB/uvcache/archive-v0/dangling"
+  mkdir -p "$HOME/.cache/uv/wheels-v5"; echo w >"$HOME/.cache/uv/wheels-v5/w"
+  catalog
+  mm_proc_running() { return 1; }   # isolate from tools running on the host
+  _clean_uv >/dev/null
+  _clean_catalog_caches >/dev/null
+  grep -qxF '/ uv cache prune' "$CALLS"
+  none grep -E 'uv cache (clean|prune .*-)' "$CALLS"   # never clean, --ci or --force
+  exist "$SB/uvcache/blob" "$HOME/.cache/uv/wheels-v5/w"
+  gone "$SB/uvcache/archive-v0"
+  [ -z "$(mm_log_rows remove)" ]
+  [ "$_CLEAN_TOOL_BYTES" -ge 1100000 ]              # measured: the pruned entry
+  [ "$_CLEAN_TOOL_BYTES" -lt 2200000 ]              # not the whole cache
+}
+
+@test "uv dry-run claims no bytes and prunes nothing" {
+  fake_tools
+  src
+  mm_proc_running() { return 1; }
+  MM_DRY_RUN=1 _clean_uv >/dev/null
+  none grep -F 'uv cache prune' "$CALLS"
+  [ "$_CLEAN_TOOL_BYTES" -eq 0 ]
+  exist "$SB/uvcache/blob"
+}
+
+@test "uv not installed: its leftover cache folder is emptied from the catalog" {
+  mkdir -p "$HOME/.cache/uv/wheels-v5"; echo w >"$HOME/.cache/uv/wheels-v5/w"
+  hide_tool uv
+  none command -v uv
+  catalog
+  run _clean_catalog_caches
+  [ -d "$HOME/.cache/uv" ]
+  [ -z "$(ls -A "$HOME/.cache/uv")" ]
+}
+
+@test "uv cache prune is skipped while uv runs" {
+  fake_tools
+  busy_proc uv
+  src
+  run _clean_uv
+  none grep -F 'uv cache prune' "$CALLS"
+  [[ "$output" == *"uv busy"* ]]
 }

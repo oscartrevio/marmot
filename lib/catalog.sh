@@ -7,7 +7,8 @@
 #   kind | label | path | busy | spec | hint
 #
 #   kind   cache      regenerable cache dir: its contents are removed permanently (the dir stays).
-#                     Skipped while any busy process runs.
+#                     Skipped while any busy process runs. spec = tool:CMD: while CMD is installed
+#                     the row is skipped and cmd/clean.sh runs CMD's own clean instead.
 #          revisions  downloaded browser/tool builds: only the newest build per product is needed.
 #                     spec = DEPTH:REGEX[:refs=playwright]. Entries DEPTH levels below path are
 #                     matched (relative path) against REGEX; group 1 is the product, group 2 its
@@ -33,7 +34,8 @@
 #   %CACHE%/pypoetry/virtualenvs                    live project virtualenvs
 #   %CACHE%/huggingface, ~/.ollama                  downloaded models (reported instead)
 #   every coding agent's state (lib/agents.sh)      settings, credentials, session transcripts
-# npm, pnpm, yarn and bun caches are cleaned through their own tools by cmd/clean.sh.
+# npm, pnpm, yarn, bun and (when installed) uv caches are cleaned through their own tools by
+# cmd/clean.sh.
 #
 # Users can add rows to $MM_CONFIG_DIR/catalog in the same format: cache rows only, and only for
 # directories inside $HOME (other rows are rejected with a warning).
@@ -52,7 +54,7 @@ cache|Deno module cache|%CACHE%/deno/deps|deno||
 cache|Deno compiled cache|%CACHE%/deno/gen|deno||
 cache|Deno npm cache|%CACHE%/deno/npm|deno||
 # ---- Python
-cache|uv cache|%CACHE%/uv|uv uvx||
+cache|uv cache|%CACHE%/uv|uv uvx|tool:uv|
 cache|pip cache|%CACHE%/pip|pip pip3||
 cache|pipenv cache|%CACHE%/pipenv|pipenv||
 cache|Poetry package cache|%CACHE%/pypoetry/cache|poetry||
