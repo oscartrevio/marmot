@@ -220,7 +220,7 @@ _trashed() { [[ -e "$XDG_DATA_HOME/Trash/files/$1" && -f "$XDG_DATA_HOME/Trash/i
   [[ "$output" == *google-cloud-cli* && "$output" == *awscli* ]]
   [[ "$output" != *google-guest-agent* && "$output" != *amazon-ssm-agent* ]]
   _load
-  _uninstall_apt_busy() { return 1; }
+  mm_apt_busy() { return 1; }
   MM_TTY=1
   mm_confirm() { return 0; }
   _uninstall_collect
@@ -275,7 +275,7 @@ _trashed() { [[ -e "$XDG_DATA_HOME/Trash/files/$1" && -f "$XDG_DATA_HOME/Trash/i
   [ ! -s "$CALLS" ]
   # Terminal: decline only the question about tailscale; zerotier-one alone is purged.
   # (The host's own apt/unattended-upgrades activity must not decide this test.)
-  _uninstall_apt_busy() { return 1; }
+  mm_apt_busy() { return 1; }
   MM_TTY=1
   mm_confirm() { [[ "$1" != *tailscale* ]]; }
   run _uninstall_apply "${_UN_SEL[@]}"

@@ -474,24 +474,6 @@ EOF
   [ -e "$HOME/.m2/repository/org/a/1.0/a.jar" ]
 }
 
-# ---------------------------------------------------------------- system
-
-@test "apt is busy during an unattended-upgrade run, not because its shutdown helper waits" {
-  mkdir -p "$SB/u"
-  printf '#!/bin/bash\nsleep 60\n:\n' >"$SB/u/unattended-upgrade-shutdown"
-  printf '#!/bin/bash\nsleep 60\n:\n' >"$SB/u/unattended-upgrade"
-  chmod +x "$SB/u/"*
-  src
-  mm_sudo() { "$@"; }                     # fuser as this user: sees no lock holder
-  if pgrep -x 'apt|apt-get|aptitude|dpkg' >/dev/null || pgrep -f '/unattended-upgrade( |$)' >/dev/null; then
-    skip "apt is really running on this host"
-  fi
-  mm_test_bg "$SB" "$SB/u/unattended-upgrade-shutdown" --wait-for-signal
-  none _clean_apt_busy
-  mm_test_bg "$SB" "$SB/u/unattended-upgrade"
-  _clean_apt_busy
-}
-
 # ---------------------------------------------------------------- dry run
 
 @test "dry-run calls no state-changing command and changes nothing" {

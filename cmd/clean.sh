@@ -101,7 +101,7 @@ _clean_busy() {
   read -r -a toks <<<"$1"
   for p in "${toks[@]}"; do
     if [[ "$p" == f:* ]]; then
-      pgrep -f -- "${p#f:}" >/dev/null 2>&1 && { p=${p#f:}; printf '%s' "${p//\\/}"; return 0; }
+      mm_proc_match "" "${p#f:}" && { p=${p#f:}; printf '%s' "${p//\\/}"; return 0; }
     elif mm_proc_running "$p"; then
       printf '%s' "${p%-cli.js}"; return 0
     fi
@@ -446,8 +446,9 @@ _clean_trash_dev() {
 _clean_system() {
   _clean_cat "System"
   if ! mm_can_sudo; then mm_skip "System cleanup" "needs sudo"; return; fi
-  if _clean_apt_busy; then
-    mm_skip "APT cleanup" "apt busy"
+  local busy
+  if busy=$(mm_apt_busy); then
+    mm_skip "APT cleanup" "$busy"
   else
     _clean_apt_cache
     _clean_apt_autoremove
@@ -461,16 +462,6 @@ _clean_system() {
 
 # _clean_apt_run DESC ARGS... — noninteractive apt-get as root.
 _clean_apt_run() { local d="$1"; shift; mm_run "$d" mm_sudo env DEBIAN_FRONTEND=noninteractive apt-get "$@"; }
-
-# _clean_apt_busy — 0 when apt/dpkg holds its lock (fuser, when psmisc is installed) or an apt,
-# dpkg or unattended-upgrade run is in progress. (unattended-upgrade-shutdown, which waits for
-# shutdown all day long, shares the truncated comm "unattended-upgr", so match the run itself.)
-_clean_apt_busy() {
-  if command -v fuser >/dev/null; then
-    mm_sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1 && return 0
-  fi
-  pgrep -x 'apt|apt-get|aptitude|dpkg' >/dev/null 2>&1 || pgrep -f '/unattended-upgrade( |$)' >/dev/null 2>&1
-}
 
 # _clean_pkg_bytes PKG... — Installed-Size total in bytes.
 _clean_pkg_bytes() {

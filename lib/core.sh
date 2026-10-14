@@ -131,19 +131,26 @@ mm_idle_days() {
   echo $(( ( $(date +%s) - ${newest%.*} ) / 86400 ))
 }
 
-# mm_sysline — "Ubuntu 24.04.5 LTS · 8 cores · 31GB RAM | Free: 37.0GB | Up 3h".
+# mm_sysline — "Ubuntu 24.04.5 LTS · 8 cores · 31GB RAM | Free: 37.0GB | Up 3d 4h 12m".
 mm_sysline() {
-  local os mem up
+  local os mem s up=""
   os=$(. /etc/os-release && echo "$PRETTY_NAME")
   mem=$(awk '/MemTotal/ { printf "%dGB", $2 / 1048576 + 0.5 }' /proc/meminfo)
-  up=$(uptime -p | sed 's/^up //; s/ days\?/d/; s/ hours\?/h/; s/ minutes\?/m/; s/,//g')
+  read -r s _ </proc/uptime; s=${s%.*}
+  (( s >= 86400 )) && up+="$((s / 86400))d "
+  (( s % 86400 >= 3600 )) && up+="$((s % 86400 / 3600))h "
+  up+="$((s % 3600 / 60))m"
   printf '%s · %s cores · %s RAM | Free: %s | Up %s' "$os" "$(nproc)" "$mem" "$(mm_human "$(mm_free_bytes /)")" "$up"
 }
 
 # ---------------------------------------------------------------- sudo
 
-# mm_can_sudo — 0 if root, passwordless sudo works, or we can prompt on a tty.
-mm_can_sudo() { (( EUID == 0 )) || sudo -n true 2>/dev/null || [[ "$MM_TTY" == 1 ]]; }
+# mm_can_sudo — 0 if root, or sudo is installed and either works without a password or can prompt
+# on a tty.
+mm_can_sudo() {
+  (( EUID == 0 )) && return 0
+  command -v sudo >/dev/null && { sudo -n true 2>/dev/null || [[ "$MM_TTY" == 1 ]]; }
+}
 # mm_sudo CMD... — run as root; prompts only when needed.
 mm_sudo() {
   if (( EUID == 0 )); then "$@"
@@ -428,10 +435,65 @@ mm_run() {
   return "$rc"
 }
 
+# ---------------------------------------------------------------- processes
+# Busy checks read /proc directly: procps and psmisc (pgrep, fuser) are missing from minimal
+# images and containers, and a missing tool must never read as "nothing is running".
+
+# mm_proc_match COMM_ERE [ARGV_ERE] — 0 if some process other than this shell has a name (comm,
+# at most 15 characters) that COMM_ERE matches entirely, or a command line (arguments joined by
+# spaces, like pgrep -f) that ARGV_ERE matches. An empty pattern matches nothing.
+mm_proc_match() {
+  local p comm IFS=' ' argv=()
+  for p in /proc/[0-9]*; do
+    [[ "${p#/proc/}" == "$$" || "${p#/proc/}" == "$BASHPID" ]] && continue
+    if [[ -n "$1" ]] && { IFS= read -r comm <"$p/comm"; } 2>/dev/null && [[ "$comm" =~ ^($1)$ ]]; then
+      return 0
+    fi
+    if [[ -n "${2:-}" ]] && { mapfile -d '' -t argv <"$p/cmdline"; } 2>/dev/null &&
+       (( ${#argv[@]} )) && [[ "${argv[*]}" =~ $2 ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # mm_proc_running NAME — 0 if NAME runs: exact comm, or a script whose argv names it (node-shebang
 # tools like pnpm/npm/yarn run as comm "node"/"MainThread"). Used for "<tool> busy" skips.
-mm_proc_running() {
-  pgrep -x "$1" >/dev/null 2>&1 || pgrep -f "(^|/)$1(\\.c?js)?( |\$)" >/dev/null 2>&1
+mm_proc_running() { mm_proc_match "$1" "(^|/)$1(\\.c?js)?( |\$)"; }
+
+# mm_proc_children PID — the PIDs whose parent is PID, one per line.
+mm_proc_children() {
+  local p st f=()
+  for p in /proc/[0-9]*; do
+    { IFS= read -r st <"$p/stat"; } 2>/dev/null || continue
+    read -r -a f <<<"${st##*) }"   # comm may hold spaces and ")": fields start after the last ") "
+    [[ "${f[1]:-}" == "$1" ]] && echo "${p#/proc/}"
+  done
+  return 0
+}
+
+# mm_apt_busy — 0, printing why, when apt, dpkg or an unattended-upgrade run is in progress, or a
+# process holds one of the dpkg/apt lock files open. The holders are root's processes, so their
+# open files are read as root; when that fails (sudo password refused) the answer is "busy": a
+# step that runs apt must skip rather than race.
+# (unattended-upgrade-shutdown waits for shutdown all day and shares the truncated comm
+# "unattended-upgr" with the run itself, so the run is matched on its command line.)
+mm_apt_busy() {
+  if mm_proc_match 'apt|apt-get|aptitude|dpkg' '/unattended-upgrade( |$)'; then echo "apt is running"; return 0; fi
+  local out locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock)
+  if (( EUID != 0 )) && ! { command -v sudo >/dev/null && sudo -n true 2>/dev/null; }; then
+    # Without root, passwordless sudo, or a terminal to ask for a password, nothing can run apt as
+    # root either (and a dry run runs nothing): there is no step to protect.
+    [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 ]] && command -v sudo >/dev/null || return 1
+  fi
+  out=$(mm_sudo bash -c 'if for f in /proc/[0-9]*/fd/*; do readlink "$f"; done 2>/dev/null |
+    grep -qxF -f <(printf "%s\n" "$@"); then echo held; else echo free; fi' _ "${locks[@]}")
+  case "$out" in
+    free) return 1 ;;
+    held) echo "a process holds the apt lock" ;;
+    *) echo "apt locks not visible without sudo" ;;
+  esac
+  return 0
 }
 
 # mm_pick HEADER < lines — fzf multi-select on the terminal (TAB marks). Prints selected lines.
