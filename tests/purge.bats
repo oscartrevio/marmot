@@ -608,3 +608,161 @@ agent_wt() { git -C "$SB/repo" worktree add -q "$HOME/.t3/worktrees/repo/$1" -b 
   [ -d "$HOME/.t3/worktrees/fake/x/node_modules" ]
   [ -z "$(mm_log_rows worktree)" ]
 }
+
+# ---------------------------------------------------------------- finished worktrees
+
+# age_hours PATH HOURS — make PATH (recursively) look HOURS old by mtime and atime.
+age_hours() { find "$1" -exec touch -c -h -d "$2 hours ago" {} +; }
+
+on_main() { git -C "$SB/repo" -c user.email=t@t -c user.name=t "$@"; }
+
+# feat_wt — $SB/wt on branch feat with two commits main does not have.
+feat_wt() {
+  wt_repo; wt_add wt -b feat
+  echo 1 >"$SB/wt/f1"; wt_commit "$SB/wt" "feat 1"
+  echo 2 >"$SB/wt/f2"; wt_commit "$SB/wt" "feat 2"
+}
+
+# fake_gh STATE — gh double, logged in, whose `pr view` answers STATE. Each call is recorded in
+# $BATS_TEST_TMPDIR/gh.calls with whether prompts were disabled and stdin was a terminal.
+fake_gh() {
+  mm_test_fake gh "echo \"\$* prompt-disabled=\${GH_PROMPT_DISABLED:-} tty=\$([[ -t 0 ]] && echo y || echo n)\" >>'$BATS_TEST_TMPDIR/gh.calls'
+case \"\$1 \$2\" in
+  'auth token') echo gho_test ;;
+  'pr view') ${2:-echo '$1'} ;;
+  *) exit 1 ;;
+esac"
+}
+
+@test "finished worktree: branch merged with a merge commit, idle 2h, is offered and removed" {
+  feat_wt; on_main merge -q --no-ff feat -m "Merge feat"
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/wt" ]
+  [ "$(git -C "$SB/repo" log -1 --format=%s feat)" = "feat 2" ]
+}
+
+@test "finished worktree: squash-merged branch is offered and removed" {
+  feat_wt; on_main merge -q --squash feat; on_main commit -qm "feat (#1)"
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ ! -e "$SB/wt" ]
+  git -C "$SB/repo" show-ref --verify -q refs/heads/feat
+}
+
+@test "finished worktree: rebased-and-merged branch is offered and removed" {
+  feat_wt
+  echo m >"$SB/repo/m"; on_main add m; on_main commit -qm "main moves on"
+  on_main cherry-pick feat~1 feat >/dev/null
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ ! -e "$SB/wt" ]
+}
+
+@test "finished worktree: upstream branch gone is offered and removed" {
+  feat_wt
+  git -C "$SB/repo" remote add origin "$SB/origin.git"
+  git -C "$SB/repo" config branch.feat.remote origin
+  git -C "$SB/repo" config branch.feat.merge refs/heads/feat
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ ! -e "$SB/wt" ]
+}
+
+@test "finished worktree: PR merged per gh is offered and removed; gh never gets a terminal or a prompt" {
+  feat_wt; fake_gh MERGED
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ ! -e "$SB/wt" ]
+  grep -q '^pr view feat .*prompt-disabled=1 tty=n$' "$BATS_TEST_TMPDIR/gh.calls"
+}
+
+@test "worktree whose PR is still open is kept" {
+  feat_wt; fake_gh OPEN
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ -f "$SB/wt/f2" ]
+  never_offered "$SB/wt"
+  grep -q '^pr view feat ' "$BATS_TEST_TMPDIR/gh.calls"
+}
+
+@test "a gh that hangs is cut off and the worktree kept" {
+  feat_wt; fake_gh OPEN 'exec sleep 30'
+  age_hours "$SB" 2
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  _PURGE_GH_TIMEOUT=1
+  MM_TTY=1
+  mm_confirm() { printf '%s\n' "$1" >>"$BATS_TEST_TMPDIR/offered"; return 0; }
+  _purge_ask() { printf n; }
+  SECONDS=0
+  run mm_cmd_main "$SB"
+  (( SECONDS < 15 ))
+  [ -f "$SB/wt/f2" ]
+  never_offered "$SB/wt"
+}
+
+@test "finished worktree with an uncommitted change is kept" {
+  feat_wt; on_main merge -q --no-ff feat -m "Merge feat"
+  echo changed >"$SB/wt/f1"
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ "$(cat "$SB/wt/f1")" = changed ]
+  never_offered "$SB/wt"
+}
+
+@test "finished worktree with an untracked file is kept" {
+  feat_wt; on_main merge -q --no-ff feat -m "Merge feat"
+  echo new >"$SB/wt/notes.txt"
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ -f "$SB/wt/notes.txt" ]
+  never_offered "$SB/wt"
+}
+
+@test "finished worktree that is locked is kept" {
+  feat_wt; on_main merge -q --no-ff feat -m "Merge feat"
+  git -C "$SB/repo" worktree lock "$SB/wt"
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ -d "$SB/wt" ]
+  never_offered "$SB/wt"
+}
+
+@test "finished worktree in use is kept" {
+  feat_wt; on_main merge -q --no-ff feat -m "Merge feat"
+  age_hours "$SB" 2
+  mm_test_bg "$SB/wt" sleep 60
+  wt_interactive "$SB"
+  [ -d "$SB/wt" ]
+  never_offered "$SB/wt"
+}
+
+@test "finished worktree idle under an hour is kept" {
+  feat_wt; on_main merge -q --no-ff feat -m "Merge feat"
+  age_hours "$SB" 2
+  touch "$SB/wt/f1"
+  wt_interactive "$SB"
+  [ -d "$SB/wt" ]
+  never_offered "$SB/wt"
+}
+
+@test "unmerged worktree idle 2h is kept (it waits 30 days)" {
+  feat_wt
+  age_hours "$SB" 2
+  wt_interactive "$SB"
+  [ -d "$SB/wt" ]
+  never_offered "$SB/wt"
+}
+
+@test "--yes never removes a finished worktree" {
+  feat_wt; on_main merge -q --no-ff feat -m "Merge feat"
+  age_hours "$SB" 2
+  run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ -d "$SB/wt" ]
+  wt_interactive --yes "$SB"
+  [ -d "$SB/wt" ]
+  never_offered "$SB/wt"
+  [ -z "$(mm_log_rows worktree)" ]
+}
