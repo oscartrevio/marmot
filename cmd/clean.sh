@@ -117,21 +117,23 @@ _clean_busy() {
   return 1
 }
 
-# _clean_tool LABEL "BUSY_PROC..." SIZE_DIR CMD... — run a tool's own cache clean, sized by SIZE_DIR.
-# CMD runs from / so project-local config (.npmrc, .yarnrc.yml, committed .yarn/cache) never applies.
-# Dry-run estimates the whole SIZE_DIR. Callers only invoke it when the tool is installed.
+# _clean_tool LABEL "BUSY_PROC..." SIZE_DIR CMD... — run a tool's own cache clean, measured by what
+# it frees in SIZE_DIR: files hard-linked from outside (a store linked into projects) stay on disk,
+# so they are not counted. CMD runs from / so project-local config (.npmrc, .yarnrc.yml, committed
+# .yarn/cache) never applies. Dry-run estimates what removing all of SIZE_DIR would free. Callers
+# only invoke it when the tool is installed.
 _clean_tool() {
-  local label="$1" procs="$2" dir="$3" busy before after freed; shift 3
+  local label="$1" procs="$2" dir="$3" busy size before after freed; shift 3
   [[ -d "$dir" ]] || { mm_ok "$label" "nothing to clean"; return; }
   if mm_whitelisted "$dir"; then mm_skip "$label" "whitelisted"; return; fi
   if busy=$(_clean_busy "$procs"); then mm_skip "$label" "$busy busy"; return; fi
-  before=$(mm_size "$dir")
-  if (( before < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$before"))"; return; fi
+  read -r size before < <(mm_size_frees "$dir")
+  if (( size < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$size"))"; return; fi
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_run "$label" env -C / "$@"; _clean_track "$before" 1; mm_ok "$label" "$(mm_human "$before")"; return
   fi
   mm_run "$label" env -C / "$@" || return 0
-  after=$(mm_size "$dir"); freed=$(( before > after ? before - after : 0 ))
+  after=$(mm_frees "$dir"); freed=$(( before > after ? before - after : 0 ))
   _clean_track "$freed" 1
   mm_ok "$label" "cleaned, $(mm_human "$freed")"
 }

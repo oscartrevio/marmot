@@ -607,3 +607,20 @@ sessions_run() {
   [ "$status" -eq 0 ]
   [ -e "$HOME/.claude/projects/p1/old.jsonl" ]
 }
+
+# ---------------------------------------------------------------- tool cache cleans: bytes freed
+
+@test "tool cleans count only what they free: cache files hard-linked from elsewhere stay on disk" {
+  fake_tools
+  fake_rec npm '[[ "$*" == "cache clean --force" ]] && rm -rf "$HOME/.npm/_cacache"; exit 0'
+  blob "$HOME/.npm/_cacache/linked"; mkdir -p "$SB/venv"; ln "$HOME/.npm/_cacache/linked" "$SB/venv/linked"
+  src
+  mm_proc_running() { return 1; }
+  MM_DRY_RUN=1 _clean_npm >/dev/null
+  local est=$_CLEAN_TOOL_BYTES
+  _CLEAN_TOOL_BYTES=0
+  _clean_npm >/dev/null
+  [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]        # dry-run matches the run
+  [ "$_CLEAN_TOOL_BYTES" -ge 1100000 ]       # the unlinked blob
+  [ "$_CLEAN_TOOL_BYTES" -lt 2200000 ]       # not the one a link outside keeps
+}
