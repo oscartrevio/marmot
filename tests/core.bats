@@ -166,7 +166,7 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
 @test "a target swapped while it is being sized is refused" {
   mkdir -p "$SB/root/x"; echo original >"$SB/root/x/f"
   mm_inuse_refresh
-  mm_size() { mv "$1" "$1.moved"; mkdir "$1"; echo 0; }
+  mm_frees() { mv "$1" "$1.moved"; mkdir "$1"; echo 0; }
   run try_rm "$SB/root/x" "$SB/root"
   [ "$output" = "1 changed while sizing" ]
   [ -d "$SB/root/x" ]; [ -f "$SB/root/x.moved/f" ]
@@ -270,12 +270,33 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   mm_test_fake df 'printf "Avail\n5000000003\n"'
   [ "$(mm_size "$SB/root")" = 3000000001 ]
   [ "$(mm_free_bytes /)" = 5000000003 ]
+  mm_test_fake find 'printf "1:2 1 5859375002 f\n"'
+  [ "$(mm_size_frees "$SB/root")" = "3000000001024 3000000001024" ]
+}
+
+@test "frees counts only files whose every hard link is inside; mm_rm frees exactly that" {
+  mkdir -p "$SB/root/a" "$SB/store"
+  head -c 40960 /dev/urandom >"$SB/store/shared"; ln "$SB/store/shared" "$SB/root/a/shared"
+  head -c 8192 /dev/urandom >"$SB/root/a/own"; ln "$SB/root/a/own" "$SB/root/a/own-too"
+  local shared size frees before after
+  shared=$(( $(stat -c %b "$SB/store/shared") * 512 ))
+  read -r size frees < <(mm_size_frees "$SB/root/a")
+  [ "$size" -eq "$(du -sB1 "$SB/root/a" | cut -f1)" ]
+  [ "$frees" -eq $(( size - shared )) ]
+  [ "$(mm_frees "$SB/root/a")" -eq "$frees" ]
+  before=$(du -sxB1 "$SB" | cut -f1)
+  mm_inuse_refresh
+  MM_DRY_RUN=0 mm_rm "$SB/root/a" "$SB/root"
+  after=$(du -sxB1 "$SB" | cut -f1)
+  [ "$MM_FREED" -eq "$frees" ]
+  [ $(( before - after )) -eq "$MM_FREED" ]
+  [ -f "$SB/store/shared" ]
 }
 
 @test "a size bash cannot count is refused before anything is removed" {
   mkdir -p "$SB/root/big"
   mm_inuse_refresh
-  mm_size() { echo 2.14748e+09; }
+  mm_frees() { echo 2.14748e+09; }
   run try_rm "$SB/root/big" "$SB/root"
   [ "$output" = "1 size unreadable" ]
   [ -d "$SB/root/big" ]
