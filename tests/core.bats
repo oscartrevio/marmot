@@ -259,6 +259,17 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   [ "$status" -ne 0 ]
 }
 
+@test "pickers work with fzf older than 0.34 (Ubuntu 22.04) and newer ones" {
+  local v
+  for v in "0.29 (devel)" "0.38.0 (debian)" "0.56.3 (af3d7e5)"; do
+    # an fzf of version v that rejects what that version does not know, and picks every line
+    mm_test_fake fzf "[[ \$1 == --version ]] && { echo '$v'; exit 0; }
+      for a; do [[ \$a == --height=~* && '$v' == 0.29* ]] && { echo 'not a valid number: ~60' >&2; exit 2; }; done
+      cat"
+    [ "$(printf 'a\nb\n' | MM_TTY=1 mm_pick header)" = $'a\nb' ]
+  done
+}
+
 @test "log rows stay one line per operation even for odd names" {
   MM_DRY_RUN=0 mm_log remove "$SB/a"$'\n'"b"$'\t'"c" 5 "why"$'\n'"not"
   [ "$(wc -l <"$XDG_STATE_HOME/marmot/operations.log")" -eq 1 ]

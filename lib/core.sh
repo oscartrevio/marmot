@@ -703,6 +703,10 @@ mm_pick() {
     [[ "$MM_TTY" == 1 ]] && mm_warn "fzf is not installed: nothing selected" >&2
     return 0
   fi
-  fzf --multi --ansi --reverse --height=~60% --header="$1" --header-first \
+  # Adaptive height (~60%) came with fzf 0.34; older ones (Ubuntu 22.04 ships 0.29) exit with
+  # "not a valid number" on it, which would select nothing.
+  local height='~60%'
+  [[ "$(fzf --version 2>/dev/null)" =~ ^0\.([0-9]+) ]] && (( 10#${BASH_REMATCH[1]} < 34 )) && height=60%
+  fzf --multi --ansi --reverse --height="$height" --header="$1" --header-first \
       --bind 'ctrl-a:select-all,ctrl-d:deselect-all' --prompt='filter> '
 }
