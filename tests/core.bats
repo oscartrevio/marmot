@@ -538,3 +538,21 @@ refused_all() {
   CLOUDSDK_CONFIG="$HOME/gc" mm_core
   refused_all "$HOME/gc/logs" "$G/logs/2026.01.01/10.00.00.000000.log"
 }
+
+# ---------------------------------------------------------------- agent waiver in logs dirs
+
+@test "the agent waiver acts in a logs dir outside agent state; credentials and open files there stay" {
+  local g="$HOME/.local/state/goose/logs"
+  mkdir -p "$g/cli/2026-01-01"
+  echo l >"$g/cli/2026-01-01/a.log"; echo t >"$g/oauth-token.log"; echo l >"$g/open.log"; echo l >"$g/cli/b.log"
+  mm_test_bg "$g" tail -f "$g/open.log"
+  mm_inuse_refresh
+  MM_AGENT_WAIVER="$g" run try_rm "$g/cli/2026-01-01/a.log" "$g";    [ "${output%% *}" = 0 ]
+  MM_AGENT_WAIVER="$g" run try_rm "$g/oauth-token.log" "$g";         [ "${output%% *}" = 1 ]
+  MM_AGENT_WAIVER="$g" run try_rm "$g/open.log" "$g";                [ "${output%% *}" = 1 ]
+  MM_AGENT_WAIVER="$g/cli" run try_rm "$g/cli/b.log" "$g/cli";       [ "${output%% *}" = 1 ]   # below a logs dir
+  [ ! -e "$g/cli/2026-01-01/a.log" ]
+  [ -e "$g/oauth-token.log" ]
+  [ -e "$g/open.log" ]
+  [ -e "$g/cli/b.log" ]
+}

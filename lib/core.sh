@@ -421,8 +421,8 @@ mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 # Returns 0 done (or would be, in dry-run), 1 refused (MM_SKIP_REASON set), 2 action failed.
 # Updates MM_FREED or MM_TRASHED (by mm_frees), MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals
 # other than "missing" and failures are written to the operations log.
-# MM_AGENT_WAIVER=DIR mm_rm ... (for that one call) acts inside one agent's own session or state
-# directory, which agent state protection otherwise covers: DIR must be exactly one directory
+# MM_AGENT_WAIVER=DIR mm_rm ... (for that one call) acts inside one agent's own session, state or
+# logs directory, which agent state protection otherwise covers: DIR must be exactly one directory
 # listed in lib/agents.sh and must be ALLOWED_ROOT. Only the agent state entries containing DIR are
 # lifted; other built-ins, protected trees, the whitelist file and in-use checks still apply, and
 # anything that looks like credentials is refused.

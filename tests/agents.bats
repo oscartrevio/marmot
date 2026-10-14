@@ -64,3 +64,56 @@ teardown() { mm_test_teardown; }
   [ -z "$(grep -v "^$HOME/" <<<"$output")" ]
   grep -qxF "$HOME/.cursor/worktrees" <<<"$output"
 }
+
+# ---------------------------------------------------------------- logs dirs
+
+# agent NAME — index of the agent called NAME.
+agent() { local i; for i in "${!MM_AGENT_NAME[@]}"; do [[ "${MM_AGENT_NAME[i]}" == "$1" ]] && { echo "$i"; return 0; }; done; return 1; }
+
+@test "the logs column loads aligned and leaves the columns before it as they were" {
+  [ "${#MM_AGENT_LOGS[@]}" -eq "${#MM_AGENT_NAME[@]}" ]
+  local c o
+  c=$(agent "Claude Code"); o=$(agent oh-my-pi)
+  [ "${MM_AGENT_ACTIVE[c]}" = "$HOME/.local/bin/claude" ]
+  [ "${MM_AGENT_VERSIONS[c]}" = "$HOME/.local/share/claude/versions" ]
+  [ -z "${MM_AGENT_LOGS[c]}" ]
+  [ "${MM_AGENT_SESSIONS[o]}" = "$HOME/.omp/agent/sessions" ]
+  [ -z "${MM_AGENT_ACTIVE[o]}" ]
+  [ "${MM_AGENT_LOGS[o]}" = "$HOME/.omp/logs" ]
+}
+
+@test "a row without the worktree and logs columns still loads, with no logs dir" {
+  MM_AGENTS_TABLE='
+Tool|tool|~/.tool|~/.tool/sessions|~/.tool/versions|~/.local/bin/tool
+'
+  MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
+  MM_AGENT_WORKTREES=() MM_AGENT_LOGS=()
+  _mm_agents_load
+  [ "${#MM_AGENT_LOGS[@]}" -eq 1 ]
+  [ "${MM_AGENT_ACTIVE[0]}" = "$HOME/.local/bin/tool" ]
+  [ -z "${MM_AGENT_LOGS[0]}" ]
+}
+
+@test "logs dirs are under HOME and never at, inside or above any session dir" {
+  local i j l s
+  for i in "${!MM_AGENT_NAME[@]}"; do
+    for l in ${MM_AGENT_LOGS[i]}; do
+      [[ "$l" == "$HOME"/?* ]] || { echo "not under HOME: $l"; false; }
+      for j in "${!MM_AGENT_NAME[@]}"; do
+        for s in ${MM_AGENT_SESSIONS[j]}; do
+          [[ "$l" != "$s" && "$l" != "$s"/* && "$s" != "$l"/* ]] || { echo "$l overlaps session dir $s"; false; }
+        done
+      done
+    done
+  done
+}
+
+@test "mm_agent_dir accepts a logs dir, not a folder above or below it" {
+  local g="$HOME/.local/state/goose/logs"
+  mkdir -p "$g/cli"
+  mm_agent_dir "$g"
+  run mm_agent_dir "$g/cli"
+  [ "$status" -ne 0 ]
+  run mm_agent_dir "$HOME/.local/state"
+  [ "$status" -ne 0 ]
+}

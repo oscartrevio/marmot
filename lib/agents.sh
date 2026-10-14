@@ -3,6 +3,8 @@
 # needs to recognize them:
 #   - their state (settings, credentials, session transcripts) is whitelisted and only reported,
 #     except old session files when the user opts in to retention (`mm clean --sessions DAYS`);
+#   - their own diagnostic logs (*.log files in their logs dirs) older than 7 days are removed by
+#     `mm clean`: logs, not conversations;
 #   - their processes count as agent sessions in `mm status`;
 #   - tools that keep every installed version get old versions pruned by `mm clean`
 #     (the active one, resolved through its launcher symlink, plus one previous are kept);
@@ -11,7 +13,7 @@
 #
 # Row fields, separated by '|':
 #   name | process names | state dirs/files | session dirs | versions dir | active-version symlink
-#   | worktree dirs
+#   | worktree dirs | logs dirs
 # Worktree dirs are where a tool creates git worktrees by default (users can move them). They are
 # hints for discovery only: purge acts on a directory there only if its .git file points into a
 # repository's worktrees dir (<repo>/.git/worktrees/<name>) and that repository lists it. Tools
@@ -19,20 +21,37 @@
 # <repo>/worktrees) or next to it need no entry: purge finds every worktree registered to a
 # repository it scans. Inside such a worktree, purge may remove the worktree itself (git
 # worktree remove) and its build artifacts; the rest of the tool's state dir stays protected.
+#
+# Logs dirs are listed only where the tool documents them (default locations; sources below), and
+# never at, inside or above a session dir. Left out: Claude Code (~/.claude/debug holds .txt files
+# and Claude Code sweeps it itself), Crush (logs per project in ./.crush/logs), Gemini CLI, Qwen
+# Code, Cursor Agent, Amp and Aider (no documented logs dir in the home folder).
+#   Codex CLI   ~/.codex/log: codex-tui.log of earlier releases (current ones log only with log_dir)
+#               https://github.com/openai/codex/blob/ae110493973d5b72f60d42efe2fae91d51ca9c0e/codex-rs/tui/src/lib.rs#L414-L418
+#   Copilot CLI ~/.copilot/logs: process-<timestamp>-<pid>.log, plus logs/extensions/
+#               https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference#logs
+#   opencode    ~/.local/share/opencode/log: <timestamp>.log
+#               https://github.com/anomalyco/opencode/blob/13afea6a1a76360936bbaa7677cff600ad52d452/packages/web/src/content/docs/troubleshooting.mdx#L10-L18
+#   Goose       ~/.local/state/goose/logs: cli/<date>/, server/<date>/, extension logs
+#               https://github.com/aaif-goose/goose/blob/0505d4bd2d915832d83418b188fa1df630217fc9/documentation/docs/guides/logs.md#L14
+#   Cline       ~/.cline/data/logs: cline.log (CLINE_LOG_PATH default <CLINE_DATA_DIR>/logs/cline.log)
+#               https://github.com/cline/cline/blob/789f79e46d3ba579717e8dc8be35fe28af935b06/apps/cli/README.md#L265
+#   oh-my-pi    ~/.omp/logs: omp.<date>.<pid>.log
+#               https://github.com/can1357/oh-my-pi/blob/d0362782e2107c3c49e5fa1cd05d1dd823697a3a/packages/utils/src/dirs.ts#L637-L657
 MM_AGENTS_TABLE='
 Claude Code|claude|~/.claude ~/.claude.json|~/.claude/projects ~/.claude/sessions|~/.local/share/claude/versions|~/.local/bin/claude|
-Codex CLI|codex|~/.codex|~/.codex/sessions|||~/.codex/worktrees
+Codex CLI|codex|~/.codex|~/.codex/sessions|||~/.codex/worktrees|~/.codex/log
 Gemini CLI|gemini|~/.gemini|~/.gemini/tmp|||
 Cursor Agent|cursor-agent|~/.cursor|~/.cursor/chats ~/.cursor/projects|~/.local/share/cursor-agent/versions|~/.local/bin/cursor-agent|~/.cursor/worktrees
-GitHub Copilot CLI|copilot|~/.copilot/session-state ~/.copilot/config.json|~/.copilot/session-state|~/.copilot/pkg/universal|~/.local/bin/copilot|
+GitHub Copilot CLI|copilot|~/.copilot/session-state ~/.copilot/config.json|~/.copilot/session-state|~/.copilot/pkg/universal|~/.local/bin/copilot||~/.copilot/logs
 Aider|aider|~/.aider ~/.aider.conf.yml||||
-opencode|opencode|~/.local/share/opencode ~/.config/opencode|~/.local/share/opencode/project|||
+opencode|opencode|~/.local/share/opencode ~/.config/opencode|~/.local/share/opencode/project||||~/.local/share/opencode/log
 Amp|amp|~/.amp ~/.local/share/amp ~/.config/amp|~/.local/share/amp|||
-Goose|goose|~/.local/share/goose ~/.config/goose ~/.local/state/goose|~/.local/share/goose/sessions|||
+Goose|goose|~/.local/share/goose ~/.config/goose ~/.local/state/goose|~/.local/share/goose/sessions||||~/.local/state/goose/logs
 Crush|crush|~/.local/share/crush ~/.config/crush||||
 Qwen Code|qwen|~/.qwen|~/.qwen/tmp ~/.qwen/projects|||
-Cline|cline|~/.cline||||
-oh-my-pi|omp|~/.omp|~/.omp/agent/sessions|||
+Cline|cline|~/.cline|||||~/.cline/data/logs
+oh-my-pi|omp|~/.omp|~/.omp/agent/sessions||||~/.omp/logs
 Paseo|paseo|~/.paseo|~/.paseo/agents|||~/.paseo/worktrees
 T3 Code|t3|~/.t3||||~/.t3/worktrees
 Claude Squad|cs claude-squad|~/.claude-squad||||~/.claude-squad/worktrees
@@ -42,7 +61,7 @@ uzi|uzi|~/.local/share/uzi||||~/.local/share/uzi/worktrees
 '
 
 MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
-MM_AGENT_WORKTREES=()
+MM_AGENT_WORKTREES=() MM_AGENT_LOGS=()
 
 # _mm_tilde_list WORDS — expand a leading ~ in each space-separated word.
 _mm_tilde_list() {
@@ -52,8 +71,8 @@ _mm_tilde_list() {
 }
 
 _mm_agents_load() {
-  local name procs state sessions versions active worktrees
-  while IFS='|' read -r name procs state sessions versions active worktrees; do
+  local name procs state sessions versions active worktrees logs
+  while IFS='|' read -r name procs state sessions versions active worktrees logs; do
     [[ -n "$name" ]] || continue
     MM_AGENT_NAME+=("$name")
     MM_AGENT_PROCS+=("$procs")
@@ -62,6 +81,7 @@ _mm_agents_load() {
     MM_AGENT_VERSIONS+=("$(_mm_tilde_list "$versions")")
     MM_AGENT_ACTIVE+=("$(_mm_tilde_list "$active")")
     MM_AGENT_WORKTREES+=("$(_mm_tilde_list "$worktrees")")
+    MM_AGENT_LOGS+=("$(_mm_tilde_list "$logs")")
   done <<<"$MM_AGENTS_TABLE"
 }
 _mm_agents_load
@@ -81,11 +101,11 @@ mm_agent_state_paths() {
   done
 }
 
-# mm_agent_dir PATH — 0 if the resolved PATH is exactly one known agent's session or state
+# mm_agent_dir PATH — 0 if the resolved PATH is exactly one known agent's session, state or logs
 # directory (not a file, not a folder above or below one) and lies strictly inside $HOME.
 mm_agent_dir() {
   local s p r
-  for s in "${MM_AGENT_SESSIONS[@]}" "${MM_AGENT_STATE[@]}"; do
+  for s in "${MM_AGENT_SESSIONS[@]}" "${MM_AGENT_STATE[@]}" "${MM_AGENT_LOGS[@]}"; do
     for p in $s; do
       r=$(realpath -e -- "$p" 2>/dev/null) && [[ -d "$r" && "$r" == "$1" && "$r" == "$HOME"/?* ]] && return 0
     done
