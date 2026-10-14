@@ -1348,3 +1348,51 @@ vscode_leftovers() {
   gone "$d/b2_ideaIU-2024.1.1" "$d/e5_PyCharm-2023.2.1"
   exist "$d/a1_ideaIU-2023.3.2" "$d/c3_ideaIU-2024.2.0" "$d/d4_PyCharm-2024.1.4"
 }
+
+# ---------------------------------------------------------------- agent browser profile caches
+
+# browser_profile DIR — a Chromium user-data-dir: 200KB in each cache folder of Default, plus
+# logins, cookies and settings that must stay.
+browser_profile() {
+  local p="$1" leaf
+  for leaf in Cache/Cache_Data "Code Cache/js" GPUCache DawnGraphiteCache GrShaderCache "Service Worker/CacheStorage/ab"; do
+    mkdir -p "$p/Default/$leaf"; head -c 200000 /dev/urandom >"$p/Default/$leaf/data_0"
+  done
+  mkdir -p "$p/Default/Service Worker/ScriptCache" "$p/Default/Local Storage/leveldb"
+  echo s >"$p/Default/Service Worker/ScriptCache/index"; echo c >"$p/Default/Cookies"; echo l >"$p/Default/Login Data"
+  echo l >"$p/Default/Local Storage/leveldb/000003.log"; echo '{}' >"$p/Local State"
+}
+
+@test "agent browser profiles: only cache folders go; dry-run frees what a real run frees" {
+  local p="$HOME/.cache/chrome-devtools-mcp/chrome-profile" before after est
+  browser_profile "$p"
+  src; mm_inuse_refresh >/dev/null 2>&1
+  before=$(du -sB1 "$p" | cut -f1)
+  MM_DRY_RUN=1; _clean_browser_profiles >/dev/null
+  est=$MM_FREED
+  [ "$(du -sB1 "$p" | cut -f1)" -eq "$before" ]
+  MM_DRY_RUN=0 MM_FREED=0; _clean_browser_profiles >/dev/null
+  after=$(du -sB1 "$p" | cut -f1)
+  [ "$MM_FREED" -eq "$est" ]
+  [ $((before - after)) -eq "$est" ]
+  (( est >= 6 * 200000 ))
+  gone "$p/Default/Cache" "$p/Default/Code Cache" "$p/Default/GPUCache" "$p/Default/Service Worker/CacheStorage"
+  exist "$p/Default/Cookies" "$p/Default/Login Data" "$p/Default/Local Storage/leveldb/000003.log" \
+    "$p/Default/Service Worker/ScriptCache/index" "$p/Local State"
+}
+
+@test "agent browser profiles: a profile a browser has open is skipped" {
+  local m="$HOME/.cache/chrome-devtools-mcp" c="$HOME/.cache/chrome-devtools-mcp-cli" host
+  browser_profile "$m/chrome-profile"; browser_profile "$m/chrome-profile-canary"
+  browser_profile "$c/chrome-profile"; browser_profile "$c/chrome-profile-beta"
+  IFS= read -r host </proc/sys/kernel/hostname
+  mm_test_bg "$SB" bash -c 'sleep 60; :' "--user-data-dir=$m/chrome-profile"
+  ln -s "$host-$$" "$m/chrome-profile-canary/SingletonLock"           # live lock: this test's shell
+  ln -s "$host-999999999" "$c/chrome-profile-beta/SingletonLock"      # stale lock: no such process
+  mm_test_bg "$c/chrome-profile/Default" sleep 60                     # a process works inside it
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_browser_profiles
+  [ "$status" -eq 0 ]
+  exist "$m/chrome-profile/Default/Cache" "$m/chrome-profile-canary/Default/Cache" "$c/chrome-profile/Default/Cache"
+  gone "$c/chrome-profile-beta/Default/Cache"
+}

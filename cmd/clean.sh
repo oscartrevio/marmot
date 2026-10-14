@@ -26,7 +26,8 @@ Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Carg
 Gradle build cache and daemon logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, RubyGems,
 Bundler, Composer, CPAN, Hex, opam, Android, kubectl discovery, Jupyter runtime files when no
 Jupyter runs, ... see lib/catalog.sh), the mise, conda and Homebrew caches through their own
-cleanup commands (nix garbage collection only with nix_gc = on in the config file), old
+cleanup commands (nix garbage collection only with nix_gc = on in the config file), the cache
+folders of chrome-devtools-mcp's browser profiles while no browser has them open (logins stay), old
 Playwright/Puppeteer/Cypress browser builds, Firebase emulators and agent-browser Chrome builds,
 old versions of coding-agent CLIs (the active one
 and one previous are kept), gcloud and Azure CLI logs older than 7 days (their credentials are
@@ -361,6 +362,7 @@ _clean_dev() {
   command -v brew >/dev/null && _clean_brew
   command -v nix-collect-garbage >/dev/null && _clean_nix
   _clean_catalog_caches
+  _clean_browser_profiles
   _clean_cloud_logs
   _clean_cat_end
 }
@@ -814,6 +816,73 @@ _clean_nix() {
     mm_ok "$label" "collected, $(mm_human "$freed")"
   fi
   rm -f -- "$log" # SAFE: the mktemp copy of nix's output created above
+}
+
+# ---------------------------------------------------------------- agent browser profiles
+
+# Persistent Chromium profiles that browser tools for agents keep in the home folder grow their
+# HTTP, code and GPU caches without bound. Only those cache folders of the Default profile go;
+# logins, cookies and site storage stay, and a profile a browser has open is skipped.
+# chrome-devtools-mcp: <dir>/chrome-profile (stable) or chrome-profile-<channel>, in
+# ~/.cache/chrome-devtools-mcp (MCP server) and ~/.cache/chrome-devtools-mcp-cli (its CLI).
+# agent-browser keeps no profile here (temporary ones, or a path you choose with --profile), and
+# profiles inside agent state (such as Antigravity's under ~/.gemini) stay protected.
+_CLEAN_BROWSER_PROFILE_DIRS=("$HOME/.cache/chrome-devtools-mcp" "$HOME/.cache/chrome-devtools-mcp-cli")
+_CLEAN_CHROMIUM_CACHES=(Cache "Code Cache" GPUCache DawnCache DawnGraphiteCache GrShaderCache "Service Worker/CacheStorage")
+
+_clean_browser_profiles() {
+  local base profile
+  for base in "${_CLEAN_BROWSER_PROFILE_DIRS[@]}"; do
+    [[ -d "$base" ]] || continue
+    while IFS= read -r -d '' profile; do
+      _clean_browser_profile "$profile"
+    done < <(find "$base" -mindepth 1 -maxdepth 1 -type d \( -name chrome-profile -o -name 'chrome-profile-*' \) -print0 2>/dev/null)
+  done
+  return 0
+}
+
+# _clean_browser_profile PROFILE — permanently remove the cache folders of PROFILE/Default.
+_clean_browser_profile() {
+  local profile="$1" label leaf why n=0 b=0 kept=0 fail=0
+  label="Browser profile caches (${profile/#$HOME/\~})"
+  if why=$(_clean_profile_open "$profile"); then mm_skip "$label" "$why"; return 0; fi
+  for leaf in "${_CLEAN_CHROMIUM_CACHES[@]}"; do
+    [[ -d "$profile/Default/$leaf" && ! -L "$profile/Default/$leaf" ]] || continue
+    mm_rm "$profile/Default/$leaf" "$profile"
+    case $? in
+      0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      *) fail=$((fail + 1)) ;;
+    esac
+  done
+  (( n + kept + fail )) || return 0
+  mm_ok "$label" "$(_clean_detail "$n" "cache folders" "$b" "$kept" "$fail")"
+}
+
+# _clean_profile_open PROFILE — print why a browser has PROFILE open: a process uses a file in it,
+# a running process was started with it as --user-data-dir, or Chromium's SingletonLock
+# ("<host>-<pid>") names a live process here or another host. 1 when it is free.
+_clean_profile_open() {
+  local p="$1" lock me=""
+  if mm_in_use "$p"; then printf 'in use'; return 0; fi
+  if mm_proc_match "" "--user-data-dir[= ]$(_clean_ere_quote "$p")/?( |\$)"; then printf 'browser running'; return 0; fi
+  lock=$(readlink -- "$p/SingletonLock" 2>/dev/null) || return 1
+  { IFS= read -r me </proc/sys/kernel/hostname; } 2>/dev/null
+  if [[ "${lock%-*}" != "$me" || ! "${lock##*-}" =~ ^[0-9]+$ || -d "/proc/${lock##*-}" ]]; then
+    printf 'browser running'; return 0
+  fi
+  return 1
+}
+
+# _clean_ere_quote STRING — STRING with ERE special characters escaped.
+_clean_ere_quote() {
+  local s="$1" out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c=${s:i:1}
+    case $c in \[|\]|\\|.|\*|^|\$|+|\?|\(|\)|\{|\}|\|) out+=\\ ;; esac
+    out+=$c
+  done
+  printf '%s' "$out"
 }
 
 # ---------------------------------------------------------------- 3. system
