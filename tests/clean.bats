@@ -312,7 +312,7 @@ catalog() { src; mm_catalog_load; mm_inuse_refresh >/dev/null 2>&1; }
 # full_run ARGS... — `mm clean` with every machine-changing tool faked and the temp scan in $SB/tmp.
 full_run() { fake_tools; fake_docker; _CLEAN_TMP_DIRS="$SB/tmp" run mm clean "$@"; }
 
-# busy_proc NAME — run a process called NAME (a script, so pgrep sees it by name) until teardown.
+# busy_proc NAME — run a process called NAME (a script, so its process name is NAME) until teardown.
 busy_proc() {
   mkdir -p "$SB/bin"; printf '#!/bin/bash\nsleep 60\n:\n' >"$SB/bin/$1"; chmod +x "$SB/bin/$1"
   mm_test_bg "$SB" "$SB/bin/$1"

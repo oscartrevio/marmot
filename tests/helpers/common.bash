@@ -119,3 +119,27 @@ mm_test_clock() {
   }
   export -f date
 }
+
+# mm_test_pids [--parent PID] [--comm NAME] [--cmdline TEXT] [--cmdline-has TEXT] — PIDs matching
+# every filter given: parent, exact name, exact command line (arguments joined by spaces), or a
+# command line containing TEXT. Read from /proc: procps (pgrep) is not installed everywhere.
+mm_test_pids() {
+  local parent="" comm="" exact="" has="" p st c f=() argv=() IFS=' '
+  while (( $# )); do
+    case "$1" in
+      --parent) parent=$2 ;; --comm) comm=$2 ;; --cmdline) exact=$2 ;; --cmdline-has) has=$2 ;;
+    esac
+    shift 2
+  done
+  for p in /proc/[0-9]*; do
+    [[ "${p#/proc/}" == "$BASHPID" ]] && continue
+    { IFS= read -r st <"$p/stat"; IFS= read -r c <"$p/comm"; mapfile -d '' -t argv <"$p/cmdline"; } 2>/dev/null || continue
+    read -r -a f <<<"${st##*) }"
+    [[ -z "$parent" || "${f[1]:-}" == "$parent" ]] || continue
+    [[ -z "$comm" || "$c" == "$comm" ]] || continue
+    [[ -z "$exact" || "${argv[*]}" == "$exact" ]] || continue
+    [[ -z "$has" || "${argv[*]}" == *"$has"* ]] || continue
+    echo "${p#/proc/}"
+  done
+  return 0
+}
