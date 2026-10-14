@@ -22,9 +22,16 @@ _PURGE_PATHS_TEMPLATE='# marmot purge: project roots to scan, one per line; ~ ex
 # Always rebuildable: pruned at the match, never descended into.
 _PURGE_TARGETS=(node_modules .next .nuxt .output .turbo .parcel-cache .svelte-kit .astro .angular
   .expo .vite coverage __pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .nox .gradle
-  .terragrunt-cache .dart_tool .zig-cache zig-out .cxx)
-# Only rebuildable next to the right manifest; validated after the scan.
-_PURGE_CONDITIONAL=(target build dist venv .venv vendor)
+  .terragrunt-cache .dart_tool .zig-cache zig-out .cxx .docusaurus)
+# Only rebuildable next to the right manifest; validated after the scan. Also .nx/cache (nx.json),
+# and any directory that tags itself a cache with CACHEDIR.TAG.
+_PURGE_CONDITIONAL=(target build dist venv .venv vendor .build obj bin bower_components .pnpm-store)
+# A tagged cache dir counts only directly inside a project: one of these next to it.
+_PURGE_PROJECT_FILES=(.git package.json Cargo.toml go.mod pyproject.toml setup.py requirements.txt
+  pom.xml build.gradle build.gradle.kts Gemfile composer.json pubspec.yaml Package.swift Makefile
+  CMakeLists.txt build.zig mix.exs deno.json)
+# https://bford.info/cachedir/ — the first line of a CACHEDIR.TAG file.
+_PURGE_CACHEDIR_SIG="Signature: 8a477f597d28d172789f06886806bc55"
 # Never descended into: installed packages, not projects.
 _PURGE_SKIP_NAMES=(site-packages dist-packages)
 # Below $HOME (besides dot-dirs): snap app data, the Go module cache, conda installs.
@@ -51,7 +58,9 @@ Usage: mm purge [DIR...] [options]
    merged or closed (asked through gh when it is installed and logged in). Unmerged ones after
    ${_PURGE_WT_UNMERGED_DAYS}+ idle days. Removed with \`git worktree remove\` (never --force; the branch is kept),
    only after you confirm on a terminal.
-2. Build artifacts (node_modules, .next, target, dist, venvs, caches). Projects idle longer
+2. Build artifacts (node_modules, .next, target, dist, venvs, caches, SwiftPM .build, .NET
+   bin/obj, bower_components, .nx/cache, .docusaurus, a project's .pnpm-store, and folders inside
+   a project that tag themselves as caches with CACHEDIR.TAG). Projects idle longer
    than --days are selected by default. Never touched: projects with a running process inside
    them, anything git tracks, and anything whose git state can't be read. Virtualenvs (venv,
    .venv) go to the Trash; everything else is deleted permanently.
@@ -102,8 +111,9 @@ _purge_covered() {
   return 1
 }
 
-# _purge_scan ROOT... — NUL-separated records, artifacts shallowest first:
-#   A<TAB>depth<TAB>path  candidate artifact dir (unvalidated)
+# _purge_scan ROOT... — NUL-separated records, in find order:
+#   A<TAB>depth<TAB>path  candidate artifact dir (unvalidated); dirs holding a CACHEDIR.TAG file
+#                         carry the depth of that file
 #   G<TAB>0<TAB>path      a .git entry (repository or worktree)
 #   T<TAB>0<TAB>root      the scan of root hit the time limit (results partial)
 _purge_scan() {
@@ -119,10 +129,11 @@ _purge_scan() {
     timeout "$_PURGE_SCAN_TIMEOUT" find "$root" -xdev -maxdepth "$_PURGE_MAXDEPTH" \
       \( "${skip[@]:1}" \) -prune \
       -o -name .git -printf 'G\t0\t%p\0' -prune \
-      -o -type d \( "${always[@]:1}" \) -printf 'A\t%d\t%p\0' -prune \
-      -o -type d \( "${cond[@]:1}" \) -printf 'A\t%d\t%p\0' 2>/dev/null
+      -o -type d \( "${always[@]:1}" -o -path '*/.nx/cache' \) -printf 'A\t%d\t%p\0' -prune \
+      -o -type d \( "${cond[@]:1}" \) -printf 'A\t%d\t%p\0' \
+      -o -type f -name CACHEDIR.TAG -printf 'A\t%d\t%h\0' 2>/dev/null
     (( $? == 124 )) && printf 'T\t0\t%s\0' "$root"
-  done | sort -z -s -n -t$'\t' -k2,2
+  done
 }
 
 # _purge_known NAME — 0 if NAME is one of the artifact names purge targets.
@@ -177,26 +188,22 @@ _purge_ignored() {
 }
 
 # _purge_valid ARTIFACT ROOT... — 0 purgeable, 1 not an artifact (ignored silently), 2 keep and
-# say so (git state unknown). Rules: absolute, no control characters, a known artifact name, a
-# real directory (not a symlink), not a repository itself, not inside a $HOME dot-dir no ROOT
-# points into, the name-specific manifest rule, and nothing under it tracked by git.
+# say so (git state unknown). Rules: absolute, no control characters, a real directory (not a
+# symlink), not a repository itself, not inside a $HOME dot-dir no ROOT points into, a named rule
+# (_purge_rule) or a tagged cache (_purge_tagged_cache), and nothing under it tracked by git.
 _purge_valid() {
   local art="$1" proj="${1%/*}" name="${1##*/}" rc; shift
   _PURGE_WHY=""
+  [[ "$art" == */.nx/cache ]] && proj="${art%/.nx/cache}"
   [[ "$art" == /?*/?* && "$art" != *[[:cntrl:]]* ]] || return 1
-  _purge_known "$name" || return 1
   [[ -d "$art" && ! -L "$art" ]] || return 1
   [[ -e "$art/.git" || -L "$art/.git" ]] && return 1 # a repository: never an artifact
   _purge_covered "$art" "$@" || return 1
-  case "$name" in
-    target) [[ -f "$proj/Cargo.toml" || -f "$proj/pom.xml" ]] || return 1 ;;
-    build|dist)
-      [[ -f "$proj/package.json" || -f "$proj/pyproject.toml" || -f "$proj/build.gradle" ||
-         -f "$proj/build.gradle.kts" ]] || return 1
-      rc=0; _purge_ignored "$proj" "$name" || rc=$?
-      case "$rc" in 0) ;; 1) return 1 ;; *) _PURGE_WHY="could not verify git state"; return 2 ;; esac ;;
-    venv|.venv) [[ -f "$art/pyvenv.cfg" ]] || return 1 ;;
-    vendor) [[ -f "$proj/composer.json" ]] || return 1 ;;
+  rc=0; _purge_rule "$art" "$proj" "$name" || rc=$?
+  case "$rc" in
+    0) ;;
+    1) _purge_tagged_cache "$art" "$proj" "$@" || return 1 ;;
+    *) _PURGE_WHY="could not verify git state"; return 2 ;;
   esac
   rc=0; _purge_tracked "$art" || rc=$?
   case "$rc" in
@@ -204,6 +211,51 @@ _purge_valid() {
     1) return 0 ;;
     *) _PURGE_WHY="could not verify git state"; return 2 ;;
   esac
+}
+
+# _purge_rule ART PROJ NAME — 0 if ART matches a named rule: an always-rebuildable name, or a
+# conditional one with its manifest; 1 no rule matches; 2 the git state needed is unknown.
+_purge_rule() {
+  local art="$1" proj="$2" name="$3" rc
+  if [[ "$art" == */.nx/cache ]]; then [[ -f "$proj/nx.json" ]]; return; fi
+  _purge_known "$name" || return 1
+  case "$name" in
+    target) [[ -f "$proj/Cargo.toml" || -f "$proj/pom.xml" ]] || return 1 ;;
+    build|dist)
+      [[ -f "$proj/package.json" || -f "$proj/pyproject.toml" || -f "$proj/build.gradle" ||
+         -f "$proj/build.gradle.kts" ]] || return 1
+      rc=0; _purge_ignored "$proj" "$name" || rc=$?
+      case "$rc" in 0) ;; 1) return 1 ;; *) return 2 ;; esac ;;
+    venv|.venv) [[ -f "$art/pyvenv.cfg" ]] || return 1 ;;
+    vendor) [[ -f "$proj/composer.json" ]] || return 1 ;;
+    .build) [[ -f "$proj/Package.swift" ]] || return 1 ;;
+    obj) _purge_dotnet_project "$proj" || return 1 ;;
+    bin) _purge_dotnet_project "$proj" && [[ -d "$art/Debug" || -d "$art/Release" ]] || return 1 ;;
+    bower_components) [[ -f "$proj/bower.json" ]] || return 1 ;;
+    .pnpm-store) [[ -f "$proj/package.json" || -f "$proj/pnpm-workspace.yaml" ]] || return 1 ;;
+  esac
+  return 0
+}
+
+# _purge_dotnet_project DIR — 0 if DIR holds a .NET project file.
+_purge_dotnet_project() {
+  local f
+  for f in "$1"/*.csproj "$1"/*.fsproj "$1"/*.vbproj; do [[ -f "$f" ]] && return 0; done
+  return 1
+}
+
+# _purge_tagged_cache ART PROJ ROOT... — 0 if ART tags itself a cache (a regular CACHEDIR.TAG
+# file that starts with the standard signature) and sits directly in a project (one of
+# _PURGE_PROJECT_FILES next to it), never a scan root itself nor directly in $HOME. People also
+# tag folders only to keep them out of backups, so a tag alone is not enough.
+_purge_tagged_cache() {
+  local art="$1" proj="$2" tag="$1/CACHEDIR.TAG" sig r f; shift 2
+  [[ -f "$tag" && ! -L "$tag" ]] || return 1
+  read -r -N "${#_PURGE_CACHEDIR_SIG}" sig <"$tag" 2>/dev/null || return 1
+  [[ "$sig" == "$_PURGE_CACHEDIR_SIG" && "$proj" != "$HOME" ]] || return 1
+  for r; do [[ "$art" != "$r" ]] || return 1; done
+  for f in "${_PURGE_PROJECT_FILES[@]}"; do [[ -e "$proj/$f" || -L "$proj/$f" ]] && return 0; done
+  return 1
 }
 
 # _purge_gitroot DIR — nearest ancestor-or-self holding .git, below $HOME (a dotfiles repo at
@@ -772,6 +824,10 @@ mm_cmd_main() {
   local -A seen=() gitroot_of=() activity=()
   local -a arts=() projs=() gits=()
   local art proj anc ok g rc
+  # shallowest first, so an artifact inside another one is seen as part of it
+  mapfile -d '' -t cand_raw < <(for art in "${cand_raw[@]}"; do
+      anc="${art//[!\/]/}"; printf '%s\t%s\0' "${#anc}" "$art"
+    done | sort -z -s -n -t$'\t' -k1,1 | cut -z -f2-)
   for art in "${cand_raw[@]}"; do
     [[ -n "$art" && -z "${seen[$art]:-}" ]] || continue
     # an artifact nested inside an already-matched one is part of it
@@ -787,7 +843,7 @@ mm_cmd_main() {
     fi
     (( rc == 0 )) || continue
     seen[$art]=1
-    proj="${art%/*}"
+    proj="${art%/*}"; [[ "$art" == */.nx/cache ]] && proj="${art%/.nx/cache}"
     if [[ -z "${gitroot_of[$proj]+x}" ]]; then
       gitroot_of[$proj]=$(_purge_gitroot "$proj")
       activity[$proj]=$(_purge_activity "$proj" "${gitroot_of[$proj]}")
