@@ -766,3 +766,85 @@ esac"
   never_offered "$SB/wt"
   [ -z "$(mm_log_rows worktree)" ]
 }
+
+# ---------------------------------------------------------------- more artifact kinds
+
+# cache_tag DIR [FIRST_LINE] — DIR holding a blob and a CACHEDIR.TAG with the standard signature
+# (or FIRST_LINE).
+cache_tag() {
+  mkdir -p "$1"; head -c 8192 /dev/urandom >"$1/blob"
+  printf '%s\n# This file is a cache directory tag.\n' "${2:-Signature: 8a477f597d28d172789f06886806bc55}" >"$1/CACHEDIR.TAG"
+}
+
+# manifest DIR FILE... — DIR with empty project files.
+manifest() { local d="$1"; shift; mkdir -p "$d"; for f; do echo '{}' >"$d/$f"; done; }
+
+@test "a folder tagged as a cache (CACHEDIR.TAG) inside a project is purged" {
+  manifest "$SB/p" Cargo.toml; cache_tag "$SB/p/out"
+  manifest "$SB/q" Makefile; cache_tag "$SB/q/build-cache"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/p/out" ]
+  [ ! -e "$SB/q/build-cache" ]
+  [ -f "$SB/q/Makefile" ]
+}
+
+@test "CACHEDIR.TAG alone is not enough: bad signature, symlinked tag, no project, scan root, tracked are kept" {
+  manifest "$SB/bad" package.json; cache_tag "$SB/bad/c" "Signature: 0000"
+  manifest "$SB/link" package.json; cache_tag "$SB/elsewhere"
+  mkdir -p "$SB/link/c"; ln -s "$SB/elsewhere/CACHEDIR.TAG" "$SB/link/c/CACHEDIR.TAG"
+  cache_tag "$SB/loose/c"
+  manifest "$SB/r" package.json; cache_tag "$SB/r/c"; git_repo "$SB/r"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ -f "$SB/bad/c/blob" ]
+  [ -L "$SB/link/c/CACHEDIR.TAG" ]
+  [ -f "$SB/elsewhere/blob" ]
+  [ -f "$SB/loose/c/blob" ]
+  [ -f "$SB/r/c/blob" ]
+  manifest "$SB/w" package.json; cache_tag "$SB/w/root"; mm_age "$SB/w" 30
+  run mm purge --yes "$SB/w/root"
+  [ -f "$SB/w/root/blob" ]
+  [ -z "$(mm_log_rows remove)" ]
+}
+
+@test "SwiftPM .build and .NET bin/obj only next to their project files" {
+  manifest "$SB/swift" Package.swift; cache_tag "$SB/swift/.build" none
+  cache_tag "$SB/noswift/.build" none
+  manifest "$SB/net" app.csproj; mkdir -p "$SB/net/bin/Debug/net8.0" "$SB/net/obj"; touch "$SB/net/bin/Debug/net8.0/app.dll" "$SB/net/obj/project.assets.json"
+  manifest "$SB/net2" lib.fsproj; mkdir -p "$SB/net2/bin"; touch "$SB/net2/bin/deploy.sh"
+  manifest "$SB/js" package.json; mkdir -p "$SB/js/bin/Release" "$SB/js/obj"; touch "$SB/js/bin/Release/x" "$SB/js/obj/y"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/swift/.build" ]
+  [ -f "$SB/noswift/.build/blob" ]
+  [ ! -e "$SB/net/bin" ]
+  [ ! -e "$SB/net/obj" ]
+  [ -f "$SB/net2/bin/deploy.sh" ]
+  [ -f "$SB/js/bin/Release/x" ]
+  [ -f "$SB/js/obj/y" ]
+}
+
+@test "bower_components, .nx/cache, .docusaurus and a project .pnpm-store are purged next to their manifests" {
+  manifest "$SB/bower" bower.json; cache_tag "$SB/bower/bower_components" none
+  manifest "$SB/nobower" package.json; cache_tag "$SB/nobower/bower_components" none
+  manifest "$SB/nx" nx.json package.json; cache_tag "$SB/nx/.nx/cache" none; cache_tag "$SB/nx/.nx/workspace-data" none
+  manifest "$SB/nonx" package.json; cache_tag "$SB/nonx/.nx/cache" none
+  manifest "$SB/docs" package.json; cache_tag "$SB/docs/.docusaurus" none
+  manifest "$SB/store" package.json; cache_tag "$SB/store/.pnpm-store/v10" none
+  cache_tag "$SB/nostore/.pnpm-store" none
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/bower/bower_components" ]
+  [ -f "$SB/nobower/bower_components/blob" ]
+  [ ! -e "$SB/nx/.nx/cache" ]
+  [ -f "$SB/nx/.nx/workspace-data/blob" ]
+  [ -f "$SB/nonx/.nx/cache/blob" ]
+  [ ! -e "$SB/docs/.docusaurus" ]
+  [ ! -e "$SB/store/.pnpm-store" ]
+  [ -f "$SB/nostore/.pnpm-store/blob" ]
+}
