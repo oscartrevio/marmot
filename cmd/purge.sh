@@ -363,15 +363,6 @@ _purge_wt_clean() {
   [[ -z "$out" ]]
 }
 
-# _purge_wt_protected PATH — 0 if PATH is a place marmot never removes.
-_purge_wt_protected() {
-  local p
-  [[ "$1" == "$HOME" ]] && return 0
-  for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" ]] && return 0; done
-  for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && return 0; done
-  return 1
-}
-
 # _purge_wt_eval I — decide worktree I. Sets _WT_STATE (offer | keep | recent | skip),
 # _WT_WHY (keep reason), _WT_IDLE (days), _WT_MERGE (merged | upstream gone | unmerged).
 _purge_wt_eval() {
@@ -385,7 +376,7 @@ _purge_wt_eval() {
   _WT_IDLE=$(_purge_wt_idle "$w")
   (( _WT_IDLE >= _PURGE_WT_MERGED_DAYS )) || { _WT_STATE=recent; return 0; }
   _WT_STATE=keep
-  _purge_wt_protected "$w" && { _WT_WHY="protected"; return 0; }
+  mm_protected "$w" >/dev/null && { _WT_WHY="protected"; return 0; }
   [[ "${_WT_LOCKED[$i]}" == 1 ]] && { _WT_WHY="locked"; return 0; }
   mm_in_use "$w" && { _WT_WHY="in use"; return 0; }
   # Agent state (e.g. ~/.cursor/worktrees) is waived here only: git itself vouches for the content.
