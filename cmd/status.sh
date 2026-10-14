@@ -52,14 +52,18 @@ You: the network link to whoever is watching: your SSH session (SSH_CONNECTION),
   best), its history, and retransmits, from the kernel's TCP stats (ss); Tailscale peers are
   named. "link to you is laggy" (RTT >= 150 ms, jitter >= 100 ms or new retransmits) is your
   network, so it never lowers the health score.
+Containers: the header says "container"; CPU and memory follow the cgroup v2 limits (cpu.max,
+  memory.max) when set; the load average and time since boot are the host's, and the reboot and
+  kernel checks (the host's too) are left out.
 
 Environment:
   MM_STATUS_LINGER_AGE   seconds before a dev process or listener counts as lingering (86400)
   MM_STATUS_VPN_IFACES   VPN interface globs ("$ST_VPN_GLOBS")
+  MM_CONTAINER           1 or 0: treat this machine as a container or not (default: detected)
 
-Health starts at 100 and drops for sustained CPU >85%, load above core count, low available
-memory, swap >50%, root disk >=80%, root inodes >=90%, pending reboot, failed units, and
-orphaned agent or dev processes.
+Health starts at 100 and drops for sustained CPU >85%, load above core count (not in a
+container), low available memory, swap >50%, root disk >=80%, root inodes >=90%, pending reboot,
+failed units, and orphaned agent or dev processes.
 EOF
 }
 
@@ -192,6 +196,19 @@ _status_init() {
   ST_MODEL="${v[*]:-unknown cpu}"
   ST_OS=$(. /etc/os-release 2>/dev/null && echo "${NAME:-Linux} ${VERSION_ID:-}")
   ST_MEMGB=$(awk '/^MemTotal/ { printf "%d", $2 / 1048576 + 0.5 }' /proc/meminfo)
+  # In a container the kernel, uptime and load average are the host's; cgroup v2 limits (when
+  # set) replace the host's memory and CPU totals.
+  # ST_TAG, ST_CORES_TXT and ST_RAM_TXT are the header's words for them.
+  ST_CTR=0 ST_CG_MEM_DIR="" ST_CG_MEM_MAX="" ST_CG_CPU_DIR="" ST_CG_MILLI="" ST_CG_MEM_TXT="" ST_CG_CPU_TXT="" ST_CGU="" ST_P_CGU=""
+  ST_TAG="" ST_CORES_TXT="$ST_CORES cores" ST_RAM_TXT="$ST_MEMGB GB"
+  if mm_in_container; then
+    ST_CTR=1 ST_TAG=" · container"
+    mm_cgroup_limits
+    # shellcheck disable=SC2153 # MM_CG_* are set by mm_cgroup_limits (lib/core.sh)
+    ST_CG_MEM_DIR=$MM_CG_MEM_DIR ST_CG_MEM_MAX=$MM_CG_MEM_MAX ST_CG_CPU_DIR=$MM_CG_CPU_DIR ST_CG_MILLI=$MM_CG_CPU_MILLI
+    [[ -n "$MM_CG_MEM_MAX" ]] && _status_mem ST_CG_MEM_TXT $((MM_CG_MEM_MAX / 1024)) && ST_RAM_TXT="$ST_CG_MEM_TXT limit"
+    [[ -n "$ST_CG_MILLI" ]] && ST_CG_CPU_TXT=$(mm_cg_cores "$ST_CG_MILLI") && ST_CORES_TXT="$ST_CG_CPU_TXT of $ST_CORES cores"
+  fi
   # Root block device as the kernel names it in /proc/diskstats (sda1, nvme0n1p2, dm-0, md0).
   # btrfs reports subvolumes as /dev/sda2[/@]; zfs/overlay roots have no block device.
   src=$(findmnt -no SOURCE / 2>/dev/null)
@@ -290,14 +307,17 @@ _status_sample() {
       SwapFree:) ST_SWF=$v ;;
     esac
   done </proc/meminfo
+  [[ -n "$ST_CG_MEM_DIR" ]] && _status_cg_mem
+  [[ -n "$ST_CG_CPU_DIR" ]] && { ST_P_CGU=$ST_CGU; _status_cg_cpu; }
   ST_PSI=""
-  [[ -r /proc/pressure/memory ]] && { read -r _ v _ </proc/pressure/memory; ST_PSI=${v#avg10=}; }
+  if [[ -n "$ST_CG_MEM_DIR" && -r "$ST_CG_MEM_DIR/memory.pressure" ]]; then read -r _ v _ <"$ST_CG_MEM_DIR/memory.pressure"; ST_PSI=${v#avg10=}
+  elif [[ -r /proc/pressure/memory ]]; then read -r _ v _ </proc/pressure/memory; ST_PSI=${v#avg10=}; fi
   read -r ST_L1 ST_L5 ST_L15 _ </proc/loadavg
   read -r v _ </proc/uptime
   ST_UP=${v%.*}
 
   ST_REBOOT=0 ST_REBOOT_PKGS=""
-  if [[ -f /var/run/reboot-required ]]; then
+  if ((!ST_CTR)) && [[ -f /var/run/reboot-required ]]; then
     ST_REBOOT=1
     if [[ -r /var/run/reboot-required.pkgs ]]; then
       local -A seen=()
@@ -323,6 +343,33 @@ _status_sample() {
   _status_procs
   _status_ports
   _status_client
+}
+
+# _status_cg_mem — memory from the container's cgroup instead of the host's /proc/meminfo (kB,
+# like it): the total is memory.max; used is memory.current less inactive_file (page cache the
+# kernel reclaims first, as `docker stats` counts it); available is the rest, or the host's
+# MemAvailable when that is lower. Swap too when memory.swap.max limits it.
+_status_cg_mem() {
+  local d=$ST_CG_MEM_DIR max cur k v inact=0 a sw swc
+  { read -r max <"$d/memory.max" && read -r cur <"$d/memory.current"; } 2>/dev/null || return 0
+  [[ "$max" =~ ^[1-9][0-9]*$ && "$cur" =~ ^[0-9]+$ ]] || return 0
+  while read -r k v; do [[ "$k" == inactive_file ]] && { inact=$v; break; }; done 2>/dev/null <"$d/memory.stat"
+  cur=$((cur > inact ? cur - inact : 0))
+  a=$((max > cur ? (max - cur) / 1024 : 0))
+  ST_MT=$((max / 1024))
+  ((a < ST_MA)) && ST_MA=$a
+  if { read -r sw <"$d/memory.swap.max" && read -r swc <"$d/memory.swap.current"; } 2>/dev/null &&
+    [[ "$sw" =~ ^[0-9]+$ && "$swc" =~ ^[0-9]+$ ]]; then
+    ST_SWT=$((sw / 1024)) ST_SWF=$((sw > swc ? (sw - swc) / 1024 : 0))
+  fi
+  return 0
+}
+
+# _status_cg_cpu — the container cgroup's CPU time so far (cpu.stat usage_usec) into ST_CGU.
+_status_cg_cpu() {
+  local k v
+  ST_CGU=""
+  while read -r k v; do [[ "$k" == usage_usec ]] && { ST_CGU=$v; break; }; done 2>/dev/null <"$ST_CG_CPU_DIR/cpu.stat"
 }
 
 # _status_procs — one pass over /proc/*/stat and /proc/*/status: per-process CPU deltas (top 5),
@@ -781,6 +828,13 @@ _status_derive() {
     t=$((ST_CT[i] - ${ST_P_CT[i]:-0})) d=$((ST_CI[i] - ${ST_P_CI[i]:-0}))
     ST_CPU[i]=$((t > 0 ? (t - d) * 1000 / t : 0))
   done
+  # Under a cpu.max quota the total is the cgroup's CPU time against that quota.
+  if [[ -n "$ST_CGU" && -n "$ST_P_CGU" ]]; then
+    v=$(((ST_CGU - ST_P_CGU) * 1000000 / (dt * ST_CG_MILLI)))
+    ((v < 0)) && v=0
+    ((v > 1000)) && v=1000
+    ST_CPU[0]=$v
+  fi
   _status_push ST_CPUH "${ST_CPU[0]:-0}"
   v=$(((ST_DR - ST_P_DR) * 512 * 1000000 / dt)); ST_RD_BPS=$((v > 0 ? v : 0))
   v=$(((ST_DW - ST_P_DW) * 512 * 1000000 / dt)); ST_WR_BPS=$((v > 0 ? v : 0))
@@ -884,7 +938,9 @@ _status_slow_load() {
   local k v
   ST_SLOW=()
   while IFS=$'\t' read -r k v; do [[ -n "$k" ]] && ST_SLOW[$k]=$v; done <"$ST_TMP/slow"
+  # A container runs the host's kernel: its kernel packages, if any, say nothing about a reboot.
   ST_KPENDING=${ST_SLOW[kernel_pending]:-0}
+  ((ST_CTR)) && ST_KPENDING=0
   ST_FAILED=()
   read -r -a ST_FAILED <<<"${ST_SLOW[failed]:-}"
 }
@@ -900,7 +956,8 @@ _status_health() {
   # A snapshot (--once/--json) has one 0.5s sample; only call CPU "sustained" over >= 3 samples.
   if ((n >= 3 && sum / n > 850)); then _status_dec pct $((sum / n)); _status_pen 15 "CPU ${pct}% sustained"; fi
   v=${ST_L1/./}
-  ((10#$v > ST_CORES * 100)) && _status_pen 10 "load $ST_L1 > $ST_CORES cores"
+  # In a container the load average is the whole host's: not this container's health.
+  ((!ST_CTR && 10#$v > ST_CORES * 100)) && _status_pen 10 "load $ST_L1 > $ST_CORES cores"
   if ((ST_MEM_AVAIL_PCT < 100)); then _status_pen 20 "memory $((ST_MEM_AVAIL_PCT / 10))% available"
   elif ((ST_MEM_AVAIL_PCT < 200)); then _status_pen 10 "memory $((ST_MEM_AVAIL_PCT / 10))% available"; fi
   ((ST_SWAP_PCT > 500)) && _status_pen 10 "swap $((ST_SWAP_PCT / 10))% used"
@@ -939,11 +996,14 @@ _status_panel_cpu() {
   _status_title "⚙ CPU"
   _status_bar bar "${ST_CPU[0]:-0}" 20
   _status_dec pct "${ST_CPU[0]:-0}"
-  _status_row Total "$bar $(printf '%6s' "$pct%")"
+  _status_row Total "$bar $(printf '%6s' "$pct%")${ST_CG_CPU_TXT:+  of $ST_CG_CPU_TXT-core limit}"
   l1="$ST_L1 / $ST_L5 / $ST_L15"
   v=${ST_L1/./}
-  ((10#$v > ST_CORES * 100)) && l1="$C_YELLOW$l1$C_RESET"
-  _status_row Load "$l1 ($ST_CORES cores)"
+  if ((ST_CTR)); then _status_row Load "$l1 (host, $ST_CORES cores)"
+  else
+    ((10#$v > ST_CORES * 100)) && l1="$C_YELLOW$l1$C_RESET"
+    _status_row Load "$l1 ($ST_CORES cores)"
+  fi
   # Busiest ST_NCORE cores (selection on a copy).
   local -a cores=("${ST_CPU[@]:1}") used=()
   for ((j = 0; j < ST_NCORE && j < ${#cores[@]}; j++)); do
@@ -971,7 +1031,7 @@ _status_panel_mem() {
   _status_gib avail $((ST_MA * 1024))
   _status_bar bar "$ST_MEM_USED_PCT" 20
   _status_dec pct "$ST_MEM_USED_PCT"
-  _status_row Used "$bar $(printf '%6s' "$pct%")  $used/$total GB"
+  _status_row Used "$bar $(printf '%6s' "$pct%")  $used/$total GB${ST_CG_MEM_TXT:+ limit}"
   _status_bar bar "$ST_MEM_AVAIL_PCT" 20 1
   _status_dec pct "$ST_MEM_AVAIL_PCT"
   _status_row Avail "$bar $(printf '%6s' "$pct%")  $avail GB"
@@ -1229,14 +1289,17 @@ _status_panel_agents() {
 
 # _status_checks — system upkeep as ST_CHK_OK (checks that passed), ST_CHK_NOTE (neutral notes:
 # "3 updates", "checking…") and ST_CHK_BAD ("problem<TAB>command that addresses it"; marmot
-# never runs these). Checks whose tool is missing (no systemd, docker, apt) are left out.
+# never runs these). Checks whose tool is missing (no systemd, docker, apt) are left out, and so
+# are reboot and kernel in a container (the host's).
 _status_checks() {
   local n s
   ST_CHK_OK=() ST_CHK_NOTE=() ST_CHK_BAD=()
-  if ((ST_REBOOT)); then ST_CHK_BAD+=("reboot required${ST_REBOOT_PKGS:+ ($ST_REBOOT_PKGS)}"$'\t'"sudo reboot")
+  if ((ST_CTR)); then :
+  elif ((ST_REBOOT)); then ST_CHK_BAD+=("reboot required${ST_REBOOT_PKGS:+ ($ST_REBOOT_PKGS)}"$'\t'"sudo reboot")
   else ST_CHK_OK+=(reboot); fi
   if [[ -z "${ST_SLOW[at]:-}" ]]; then ST_CHK_NOTE+=("checking…"); return 0; fi
-  if ((ST_KPENDING)); then
+  if ((ST_CTR)); then :
+  elif ((ST_KPENDING)); then
     ST_CHK_BAD+=("kernel ${ST_SLOW[kernel_newest_abi]} installed, running ${ST_SLOW[kernel_running_abi]}"$'\t'"sudo reboot")
   else
     ST_CHK_OK+=(kernel)
@@ -1364,7 +1427,8 @@ _status_frame_full() {
   fi
   # The link to the viewer is their network, not this machine's health: flagged, never scored.
   ((ST_CL_LAGGY)) && head+="  ${C_YELLOW}link to you is laggy$C_RESET"
-  info="$ST_HOST · $ST_MODEL · ${ST_MEMGB}GB · $ST_OS"
+  info="$ST_HOST$ST_TAG · $ST_MODEL · ${ST_MEMGB}GB · $ST_OS"
+  [[ -n "$ST_CG_MEM_TXT" ]] && info="$ST_HOST$ST_TAG · $ST_MODEL · $ST_RAM_TXT · $ST_OS"
   _status_vlen len "$head"
   ilen=${#info}
   ST_FRAME=()
@@ -1469,8 +1533,8 @@ _status_compact() {
   _status_vlen len "$left"
   _status_age up "$ST_UP"
   # Machine facts right-aligned, dropping detail until they fit.
-  for info in "$ST_HOST · $ST_MODEL · $ST_CORES cores · $ST_MEMGB GB · up $up" \
-    "$ST_HOST · $ST_CORES cores · $ST_MEMGB GB · up $up" "$ST_HOST · up $up" ""; do
+  for info in "$ST_HOST$ST_TAG · $ST_MODEL · $ST_CORES_TXT · $ST_RAM_TXT · up $up" \
+    "$ST_HOST$ST_TAG · $ST_CORES_TXT · $ST_RAM_TXT · up $up" "$ST_HOST$ST_TAG · up $up" ""; do
     ((len + 2 + ${#info} <= w)) && break
   done
   printf -v t '%*s' $((w - len - ${#info} > 0 ? w - len - ${#info} : 0)) ''
@@ -1497,14 +1561,18 @@ _status_compact() {
   fi
 
   _status_bar bar "${ST_CPU[0]:-0}" 12
-  printf -v t '%s %3d%%  load %s / %d cores' "$bar" $(((${ST_CPU[0]:-0} + 5) / 10)) "$ST_L1" "$ST_CORES"
+  if [[ -n "$ST_CG_CPU_TXT" ]]; then
+    printf -v t '%s %3d%%  of %s cores · host load %s' "$bar" $(((${ST_CPU[0]:-0} + 5) / 10)) "$ST_CG_CPU_TXT" "$ST_L1"
+  else
+    printf -v t '%s %3d%%  %sload %s / %d cores' "$bar" $(((${ST_CPU[0]:-0} + 5) / 10)) "${ST_TAG:+host }" "$ST_L1" "$ST_CORES"
+  fi
   _status_cline_spark "$w" CPU "$t" 1000 ST_CPUH
 
   _status_bar bar "$ST_MEM_USED_PCT" 12
   _status_gib v $((ST_MA * 1024))
   s="no swap"
   ((ST_SWT > 0)) && s="swap $(((ST_SWAP_PCT + 5) / 10))%"
-  printf -v t '%s %3d%%  %s GB free · %s' "$bar" $(((ST_MEM_USED_PCT + 5) / 10)) "$v" "$s"
+  printf -v t '%s %3d%%  %s GB free%s · %s' "$bar" $(((ST_MEM_USED_PCT + 5) / 10)) "$v" "${ST_CG_MEM_TXT:+ of $ST_CG_MEM_TXT}" "$s"
   _status_cline MEM "$t"
 
   t=""
@@ -1618,6 +1686,7 @@ _status_json() {
     --arg cl_addr "$ST_CL_ADDR" --arg cl_name "$ST_CL_NAME" --arg cl_path "$ST_CL_PATH" \
     --arg cl_rtt "$ST_CL_RTT" --arg cl_min "$ST_CL_MIN" --arg cl_var "$ST_CL_VAR" \
     --arg cl_retr "$ST_CL_RETR" --arg cl_laggy "$ST_CL_LAGGY" \
+    --arg ctr "$ST_CTR" --arg cgmem "$ST_CG_MEM_MAX" --arg cgcpu "$ST_CG_MILLI" \
     --arg kpending "${ST_KPENDING:-0}" '
     def num: if . == null or . == "" then null else tonumber end;
     def lines: split("\n") | map(select(length > 0) | split("\t"));
@@ -1626,6 +1695,10 @@ _status_json() {
     def pct(a; b): if b > 0 then (a * 1000 / b | floor) / 10 else null end;
     {
       host: $host, cpu_model: $model, os: $os,
+      container: (if $ctr == "1" then {
+        memory_limit_bytes: ($cgmem | num),
+        cpu_limit_cores: (if $cgcpu == "" then null else ($cgcpu | tonumber) / 1000 end)
+      } else null end),
       health_score: ($score | tonumber),
       health_reasons: ($reasons | split("\n") | map(select(length > 0))),
       collected_at: (now | todate),
@@ -1668,11 +1741,11 @@ _status_json() {
       },
       system: {
         uptime_seconds: ($up | tonumber),
-        reboot_required: ($reboot == "1" or $kpending == "1"),
+        reboot_required: (if $ctr == "1" then null else ($reboot == "1" or $kpending == "1") end),
         reboot_required_pkgs: ($rpkgs | words),
         kernel_running: $slow.kernel_running,
-        kernel_newest_installed: ($slow.kernel_newest_abi | if . == "" then null else . end),
-        kernel_update_pending: ($kpending == "1"),
+        kernel_newest_installed: (if $ctr == "1" then null else ($slow.kernel_newest_abi | if . == "" then null else . end) end),
+        kernel_update_pending: (if $ctr == "1" then null else $kpending == "1" end),
         failed_units: (if $slow.failed_ok then ($slow.failed // "" | words) else null end),
         upgradable_packages: ($slow.upgradable | num),
         upgradable_names: ($slow.upgradable_names // "" | words),
@@ -1755,7 +1828,9 @@ _status_agent_text() {
   fi
 
   _status_dur up "$ST_UP"
-  printf 'machine: %s · %s · %d cores · %d GB RAM · %s · up %s\n' "$ST_HOST" "$ST_MODEL" "$ST_CORES" "$ST_MEMGB" "$ST_OS" "$up"
+  t="$ST_MEMGB GB RAM"
+  [[ -n "$ST_CG_MEM_TXT" ]] && t="$ST_CG_MEM_TXT RAM limit"
+  printf 'machine: %s%s · %s · %s · %s · %s · up %s\n' "$ST_HOST" "$ST_TAG" "$ST_MODEL" "$ST_CORES_TXT" "$t" "$ST_OS" "$up"
 
   _status_mem t "$ST_AGENT_KB"
   if ((${#ST_AGENTS[@]})); then
@@ -1792,11 +1867,12 @@ _status_agent_text() {
   fi
 
   _status_dec t "${ST_CPU[0]:-0}"
-  printf 'cpu: %s%% · load %s %s %s · %d cores\n' "$t" "$ST_L1" "$ST_L5" "$ST_L15" "$ST_CORES"
+  printf 'cpu: %s%%%s · %sload %s %s %s · %d cores\n' "$t" "${ST_CG_CPU_TXT:+ of a $ST_CG_CPU_TXT-core limit}" \
+    "${ST_TAG:+host }" "$ST_L1" "$ST_L5" "$ST_L15" "$ST_CORES"
   _status_gib t $((ST_MA * 1024))
   a=none
   ((ST_SWT > 0)) && a="$((ST_SWAP_PCT / 10))% used"
-  printf 'memory: %d%% used · %s GB available · swap %s\n' $((ST_MEM_USED_PCT / 10)) "$t" "$a"
+  printf 'memory: %d%% used%s · %s GB available · swap %s\n' $((ST_MEM_USED_PCT / 10)) "${ST_CG_MEM_TXT:+ of a $ST_CG_MEM_TXT limit}" "$t" "$a"
   for e in "${ST_DF[@]}"; do
     read -r m sz us av it iu <<<"$e"
     ((sz > 0)) || continue

@@ -144,16 +144,95 @@ mm_frees() {
 # mm_free_bytes [MOUNT] — available bytes on the filesystem holding MOUNT (default /).
 mm_free_bytes() { df -B1 --output=avail "${1:-/}" 2>/dev/null | awk 'NR == 2 { printf "%.0f\n", $1 }'; }
 
-# mm_sysline — "Ubuntu 24.04.5 LTS · 8 cores · 31GB RAM | Free: 37.0GB | Up 3d 4h 12m".
+# mm_sysline — "Ubuntu 24.04.5 LTS · 8 cores · 31GB RAM | Free: 37.0GB | Up 3d 4h 12m". In a
+# container it says so, and cgroup limits replace the host's cores and RAM when set:
+# "Debian GNU/Linux 12 (bookworm) · container · 1.5 of 8 cores · 512.0MB RAM limit | ...".
 mm_sysline() {
-  local os mem s up=""
+  local os mem s up="" cores ctr="" lim=""
   os=$(. /etc/os-release && echo "$PRETTY_NAME")
   mem=$(awk '/MemTotal/ { printf "%dGB", $2 / 1048576 + 0.5 }' /proc/meminfo)
+  cores="$(nproc) cores"
+  if mm_in_container; then
+    ctr=" · container"
+    mm_cgroup_limits
+    [[ -n "$MM_CG_CPU_MILLI" ]] && cores="$(mm_cg_cores "$MM_CG_CPU_MILLI") of $cores"
+    [[ -n "$MM_CG_MEM_MAX" ]] && mem="$(mm_human "$MM_CG_MEM_MAX")" lim=" limit"
+  fi
   read -r s _ </proc/uptime; s=${s%.*}
   (( s >= 86400 )) && up+="$((s / 86400))d "
   (( s % 86400 >= 3600 )) && up+="$((s % 86400 / 3600))h "
   up+="$((s % 3600 / 60))m"
-  printf '%s · %s cores · %s RAM | Free: %s | Up %s' "$os" "$(nproc)" "$mem" "$(mm_human "$(mm_free_bytes /)")" "$up"
+  printf '%s%s · %s · %s RAM%s | Free: %s | Up %s' "$os" "$ctr" "$cores" "$mem" "$lim" \
+    "$(mm_human "$(mm_free_bytes /)")" "$up"
+}
+
+# ---------------------------------------------------------------- containers
+
+# mm_in_container — 0 when marmot runs inside a container (Docker, Podman, LXC, systemd-nspawn,
+# Kubernetes; so devcontainers, Codespaces, Gitpod and Coder workspaces too). There the kernel,
+# swap, disks and usually the Docker daemon belong to the host. MM_CONTAINER=1 or MM_CONTAINER=0
+# overrides the detection. Hints: Docker's /.dockerenv, Podman's /run/.containerenv, systemd's
+# /run/systemd/container, $container (set by nspawn, Podman and LXC), init's cgroup naming a
+# container runtime (cgroup v1, or v2 without a cgroup namespace), and an overlay root filesystem.
+mm_in_container() {
+  case "${MM_CONTAINER:-}" in
+    1) return 0 ;;
+    0) return 1 ;;
+  esac
+  if [[ -z "${_MM_IN_CONTAINER:-}" ]]; then
+    _MM_IN_CONTAINER=0
+    if [[ -e /.dockerenv || -e /run/.containerenv || -s /run/systemd/container || -n "${container:-}" ]] ||
+      grep -qE 'docker|kubepods|containerd|libpod|lxc' /proc/1/cgroup 2>/dev/null ||
+      awk '$5 == "/" { for (i = 7; i < NF && $i != "-"; i++); fs = $(i + 1) } END { exit fs != "overlay" }' \
+        /proc/self/mountinfo 2>/dev/null; then
+      _MM_IN_CONTAINER=1
+    fi
+  fi
+  [[ "$_MM_IN_CONTAINER" == 1 ]]
+}
+
+# mm_cgroup_limits — the cgroup v2 limits that bind this process: the tightest memory.max and
+# cpu.max on its cgroup and every ancestor up to the mount (inside a container's cgroup namespace
+# the container's own cgroup is that root). Sets MM_CG_MEM_DIR and MM_CG_MEM_MAX (bytes), and
+# MM_CG_CPU_DIR and MM_CG_CPU_MILLI (quota / period, in thousandths of a core); all empty when
+# nothing is limited or there is no cgroup v2. The test suite points MM_TEST_CGROUP_FS at a fake
+# tree; that is honored only inside bats' per-test directory.
+mm_cgroup_limits() {
+  local fs=/sys/fs/cgroup rel="" id path d v q p box
+  MM_CG_MEM_DIR="" MM_CG_MEM_MAX="" MM_CG_CPU_DIR="" MM_CG_CPU_MILLI=""
+  if [[ -n "${MM_TEST_CGROUP_FS:-}" ]]; then
+    d=$(realpath -e -- "$MM_TEST_CGROUP_FS" 2>/dev/null) || return 0
+    box=$(realpath -e -- "${BATS_TEST_TMPDIR:-/nonexistent}" 2>/dev/null) || return 0
+    [[ "$d" == "$box"/?* ]] || return 0
+    fs=$d
+  fi
+  [[ -f "$fs/cgroup.controllers" ]] || return 0
+  while IFS=: read -r id _ path; do [[ "$id" == 0 ]] && rel=$path; done 2>/dev/null </proc/self/cgroup
+  [[ "$rel" == /* ]] || return 0
+  # Without a cgroup namespace the path names a cgroup the mount may not show; missing levels
+  # are passed over on the way up.
+  d=$fs${rel%/}
+  while :; do
+    if { read -r v <"$d/memory.max"; } 2>/dev/null && [[ "$v" =~ ^[0-9]+$ ]] &&
+      { [[ -z "$MM_CG_MEM_MAX" ]] || (( v < MM_CG_MEM_MAX )); }; then
+      MM_CG_MEM_DIR=$d MM_CG_MEM_MAX=$v
+    fi
+    if { read -r q p <"$d/cpu.max"; } 2>/dev/null && [[ "$q" =~ ^[0-9]+$ && "$p" =~ ^[1-9][0-9]*$ ]]; then
+      v=$((q * 1000 / p)); ((v > 0)) || v=1
+      if [[ -z "$MM_CG_CPU_MILLI" ]] || (( v < MM_CG_CPU_MILLI )); then MM_CG_CPU_DIR=$d MM_CG_CPU_MILLI=$v; fi
+    fi
+    [[ "$d" == "$fs"/* ]] || break
+    d=${d%/*}
+  done
+  return 0
+}
+
+# mm_cg_cores MILLI — "1.5" / "2" / "0.25" cores from thousandths of a core.
+mm_cg_cores() {
+  local w=$(($1 / 1000)) f
+  printf -v f '%03d' $(($1 % 1000))
+  f=${f%0}; f=${f%0}; f=${f%0}
+  printf '%d%s' "$w" "${f:+.$f}"
 }
 
 # ---------------------------------------------------------------- sudo

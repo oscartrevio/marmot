@@ -307,6 +307,62 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   [[ "$output" == *"Unused images · skipped"* ]]
 }
 
+# unix_socket PATH — a listening-less unix socket file at PATH (what a mounted docker.sock looks like).
+unix_socket() {
+  command -v python3 >/dev/null || skip "python3 not installed"
+  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$1"
+}
+
+@test "docker: in a container the daemon behind a mounted socket is left alone unless MM_DOCKER_PRUNE=1" {
+  fake_docker
+  src
+  unix_socket "$SB/docker.sock"
+  mm_confirm() { return 0; }
+  _clean_dockerd_here() { return 1; }   # whatever dockerd runs on the machine running the tests
+  export MM_CONTAINER=1 DOCKER_HOST="unix://$SB/docker.sock"
+  run _clean_docker
+  [[ "$output" == *"Docker · skipped (in a container: DOCKER_HOST reaches a daemon outside it; MM_DOCKER_PRUNE=1 cleans it anyway)"* ]]
+  none grep -E ' docker (info|ps|rm|images?|builder|system|volume) ' "$CALLS"
+  MM_DOCKER_PRUNE=1 run _clean_docker
+  grep -qE ' docker rm c-old c-never-old$' "$CALLS"
+}
+
+@test "docker: a dockerd running inside the container itself (Docker-in-Docker) is cleaned" {
+  fake_docker
+  src
+  unix_socket "$SB/docker.sock"
+  _clean_dockerd_here() { return 0; }
+  export MM_CONTAINER=1 DOCKER_HOST="unix://$SB/docker.sock"
+  run _clean_docker
+  [[ "$output" != *"Docker · skipped"* ]]
+  grep -qE ' docker ps ' "$CALLS"
+}
+
+@test "docker: a daemon on another machine (DOCKER_HOST or the docker context) is left alone" {
+  fake_docker
+  src
+  export DOCKER_HOST=tcp://10.0.0.5:2376
+  run _clean_docker
+  [[ "$output" == *"Docker · skipped (the daemon at tcp://10.0.0.5:2376 is another machine's"* ]]
+  unset DOCKER_HOST
+  mm_test_fake docker "echo \"\$(pwd) docker \$*\" >>\"\$CALLS\"
+[[ \"\$1 \$2\" == 'context inspect' ]] && echo ssh://me@build-box"
+  run _clean_docker
+  [[ "$output" == *"Docker · skipped (the daemon at ssh://me@build-box is another machine's"* ]]
+  none grep -E ' docker (info|ps) ' "$CALLS"
+}
+
+@test "kernels: none installed says nothing; in a container they are never offered" {
+  src
+  mm_test_fake dpkg-query 'exit 0'
+  run _clean_kernels
+  [ -z "$output" ]
+  # apt-get stays a fail-loud stub: nothing may simulate or purge.
+  mm_test_fake dpkg-query "printf 'ii\tlinux-image-1.0.0-1-generic\nii\tlinux-image-99.0.0-1-generic\n'"
+  MM_CONTAINER=1 run _clean_kernels
+  [[ "$output" == *"Old kernels · skipped (in a container: the running kernel is the host's)"* ]]
+}
+
 # ---------------------------------------------------------------- editors
 
 @test "editor servers: the newest build and builds in use are kept" {

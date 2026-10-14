@@ -116,7 +116,9 @@ nix_gc = on
 ```
 
 Environment: `MM_STATUS_LINGER_AGE`, `MM_STATUS_VPN_IFACES`, `MM_OPTIMIZE_ORPHAN_AGE`,
-`MM_ANALYZE_TIMEOUT` (see each command's `--help`). Known agents and cleanup targets live in
+`MM_ANALYZE_TIMEOUT`, `MM_CONTAINER` (`1`/`0`: override container detection), `MM_DOCKER_PRUNE`
+(`1`: let `mm clean` prune a Docker daemon that is not this machine's own, such as the host's
+from inside a container) (see each command's `--help`). Known agents and cleanup targets live in
 `lib/agents.sh` and `lib/catalog.sh`: adding a tool is adding a row.
 
 ## Development

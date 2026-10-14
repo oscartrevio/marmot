@@ -48,6 +48,13 @@ touched: they are listed with their size under "Kept for you to review". Steps t
 undone (Trash sweep, packages, logs, crash dumps, containers, images) ask first and are skipped
 without a terminal.
 
+Docker is cleaned only when its daemon is this machine's own: not when DOCKER_HOST or the
+current docker context points at another machine, and not from inside a container (a mounted
+docker.sock or DOCKER_HOST reaches the host's daemon, shared with everything else it runs)
+unless dockerd runs in the container itself. MM_DOCKER_PRUNE=1 cleans that daemon anyway. In a
+container old kernels are not offered either (the running kernel is the host's); MM_CONTAINER=1
+or 0 overrides container detection.
+
 Coding agents' own log files (*.log and rotated logs in their documented logs folders, such
 as ~/.omp/logs or ~/.copilot/logs) last written more than 7 days ago and not in use are removed;
 session folders are not searched. Agent sessions are kept unless you opt in: with a retention
@@ -965,14 +972,18 @@ _clean_apt_residual() {
   mm_ok "Residual configs" "${#pkgs[@]} packages purged"
 }
 
+# _clean_kernels — kernel packages other than the running and the newest installed one. Nothing
+# to say where none are installed; in a container the running kernel is the host's, so none of
+# the container's own kernel packages can be told apart from the one in use.
 _clean_kernels() {
   local running newest b
   local -a pkgs auto
-  [[ "$(uname -r)" =~ ^([0-9]+\.[0-9]+\.[0-9]+-[0-9]+) ]] || { mm_skip "Old kernels" "unknown running kernel"; return; }
-  running=${BASH_REMATCH[1]}
   newest=$(dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\n' 'linux-image-*' 2>/dev/null |
     awk '$1 == "ii" { print $2 }' | grep -oE '[0-9]+\.[0-9]+\.[0-9]+-[0-9]+' | sort -V | tail -1)
-  [[ -n "$newest" ]] || { mm_skip "Old kernels" "no kernel images found"; return; }
+  [[ -n "$newest" ]] || return 0
+  if mm_in_container; then mm_skip "Old kernels" "in a container: the running kernel is the host's"; return; fi
+  [[ "$(uname -r)" =~ ^([0-9]+\.[0-9]+\.[0-9]+-[0-9]+) ]] || { mm_skip "Old kernels" "unknown running kernel"; return; }
+  running=${BASH_REMATCH[1]}
   # Packages already queued by autoremove are reported there, not twice.
   mapfile -t auto < <(apt-get -s autoremove 2>/dev/null | awk '/^Remv / { print $2 }')
   mapfile -t pkgs < <(dpkg-query -W -f='${db:Status-Abbrev}\t${Package}\n' 'linux-*' 2>/dev/null |
@@ -1004,12 +1015,16 @@ _clean_journal() {
   _clean_track "$freed" 1
   mm_ok "Journal" "vacuumed to 300MB, $(mm_human "$freed")"
 }
+# _clean_journal_bytes — journald's disk usage; 0 without journalctl or a journal directory
+# (containers and minimal images run no journald).
 _clean_journal_bytes() {
+  if ! command -v journalctl >/dev/null || [[ ! -d /var/log/journal && ! -d /run/log/journal ]]; then echo 0; return; fi
   _clean_to_bytes "$(mm_sudo journalctl --disk-usage 2>/dev/null | grep -oE 'take up [0-9.]+[A-Za-z]+' | awk '{ print $3 }')"
 }
 
 _clean_snaps() {
-  command -v snap >/dev/null || return 0
+  # snap needs snapd; without its socket (containers, WSL without systemd) there is nothing to ask.
+  command -v snap >/dev/null && [[ -S /run/snapd.socket ]] || return 0
   local name rev f n=0 b=0 s
   local -a revs
   mapfile -t revs < <(timeout 20 snap list --all 2>/dev/null | awk 'NR > 1 && $NF ~ /disabled/ { print $1, $3 }')
@@ -1157,6 +1172,10 @@ _clean_user_crash_reports() {
 _clean_docker() {
   command -v docker >/dev/null || return 0
   _clean_cat "Docker"
+  local why
+  if why=$(_clean_docker_foreign); then
+    mm_skip "Docker" "$why; MM_DOCKER_PRUNE=1 cleans it anyway"; _clean_cat_end; return
+  fi
   if ! timeout 5 docker info >/dev/null 2>&1; then mm_skip "Docker" "daemon not reachable"; _clean_cat_end; return; fi
   local n b size
   _clean_docker_containers
@@ -1183,6 +1202,39 @@ _clean_docker() {
 
   _clean_docker_volumes
   _clean_cat_end
+}
+
+# _clean_docker_foreign — prints why the Docker daemon the CLI talks to is not this machine's own
+# (returns 0), or returns 1 when it is. A tcp:// or ssh:// DOCKER_HOST, or a current docker
+# context pointing at one, is another machine's daemon. Inside a container, a daemon reached
+# through a mounted docker.sock or DOCKER_HOST is the host's (or a sibling's), and its containers,
+# images and build cache belong to everything else that host runs; only a dockerd running in the
+# container itself (Docker-in-Docker, _clean_dockerd_here) is local. MM_DOCKER_PRUNE=1 treats any
+# daemon as local.
+_clean_docker_foreign() {
+  [[ "${MM_DOCKER_PRUNE:-}" == 1 ]] && return 1
+  local h="${DOCKER_HOST:-}" s
+  [[ -n "$h" ]] || h=$(timeout 5 docker context inspect --format '{{.Endpoints.docker.Host}}' 2>/dev/null)
+  if [[ -n "$h" && "$h" != unix://* ]]; then printf 'the daemon at %s is another machine'"'"'s' "$h"; return 0; fi
+  mm_in_container || return 1
+  # No socket where the CLI connects: nothing to protect; `docker info` reports it unreachable.
+  s=${h:-unix:///var/run/docker.sock}
+  [[ -S "${s#unix://}" ]] || return 1
+  _clean_dockerd_here && return 1
+  if [[ -n "${DOCKER_HOST:-}" ]]; then printf 'in a container: DOCKER_HOST reaches a daemon outside it'
+  else printf 'in a container: the daemon behind its docker.sock is the host'"'"'s'; fi
+}
+
+# _clean_dockerd_here — 0 if a dockerd runs in this process's mount namespace. One whose
+# namespace cannot be read (another user's, without root) does not count.
+_clean_dockerd_here() {
+  local p comm me
+  me=$(readlink /proc/self/ns/mnt 2>/dev/null) || return 1
+  for p in /proc/[0-9]*; do
+    { IFS= read -r comm <"$p/comm"; } 2>/dev/null || continue
+    [[ "$comm" == dockerd && "$(readlink "$p/ns/mnt" 2>/dev/null)" == "$me" ]] && return 0
+  done
+  return 1
 }
 
 # Stopped containers whose last run ended 7+ days ago (never-started ones: created 7+ days ago).
