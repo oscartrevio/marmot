@@ -23,7 +23,9 @@ _clean_usage() {
 Usage: mm clean [--whitelist] [--dry-run] [--debug]
 
 Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Cargo downloads,
-Gradle build cache, Deno, Bazel, Zig, Prisma, Electron, ... see lib/catalog.sh), old
+Gradle build cache and daemon logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, RubyGems,
+Bundler, Composer, CPAN, Hex, opam, Android, kubectl discovery, Jupyter runtime files when no
+Jupyter runs, ... see lib/catalog.sh), old
 Playwright/Puppeteer/Cypress browser builds, old versions of coding-agent CLIs (the active one
 and one previous are kept), gcloud and Azure CLI logs older than 7 days (their credentials are
 never touched), apt/journal/snap leftovers, old kernels, rotated system logs and crash dumps
@@ -96,9 +98,16 @@ _clean_detail() {
   printf '%s' "$d"
 }
 
-# _clean_contents LABEL DIR — permanently empty a regenerable cache DIR via mm_rm (ALLOWED_ROOT=DIR).
+# _clean_contents LABEL DIR [FILTER] — permanently empty a regenerable cache DIR via mm_rm
+# (ALLOWED_ROOT=DIR). FILTER: name globs for the entries (catalog cache spec; !GLOB = leave alone).
 _clean_contents() {
-  local label="$1" dir="$2" e n=0 b=0 kept=0 fail=0
+  local label="$1" dir="$2" e w n=0 b=0 kept=0 fail=0
+  local -a toks=() sel=() inc=()
+  read -r -a toks <<<"${3:-}"
+  for w in "${toks[@]}"; do
+    if [[ "$w" == '!'?* ]]; then sel+=(! -name "${w#!}"); else inc+=(-o -name "$w"); fi
+  done
+  (( ${#inc[@]} )) && sel+=(\( "${inc[@]:1}" \))
   [[ -d "$dir" ]] || return 0
   while IFS= read -r -d '' e; do
     mm_rm "$e" "$dir"
@@ -107,7 +116,7 @@ _clean_contents() {
       1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
       *) fail=$((fail + 1)) ;;
     esac
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 "${sel[@]}" -print0 2>/dev/null)
   if (( n + kept + fail == 0 )); then mm_ok "$label" "nothing to clean"; return; fi
   mm_ok "$label" "$(_clean_detail "$n" items "$b" "$kept" "$fail")"
 }
@@ -156,22 +165,32 @@ _clean_tool() {
 
 # _clean_home_dir LABEL DIR — 0 if DIR is a non-empty directory that resolves strictly inside $HOME
 # and is not protected. Prints a skip line for protected/outside dirs; silent when absent or empty.
+# A carve-out folder (lib/core.sh MM_CLEAN_CARVEOUTS) passes: mm_rm checks each entry inside it.
 _clean_home_dir() {
   local label="$1" dir="$2" real
   [[ -d "$dir" ]] || return 1
   [[ -n "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] || return 1
   real=$(realpath -e -- "$dir" 2>/dev/null) || return 1
   if [[ "$real" != "$HOME"/?* ]]; then mm_skip "$label" "resolves outside your home folder"; return 1; fi
+  [[ "$real" == "$dir" ]] && _clean_carveout_dir "$dir" && return 0
   if mm_whitelisted "$dir" || mm_whitelisted "$real"; then mm_skip "$label" "protected"; return 1; fi
   return 0
 }
 
-# _clean_cache_row LABEL DIR BUSY — catalog "cache" row: empty DIR (kept) unless a busy process runs.
+# _clean_carveout_dir DIR — 0 if DIR is exactly one of the carve-out folders.
+_clean_carveout_dir() {
+  local c
+  for c in "${MM_CLEAN_CARVEOUTS[@]}"; do [[ "$1" == "$c" ]] && return 0; done
+  return 1
+}
+
+# _clean_cache_row LABEL DIR BUSY [FILTER] — catalog "cache" row: empty DIR (kept) unless a busy
+# process runs. FILTER is the row's spec (see _clean_contents).
 _clean_cache_row() {
   local label="$1" dir="$2" busy
   _clean_home_dir "$label" "$dir" || return 0
   if busy=$(_clean_busy "$3"); then mm_skip "$label" "$busy busy"; return 0; fi
-  _clean_contents "$label" "$dir"
+  _clean_contents "$label" "$dir" "${4:-}"
 }
 
 # _clean_playwright_refs DIR — "<dir-name>-<revision>" for every browser an installed playwright-core
@@ -340,14 +359,24 @@ _clean_dev() {
 
 # Catalog "cache" rows (built-in and the user's): emptied directly, whether or not the tool is
 # still installed (then they are pure leftovers). A row with spec tool:CMD is left to CMD's own
-# clean above while CMD is installed.
+# clean above while CMD is installed; any other spec filters the entries. A folder named by
+# several rows ($VAR and its default) is handled once, so a dry run does not count it twice.
 _clean_catalog_caches() {
-  local r i
+  local r i real filter
+  local -A seen=()
   for r in "${MM_CAT_REJECTED[@]}"; do mm_warn "catalog row ignored: $r"; done
   for i in "${!MM_CAT_KIND[@]}"; do
     [[ "${MM_CAT_KIND[$i]}" == cache ]] || continue
-    [[ "${MM_CAT_SPEC[$i]}" == tool:?* ]] && command -v "${MM_CAT_SPEC[$i]#tool:}" >/dev/null && continue
-    _clean_cache_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}"
+    if [[ "${MM_CAT_SPEC[$i]}" == tool:?* ]]; then
+      command -v "${MM_CAT_SPEC[$i]#tool:}" >/dev/null && continue
+      filter=""
+    else
+      filter=${MM_CAT_SPEC[$i]}
+    fi
+    real=$(realpath -e -- "${MM_CAT_PATH[$i]}" 2>/dev/null) || continue
+    [[ -z "${seen[$real]+x}" ]] || continue
+    seen[$real]=1
+    _clean_cache_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}" "$filter"
   done
   return 0
 }

@@ -1074,3 +1074,92 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   [ ! -e "$XDG_DATA_HOME/Trash/files/omp.log.1" ]          # logs are not moved to the Trash
   [ -e "$XDG_DATA_HOME/Trash/files/s.jsonl" ]              # the configured retention still runs
 }
+
+# ---------------------------------------------------------------- more tool caches
+
+@test "more caches: tool caches are emptied; filters keep gem notes, Gradle daemon state, opencode snapshots" {
+  local h="$HOME"
+  mkdir -p "$h/.pyenv/cache" "$h/.gem/ruby/3.2.0/cache" "$h/.gem/ruby/3.3.0/cache" "$h/.gradle/daemon/8.5" \
+    "$h/.cache/opencode/node_modules/ai" "$h/.cache/opencode/snapshots/s1" "$h/.npm/_logs" \
+    "$h/.cache/composer/files/acme" "$h/.oh-my-zsh/cache/completions" "$h/.android/build-cache/x" \
+    "$h/.local/share/jupyter/runtime" "$h/.hex/packages/hexpm" "$h/.opam/download-cache/sha256"
+  echo t >"$h/.pyenv/cache/Python-3.12.1.tar.xz"
+  echo g >"$h/.gem/ruby/3.2.0/cache/rake-13.0.6.gem"; echo g >"$h/.gem/ruby/3.3.0/cache/json-2.7.1.gem"
+  echo n >"$h/.gem/ruby/3.2.0/cache/notes.txt"
+  echo l >"$h/.gradle/daemon/8.5/daemon-4242.out.log"; echo r >"$h/.gradle/daemon/8.5/registry.bin"
+  echo m >"$h/.cache/opencode/node_modules/ai/index.js"; echo j >"$h/.cache/opencode/models.json"
+  echo s >"$h/.cache/opencode/snapshots/s1/f"
+  echo l >"$h/.npm/_logs/2026-01-01T00_00_00_000Z-debug-0.log"; echo c >"$h/.cache/composer/files/acme/p.zip"
+  echo z >"$h/.oh-my-zsh/cache/completions/_docker"; echo b >"$h/.android/build-cache/x/b"
+  echo '{}' >"$h/.local/share/jupyter/runtime/kernel-1.json"; echo t >"$h/.hex/packages/hexpm/jason-1.4.1.tar"
+  echo o >"$h/.opam/download-cache/sha256/ab"
+  catalog
+  _clean_busy() { return 1; }   # isolate from tools running on the host
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  gone "$h/.pyenv/cache/Python-3.12.1.tar.xz" "$h/.gem/ruby/3.2.0/cache/rake-13.0.6.gem" \
+    "$h/.gem/ruby/3.3.0/cache/json-2.7.1.gem" "$h/.gradle/daemon/8.5/daemon-4242.out.log" \
+    "$h/.cache/opencode/node_modules" "$h/.cache/opencode/models.json" "$h/.npm/_logs/2026-01-01T00_00_00_000Z-debug-0.log" \
+    "$h/.cache/composer/files" "$h/.oh-my-zsh/cache/completions" "$h/.android/build-cache/x" \
+    "$h/.local/share/jupyter/runtime/kernel-1.json" "$h/.hex/packages/hexpm" "$h/.opam/download-cache/sha256"
+  exist "$h/.gem/ruby/3.2.0/cache/notes.txt" "$h/.gradle/daemon/8.5/registry.bin" "$h/.cache/opencode/snapshots/s1/f"
+  exist "$h/.pyenv/cache" "$h/.gradle/daemon/8.5" "$h/.cache/opencode"
+  [ ! -e "$XDG_DATA_HOME/Trash/files/rake-13.0.6.gem" ]   # regenerable: removed, not trashed
+}
+
+@test "more caches: Gradle daemon logs and Jupyter runtime files are kept while Gradle or Jupyter runs" {
+  mkdir -p "$HOME/.gradle/daemon/8.5" "$HOME/.local/share/jupyter/runtime"
+  echo l >"$HOME/.gradle/daemon/8.5/daemon-1.out.log"; echo '{}' >"$HOME/.local/share/jupyter/runtime/kernel-1.json"
+  busy_proc jupyter-lab
+  mm_test_bg "$SB" bash -c 'sleep 60; :' org.gradle.launcher.daemon.bootstrap.GradleDaemon
+  catalog
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  exist "$HOME/.gradle/daemon/8.5/daemon-1.out.log" "$HOME/.local/share/jupyter/runtime/kernel-1.json"
+}
+
+@test "more caches: a Jupyter connection file held open is kept, stale ones go" {
+  local r="$HOME/.local/share/jupyter/runtime"
+  mkdir -p "$r"; echo '{}' >"$r/kernel-live.json"; echo '{}' >"$r/kernel-dead.json"; echo '{}' >"$r/jpserver-9.json"
+  mm_test_bg "$SB" bash -c 'exec 7<"$1"; sleep 30' _ "$r/kernel-live.json"
+  catalog
+  _clean_busy() { return 1; }   # no Jupyter process: only the per-file in-use check is left
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  exist "$r/kernel-live.json"
+  gone "$r/kernel-dead.json" "$r/jpserver-9.json"
+}
+
+@test "more caches: kubectl discovery and HTTP caches are emptied; ~/.kube/config and plugin token caches stay" {
+  local k="$HOME/.kube"
+  mkdir -p "$k/cache/discovery/api.example.com_443/apps/v1" "$k/cache/http" "$k/cache/oidc-login"
+  echo 'apiVersion: v1' >"$k/config"; echo '{}' >"$k/cache/discovery/api.example.com_443/apps/v1/serverresources.json"
+  echo r >"$k/cache/http/0a1b2c"; echo t >"$k/cache/oidc-login/abc"
+  catalog
+  _clean_busy() { return 1; }
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  gone "$k/cache/discovery/api.example.com_443" "$k/cache/http/0a1b2c"
+  exist "$k/config" "$k/cache/oidc-login/abc" "$k/cache/discovery" "$k/cache/http"
+  [ -z "$(mm_log_rows remove | grep -E "^$k/(config|cache/oidc-login)")" ]
+}
+
+@test "more caches: a folder named by two rows is counted once; dry-run frees what a real run frees" {
+  export PYENV_ROOT="$HOME/.pyenv"
+  mkdir -p "$PYENV_ROOT/cache" "$HOME/.npm/_prebuilds"
+  head -c 300000 /dev/urandom >"$PYENV_ROOT/cache/Python-3.12.1.tar.xz"
+  head -c 200000 /dev/urandom >"$HOME/.npm/_prebuilds/sharp-linux-x64.tar.gz"
+  catalog
+  _clean_busy() { return 1; }
+  local before after est
+  sizes() { du -scB1 "$PYENV_ROOT/cache" "$HOME/.npm/_prebuilds" | tail -1 | cut -f1; }
+  before=$(sizes)
+  MM_DRY_RUN=1; _clean_catalog_caches >/dev/null
+  est=$MM_FREED
+  [ "$(sizes)" -eq "$before" ]
+  MM_DRY_RUN=0 MM_FREED=0; _clean_catalog_caches >/dev/null
+  after=$(sizes)
+  [ "$MM_FREED" -eq "$est" ]
+  [ $((before - after)) -eq "$est" ]
+  (( est >= 500000 ))
+}
