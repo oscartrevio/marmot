@@ -24,9 +24,10 @@ Usage: mm clean [--whitelist] [--dry-run] [--debug]
 Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Cargo downloads,
 Gradle build cache, Deno, Bazel, Zig, Prisma, Electron, ... see lib/catalog.sh), old
 Playwright/Puppeteer/Cypress browser builds, old versions of coding-agent CLIs (the active one
-and one previous are kept), apt/journal/snap leftovers, old kernels, stopped Docker containers,
-dangling images, images no container uses (pulled or built 30+ days ago), old build cache, and
-stale editor server builds.
+and one previous are kept), gcloud and Azure CLI logs older than 7 days (their credentials are
+never touched), apt/journal/snap leftovers, old kernels, stopped Docker containers, dangling
+images, images no container uses (pulled or built 30+ days ago), old build cache, and stale
+editor server builds.
 Trash items deleted more than 7 days ago are removed for good. /tmp and /var/tmp are not
 swept: they hold other programs' runtime state, and the OS ages them (systemd-tmpfiles); their
 size and the OS policy are reported. Model stores, dependency repositories, Node versions,
@@ -324,6 +325,7 @@ _clean_dev() {
   command -v uv >/dev/null && _clean_uv
   command -v go >/dev/null && _clean_go_modcache
   _clean_catalog_caches
+  _clean_cloud_logs
   _clean_cat_end
 }
 
@@ -522,6 +524,78 @@ _clean_go_modcache() {
   [[ "${env[0]:-}" == /* ]] || { mm_skip "Go module cache" "location unknown"; return; }
   if [[ "${env[1]:-}" == off ]]; then mm_skip "Go module cache" "GOPROXY=off, modules could not be downloaded again"; return; fi
   _clean_tool "Go module cache" "go gopls dlv" "${env[0]}" GOTOOLCHAIN=local go clean -modcache
+}
+
+# ---------------------------------------------------------------- cloud CLI logs
+
+# Cloud CLIs log inside their config folders, which stay protected as a whole (credentials live
+# next to the logs); lib/core.sh carves the logs folders out (MM_CLEAN_CARVEOUTS). gcloud writes
+# one file per invocation into a folder per day (logs/YYYY.MM.DD/) and drops them only after 30
+# days (core/max_log_days); Azure CLI's optional file log (logging.enable_log_file) rotates
+# logs/az.log. The AWS CLI writes no log files (--debug goes to stderr) and its ~/.aws/cli/cache
+# and ~/.aws/sso/cache hold credentials, so ~/.aws is not touched.
+_CLEAN_LOG_DAYS=7   # cloud CLI logs last written longer ago than this are deleted
+
+_clean_cloud_logs() {
+  _clean_cloud_log_dir "gcloud logs" "${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}/logs"
+  _clean_cloud_log_dir "Azure CLI logs" "${AZURE_CONFIG_DIR:-$HOME/.azure}/logs"
+}
+
+# _clean_cloud_log_dir LABEL DIR — permanently delete the files in DIR last written 7+ days ago.
+# A subfolder (gcloud's day folders) with nothing newer goes whole in one mm_rm, folder included;
+# when that is refused, or it holds newer files, its old files go one by one and the folder stays.
+# Reports files, size and the oldest one.
+_clean_cloud_log_dir() {
+  local label="$1" dir="$2" cutoff e t k newer n=0 b=0 kept=0 fail=0 empty=0 oldest="" d
+  [[ -d "$dir" ]] || return 0
+  # The carve-out in lib/core.sh only covers canonical paths; a link here could point anywhere.
+  if [[ "$(realpath -e -- "$dir" 2>/dev/null)" != "$dir" ]]; then
+    mm_skip "$label" "${dir/#$HOME/\~} is a symlink or not a canonical path"; return 0
+  fi
+  cutoff=$(( $(date +%s) - _CLEAN_LOG_DAYS * 86400 ))
+  while IFS= read -r -d '' e; do
+    if [[ -f "$e" && ! -L "$e" ]]; then
+      t=$(stat -c %Y -- "$e" 2>/dev/null) || continue
+      (( t <= cutoff )) && _clean_cloud_log_rm "$e" "$t"
+    elif [[ -d "$e" && ! -L "$e" ]]; then
+      # Unreadable parts count as newer: then only what find lists as old is touched.
+      newer=$(find "$e" -xdev -newermt "@$cutoff" -print -quit 2>/dev/null) || newer=unreadable
+      if [[ -z "$newer" ]]; then
+        read -r k t < <(find "$e" -xdev -type f -printf '%T@\n' 2>/dev/null |
+          awk 'NR == 1 || $1 < m { m = $1 } END { printf "%.0f %.0f\n", NR, m }')
+        mm_rm "$e" "$dir"
+        case $? in
+          0) n=$((n + k)) b=$((b + MM_LAST_BYTES)) MM_COUNT=$((MM_COUNT + k - 1))
+             if (( k == 0 )); then empty=$((empty + 1)); elif [[ -z "$oldest" ]] || (( t < oldest )); then oldest=$t; fi
+             continue ;;
+          1) [[ "$MM_SKIP_REASON" == missing ]] && continue ;;
+          *) fail=$((fail + 1)); continue ;;
+        esac
+      fi
+      while IFS=' ' read -r -d '' t e; do
+        _clean_cloud_log_rm "$e" "${t%.*}"
+      done < <(find "$e" -xdev -type f ! -newermt "@$cutoff" -printf '%T@ %p\0' 2>/dev/null)
+    fi
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  if (( n + kept + fail + empty == 0 )); then
+    mm_ok "$label" "nothing older than $_CLEAN_LOG_DAYS days ($(mm_human "$(mm_size "$dir")") newer)"; return
+  fi
+  d="$(_clean_detail "$n" files "$b" "$kept" "$fail")"
+  [[ -n "$oldest" ]] && d+=", oldest $(_clean_ago "$oldest")"
+  (( empty )) && d+=", $empty empty folders"
+  mm_ok "$label" "$d"
+}
+
+# _clean_cloud_log_rm FILE MTIME — one old log file (counters are _clean_cloud_log_dir's locals).
+_clean_cloud_log_rm() {
+  mm_rm "$1" "$dir"
+  case $? in
+    0) n=$((n + 1)) b=$((b + MM_LAST_BYTES))
+       if [[ -z "$oldest" ]] || (( $2 < oldest )); then oldest=$2; fi ;;
+    1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+    *) fail=$((fail + 1)) ;;
+  esac
+  return 0
 }
 
 # ---------------------------------------------------------------- 3. system
