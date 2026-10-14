@@ -464,3 +464,110 @@ wt_interactive() {
   [ -f "$SB/repo/a" ]
   [ -d "$SB/recent" ]
 }
+
+# ---------------------------------------------------------------- what a delete really frees
+
+# fake_pnpm STORE — pnpm double: `store path` prints STORE; `store prune` deletes the store files
+# nothing else links to (link count 1), as the real one does. Calls go to $BATS_TEST_TMPDIR/pnpm.calls.
+fake_pnpm() {
+  mkdir -p "$1"
+  mm_test_fake pnpm "echo \"\$*\" >>'$BATS_TEST_TMPDIR/pnpm.calls'
+case \"\$*\" in
+  'store path') echo '$1' ;;
+  'store prune') find '$1' -type f -links 1 -delete ;;
+esac"
+}
+pnpm_calls() { cat "$BATS_TEST_TMPDIR/pnpm.calls" 2>/dev/null; }
+
+# pnpm_modules DIR STORE — DIR/node_modules laid out by pnpm: .modules.yaml, a file of its own,
+# and a 64KB package file hard-linked from STORE. Prints the package file's bytes on disk.
+pnpm_modules() {
+  mkdir -p "$1/node_modules/.pnpm/pkg@1.0.0" "$2"
+  printf 'storeDir: %s\n' "$2" >"$1/node_modules/.modules.yaml"
+  head -c 4096 /dev/urandom >"$1/node_modules/.pnpm/own"
+  head -c 65536 /dev/urandom >"$2/pkg-file"
+  ln "$2/pkg-file" "$1/node_modules/.pnpm/pkg@1.0.0/index.js"
+  echo $(( $(stat -c %b "$2/pkg-file") * 512 ))
+}
+
+log_bytes() { awk -F'\t' -v a="$1" '$3 == a { print $5 }' "$XDG_STATE_HOME/marmot/operations.log"; }
+
+@test "node_modules hard-linked to the pnpm store: reports and frees only its own files, then prunes the store" {
+  fake_pnpm "$SB/store"
+  node_project "$SB/p"; rm -r "$SB/p/node_modules"
+  local pkg own before after
+  mm_core
+  pkg=$(pnpm_modules "$SB/p" "$SB/store")
+  own=$(( $(du -sB1 "$SB/p/node_modules" | cut -f1) - pkg ))
+  mm_age "$SB/p" 30
+  run mm purge --dry-run --yes "$SB/p"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Would free: $(mm_human "$own") "* ]]
+  [[ "$output" == *"~$(mm_human "$pkg") more"* ]]
+  [ -f "$SB/p/node_modules/.pnpm/own" ]
+  [[ "$(pnpm_calls)" != *prune* ]]
+  before=$(du -sxB1 "$SB" | cut -f1)
+  . "$MM_SRC/cmd/purge.sh"
+  mm_proc_running() { return 1; }   # no pnpm running elsewhere on the machine
+  run mm_cmd_main --yes "$SB/p"
+  [ "$status" -eq 0 ]
+  after=$(du -sxB1 "$SB" | cut -f1)
+  [ ! -e "$SB/p/node_modules" ]
+  [ "$(log_bytes remove)" -eq "$own" ]
+  [ "$(pnpm_calls | grep -c '^store prune$')" -eq 1 ]
+  [ ! -e "$SB/store/pkg-file" ]
+  [ $(( before - after )) -eq $(( own + pkg )) ]
+}
+
+@test "artifacts hard-linked only to each other: the dry run's total is what the real run frees" {
+  node_project "$SB/a"; head -c 65536 /dev/urandom >"$SB/a/node_modules/pkg"
+  mkdir -p "$SB/b"; echo '{}' >"$SB/b/package.json"; cp -al "$SB/a/node_modules" "$SB/b/node_modules"
+  mm_age "$SB" 30
+  mm_core
+  local dry before after
+  run mm purge --dry-run --yes "$SB"
+  dry=$output
+  before=$(du -sxB1 "$SB" | cut -f1)
+  run mm purge --yes "$SB"
+  after=$(du -sxB1 "$SB" | cut -f1)
+  [ ! -e "$SB/a/node_modules" ]
+  [ ! -e "$SB/b/node_modules" ]
+  [[ "$dry" == *"Would free: $(mm_human $(( before - after ))) "* ]]
+  [[ "$output" == *"Space freed: $(mm_human $(( before - after ))) "* ]]
+}
+
+@test "the pnpm store is left alone while pnpm runs, and when nothing pnpm installed was removed" {
+  fake_pnpm "$SB/store"
+  node_project "$SB/plain"; mm_age "$SB/plain" 30
+  run mm purge --yes "$SB/plain"
+  [ ! -e "$SB/plain/node_modules" ]
+  [ -z "$(pnpm_calls)" ]
+  node_project "$SB/p"; rm -r "$SB/p/node_modules"; pnpm_modules "$SB/p" "$SB/store" >/dev/null
+  mm_age "$SB/p" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  # a running pnpm (an install somewhere else on the machine)
+  mm_proc_running() { [[ "$1" == pnpm ]]; }
+  run mm_cmd_main --yes "$SB/p"
+  [ ! -e "$SB/p/node_modules" ]
+  [[ "$(pnpm_calls)" != *prune* ]]
+  [ -f "$SB/store/pkg-file" ]
+}
+
+@test "worktree with a pnpm node_modules: removal logs what it frees and prunes the store" {
+  fake_pnpm "$SB/store"
+  wt_repo; wt_add wt -b feat
+  local pkg own
+  pkg=$(pnpm_modules "$SB/wt" "$SB/store")
+  own=$(( $(du -sB1 "$SB/wt" | cut -f1) - pkg ))
+  mm_age "$SB" 15
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  mm_proc_running() { return 1; }   # no pnpm running elsewhere on the machine
+  MM_TTY=1
+  mm_confirm() { return 0; }
+  _purge_ask() { printf n; }
+  run mm_cmd_main "$SB"
+  [ ! -e "$SB/wt" ]
+  [ "$(log_bytes worktree)" -eq "$own" ]
+  [ "$(pnpm_calls | grep -c '^store prune$')" -eq 1 ]
+  [ ! -e "$SB/store/pkg-file" ]
+}
