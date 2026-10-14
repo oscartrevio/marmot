@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # mm clean [--sessions DAYS] [--whitelist] — remove caches, old builds, package and Docker leftovers.
 # Regenerable caches are removed; the Trash keeps items for 7 days. Shared temp folders (/tmp,
-# /var/tmp) are only reported: other programs keep runtime state there and the OS ages them.
+# /var/tmp) are only reported: other programs keep runtime state there and the OS ages them. The
+# one exception is the temp files automation browsers leave in /tmp (see _clean_browser_tmp).
 # Tool-driven cleans (npm, apt, docker...) add measured sizes on top of mm_rm's totals.
 # What counts as a cache, an old build, or a store to only report comes from lib/catalog.sh.
 
@@ -32,10 +33,14 @@ no container uses (pulled or built 30+ days ago), old build cache, and stale edi
 builds.
 Trash items deleted more than 7 days ago are removed for good. /tmp and /var/tmp are not
 swept: they hold other programs' runtime state, and the OS ages them (systemd-tmpfiles); their
-size and the OS policy are reported. Model stores, dependency repositories, Node versions,
-Docker volumes and agent state are never touched: they are listed with their size under
-"Kept for you to review". Steps that cannot be undone (Trash sweep, packages, logs, crash dumps,
-containers, images) ask first and are skipped without a terminal.
+size and the OS policy are reported. The one exception: temp profiles and files that
+automation browsers leave in /tmp when their script dies (playwright_chromiumdev_profile-*,
+puppeteer_dev_chrome_profile-*, playwright-artifacts-*, [.]org.chromium.Chromium.*,
+[.]com.google.Chrome.*), only your own, untouched for 2 hours and not in use, are deleted.
+Model stores, dependency repositories, Node versions, Docker volumes and agent state are never
+touched: they are listed with their size under "Kept for you to review". Steps that cannot be
+undone (Trash sweep, packages, logs, crash dumps, containers, images) ask first and are skipped
+without a terminal.
 
 Agent sessions are kept unless you opt in: with a retention of N days, session files (and
 rotated logs in agent state) last written more than N days ago and not in use move to the
@@ -1077,6 +1082,74 @@ _clean_editor_builds() {
   mm_ok "$label" "$(_clean_detail "$n" "old builds" "$bytes" "$kept" "$fail"), newest kept"
 }
 
+# ---------------------------------------------------------------- automation-browser temp files
+
+# The one exception to "never sweep /tmp": Playwright, Puppeteer and Chromium create these
+# top-level entries for each browser they launch and delete them when it closes; a script that
+# crashes or is killed leaves them behind. Only these names, only your own entries, only once
+# nothing in them changed for 2 hours, never while a process uses them; they are regenerated on
+# the next launch, so they are deleted for good. Chromium names its temp files and folders
+# "[.]org.chromium.Chromium.<random>", Chrome-branded builds (Google Chrome, Chrome for Testing)
+# "[.]com.google.Chrome.<random>" (base/files/file_util_posix.cc, FormatTemporaryFileName).
+_CLEAN_BROWSER_TMP_NAMES=(playwright_chromiumdev_profile-* puppeteer_dev_chrome_profile-*
+  playwright-artifacts-* '.org.chromium.Chromium.*' 'org.chromium.Chromium.*'
+  '.com.google.Chrome.*' 'com.google.Chrome.*')
+_CLEAN_BROWSER_TMP_IDLE=7200
+
+# _clean_browser_tmp_root — the folder swept: /tmp. The test suite points MM_TEST_TMP_ROOT into its
+# sandbox; that is honored only inside bats' per-test directory, and an override that is set but
+# unusable fails instead of falling back to the real /tmp.
+_clean_browser_tmp_root() {
+  [[ -n "${MM_TEST_TMP_ROOT+x}" ]] || { echo /tmp; return 0; }
+  local root box
+  root=$(realpath -e -- "$MM_TEST_TMP_ROOT" 2>/dev/null) || return 1
+  box=$(realpath -e -- "${BATS_TEST_TMPDIR:-/nonexistent}" 2>/dev/null) || return 1
+  [[ "$root" == "$box"/?* ]] || return 1
+  echo "$root"
+}
+
+# _clean_browser_tmp ROOT — remove ROOT's automation-browser leftovers (above) via mm_rm, with ROOT
+# as the allowed root. Idle time is the newest mtime or ctime of anything inside the entry. The
+# section is shown only when ROOT holds such entries.
+_clean_browser_tmp() {
+  local root="$1" label="Browser temp files in $1" e now newest rc n=0 b=0 kept=0 fail=0 recent=0 note=""
+  local -a names=() found=()
+  [[ -d "$root" ]] || return 0
+  for e in "${_CLEAN_BROWSER_TMP_NAMES[@]}"; do
+    (( ${#names[@]} )) && names+=(-o)
+    names+=(-name "$e")
+  done
+  mapfile -d '' -t found < <(find "$root" -mindepth 1 -maxdepth 1 -uid "$EUID" \( -type d -o -type f \) \
+    \( "${names[@]}" \) -print0 2>/dev/null)
+  (( ${#found[@]} )) || return 0
+  _clean_cat "Automation browsers"
+  now=$(date +%s)
+  for e in "${found[@]}"; do
+    newest=$(find "$e" -printf '%T@\n%C@\n' 2>/dev/null | awk '$1 > m { m = $1 } END { printf "%.0f\n", m }')
+    if (( newest == 0 || now - newest < _CLEAN_BROWSER_TMP_IDLE )); then recent=$((recent + 1)); continue; fi
+    rc=0; mm_rm "$e" "$root" || rc=$?
+    case $rc in
+      0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      *) fail=$((fail + 1)) ;;
+    esac
+  done
+  (( recent )) && note=", $recent used in the last 2 hours kept"
+  if (( n + kept + fail == 0 )); then
+    mm_ok "$label" "nothing idle for 2 hours${note}"
+  else
+    mm_ok "$label" "$(_clean_detail "$n" items "$b" "$kept" "$fail")${note}"
+  fi
+  _clean_cat_end
+}
+
+_clean_browsers() {
+  local root
+  if root=$(_clean_browser_tmp_root); then _clean_browser_tmp "$root"; return; fi
+  mm_section "Automation browsers"
+  mm_skip "Browser temp files" "MM_TEST_TMP_ROOT is outside the test sandbox"
+}
+
 # ---------------------------------------------------------------- 6. kept for you to review
 
 # _clean_review LABEL DETAIL [HINT] — queue a line for "Kept for you to review".
@@ -1135,9 +1208,10 @@ _clean_review_catalog() {
   done
 }
 
-# Shared temp folders are never swept: other programs keep runtime state there (sockets, locks,
-# the working files of running builds and agents), and the OS ages them with systemd-tmpfiles.
-# They are reported with their size and that policy. Directories in tmpfiles.d precedence order.
+# Shared temp folders are never swept (automation-browser leftovers aside, see above): other
+# programs keep runtime state there (sockets, locks, the working files of running builds and
+# agents), and the OS ages them with systemd-tmpfiles. They are reported with their size and that
+# policy. Directories in tmpfiles.d precedence order.
 _CLEAN_TMPFILES_DIRS=(/etc/tmpfiles.d /run/tmpfiles.d /usr/local/lib/tmpfiles.d /usr/lib/tmpfiles.d)
 
 # _clean_tmpfiles_age PATH — "AGE<TAB>FILE" for the tmpfiles.d line systemd-tmpfiles applies to
@@ -1248,6 +1322,7 @@ mm_cmd_main() {
   _clean_dev
   _clean_builds
   [[ -n "$sessions" ]] && _clean_sessions "$sessions" "$from"
+  _clean_browsers
   _clean_system
   _clean_docker
   _clean_editors

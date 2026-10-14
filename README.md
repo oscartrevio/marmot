@@ -8,7 +8,8 @@ of git worktrees. Inspired by [Mole](https://github.com/tw93/Mole), which does t
 ```text
 mm clean       caches, old browser builds, old agent CLI versions, gcloud/Azure CLI logs,
                apt/snap/journal, old kernels, rotated system logs and crash dumps (7+ days),
-               Docker leftovers, stale editor servers; reports /tmp and how the OS ages it
+               Docker leftovers, stale editor servers, automation-browser temp profiles in /tmp;
+               reports /tmp and how the OS ages it
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
 mm status      live health dashboard, agent sessions first: CPU, memory, disk and inodes,
                network/VPN, your link's latency, lingering dev servers and ports, updates,
@@ -69,6 +70,13 @@ marmot deletes files, so it is built to refuse rather than guess:
 - **Shared temp is the OS's job.** `/tmp` and `/var/tmp` hold other programs' sockets, locks and
   working files, so marmot never sweeps them; `mm clean` shows their size and the
   systemd-tmpfiles age that applies (and the `tmpfiles.d` line to add when nothing ages them).
+  One named exception: the temp profiles and files automation browsers leave behind when
+  their script dies (`/tmp/playwright_chromiumdev_profile-*`, `/tmp/puppeteer_dev_chrome_profile-*`,
+  `/tmp/playwright-artifacts-*`, and Chromium's and Chrome's own `/tmp/[.]org.chromium.Chromium.*`,
+  `/tmp/[.]com.google.Chrome.*`). Only your own, only when nothing in them changed for 2 hours
+  and no process uses them; they are deleted for good (the next launch makes new ones).
+  `mm optimize` offers the orphaned headless browsers themselves (parent gone, older than
+  1 hour) for SIGTERM.
 - **Confirmations need a terminal.** Run without one (cron, pipes) and every step that asks is
   skipped. There is no global `--yes`; the only unattended deletions are `mm purge --yes`, which
   removes build artifacts of stale projects only, and a session retention you configured.
