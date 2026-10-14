@@ -22,10 +22,10 @@ _mo() {
   case $words[2] in
     clean)     _arguments $global '--whitelist[edit protected paths]' '--sessions[move agent sessions older than N days to the Trash]:days' ;;
     status)    _arguments '--once[single snapshot]' '--json[machine-readable]' '--agent[plain text for AI agents]' '--view[layout]:view:(compact full)' '--interval[refresh seconds]:seconds' ;;
-    analyze|analyse) _files -/ ;;
+    analyze|analyse) _arguments $global '--json[print the overview as JSON]' '*:directory:_files -/' ;;
     optimize)  _arguments $global ;;
     purge)     _arguments $global '(-y --yes)'{-y,--yes}'[unattended: remove stale artifacts only]' '--all[include recent projects (interactive)]' '--paths[edit project roots]' '--days[idle days]:days' '*:directory:_files -/' ;;
-    uninstall) _arguments $global '*:package:' ;;
+    uninstall) _arguments $global '(-l --list)'{-l,--list}'[list removable packages]' '(-a --all)'{-a,--all}'[also list shared libraries]' '*:package:' ;;
     history)   _arguments '--json[JSON output]' '--all[full log]' '(-l --limit)'{-l,--limit}'[entries]:count' ;;
     schedule)
       if (( CURRENT == 3 )); then
