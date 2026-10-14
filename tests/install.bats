@@ -71,8 +71,7 @@ teardown() { mm_test_teardown; }
 }
 
 @test "--uninstall never deletes a git checkout used as the install folder" {
-  mkdir -p "$(dirname "$MARMOT_PREFIX")"
-  cp -R "$MM_SRC" "$MARMOT_PREFIX"; mkdir -p "$MARMOT_PREFIX/.git"
+  mm_test_checkout "$MARMOT_PREFIX"
   "$MARMOT_PREFIX/install.sh" >/dev/null
   run "$MARMOT_PREFIX/install.sh" --uninstall
   [ "$status" -eq 0 ]
