@@ -280,3 +280,22 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   [ "$output" = "1 size unreadable" ]
   [ -d "$SB/root/big" ]
 }
+
+@test "root's own runs clean inside /root like any home; /root itself and its keys stay protected" {
+  as_home() {
+    HOME=$1 bash -c '. "$1/lib/core.sh"; shift
+      for p; do printf "%s %s\n" "$p" "$(mm_protected "$p" || echo removable)"; done' _ "$MM_SRC" "${@:2}"
+  }
+  run as_home /root /root /root/.ssh/id_ed25519 /root/.gnupg/x /root/.cache/pip /root/project/node_modules /home/u /etc/x
+  [ "$status" -eq 0 ]
+  [ "$output" = "/root protected
+/root/.ssh/id_ed25519 protected
+/root/.gnupg/x protected
+/root/.cache/pip removable
+/root/project/node_modules removable
+/home/u protected (a home directory)
+/etc/x protected" ]
+  run as_home "$HOME" /root/.cache/pip "$HOME/.cache/pip"
+  [ "$output" = "/root/.cache/pip protected
+$HOME/.cache/pip removable" ]
+}
