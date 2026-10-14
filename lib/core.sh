@@ -16,6 +16,7 @@ MM_HOME="${MM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 MM_CONFIG_DIR="${MM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/marmot}"
 MM_STATE_DIR="${MM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/marmot}"
 MM_WHITELIST_FILE="${MM_WHITELIST_FILE:-$MM_CONFIG_DIR/whitelist}"
+MM_CONFIG_FILE="${MM_CONFIG_FILE:-$MM_CONFIG_DIR/config}"
 MM_LOG_FILE="${MM_LOG_FILE:-$MM_STATE_DIR/operations.log}"
 # XDG Trash (freedesktop.org spec): items moved here keep a .trashinfo, so `trash-restore`
 # (trash-cli) or any desktop file manager can put them back.
@@ -252,10 +253,17 @@ mm_whitelist_init() {
 
 # mm_keep_patterns — every protection pattern: built-ins, agent state, then the whitelist file.
 # MM_KEEP_AGENT_STATE=0 leaves agent state out; only for removing git worktrees that git reports
-# clean (agents such as Cursor keep their worktrees inside their state dir).
+# clean (agents such as Cursor keep their worktrees inside their state dir). _MM_WAIVED (set by
+# mm_rm for MM_AGENT_WAIVER) leaves out only the agent state entries that contain that directory.
 mm_keep_patterns() {
   printf '%s\n' "${MM_BUILTIN_KEEP[@]}"
-  [[ "${MM_KEEP_AGENT_STATE:-1}" == 0 ]] || mm_agent_state_paths
+  if [[ "${MM_KEEP_AGENT_STATE:-1}" != 0 ]]; then
+    local p
+    while IFS= read -r p; do
+      [[ -n "${_MM_WAIVED:-}" && ( "$_MM_WAIVED" == "$HOME${p:1}" || "$_MM_WAIVED" == "$HOME${p:1}"/* ) ]] && continue
+      printf '%s\n' "$p"
+    done < <(mm_agent_state_paths)
+  fi
   cat -- "$MM_WHITELIST_FILE"
 }
 
@@ -295,6 +303,23 @@ mm_whitelist_edit() {
   "${VISUAL:-${EDITOR:-nano}}" "$MM_WHITELIST_FILE"
 }
 
+# ---------------------------------------------------------------- config
+
+# mm_config KEY — print KEY's value from $MM_CONFIG_FILE (~/.config/marmot/config): `key=value`
+# lines, `#` starts a comment, spaces around key and value are ignored, the last line for a key
+# wins. Fails when the file or the key is missing.
+mm_config() {
+  [[ -r "$MM_CONFIG_FILE" ]] || return 1
+  awk -v k="$1" '
+    { sub(/#.*/, "") }
+    (i = index($0, "=")) {
+      key = substr($0, 1, i - 1); val = substr($0, i + 1)
+      gsub(/^[ \t]+|[ \t\r]+$/, "", key); gsub(/^[ \t]+|[ \t\r]+$/, "", val)
+      if (key == k) { found = 1; out = val }
+    }
+    END { if (found) print out; exit !found }' "$MM_CONFIG_FILE"
+}
+
 # ---------------------------------------------------------------- history
 
 # mm_log ACTION TARGET [BYTES] [DETAIL] — append to the operations log (real runs only, never dry-run).
@@ -331,6 +356,25 @@ mm_protected() {
   return 1
 }
 
+# mm_credential_like PATH — 0 if PATH's name, or any name under it, looks like a key, token or
+# credentials file. Agent state mixes these with sessions and logs (~/.claude/.credentials.json,
+# ~/.codex/auth.json), so the agent waiver below refuses them whatever their age.
+_MM_CREDENTIAL_NAMES=('*credential*' '*secret*' '*token*' '*oauth*' '*apikey*' '*api_key*' '*api-key*'
+  'auth.json' 'auth-*.json' '*.pem' '*.key' '*.p12' '*.pfx' '*.kdbx' 'id_rsa*' 'id_dsa*' 'id_ecdsa*'
+  'id_ed25519*' '.netrc' '.git-credentials')
+mm_credential_like() {
+  local name="${1##*/}" pat
+  name=${name,,}
+  for pat in "${_MM_CREDENTIAL_NAMES[@]}"; do
+    # shellcheck disable=SC2053
+    [[ "$name" == $pat ]] && return 0
+  done
+  [[ -d "$1" && ! -L "$1" ]] || return 1
+  local -a expr=()
+  for pat in "${_MM_CREDENTIAL_NAMES[@]}"; do expr+=(-o -iname "$pat"); done
+  [[ -n "$(find "$1" -xdev -mindepth 1 \( "${expr[@]:1}" \) -print -quit 2>/dev/null)" ]]
+}
+
 # mm_identity PATH — "device:inode:ctime" of PATH itself (a final symlink is not followed).
 mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 
@@ -342,6 +386,11 @@ mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 # Returns 0 done (or would be, in dry-run), 1 refused (MM_SKIP_REASON set), 2 action failed.
 # Updates MM_FREED or MM_TRASHED (by mm_frees), MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals
 # other than "missing" and failures are written to the operations log.
+# MM_AGENT_WAIVER=DIR mm_rm ... (for that one call) acts inside one agent's own session or state
+# directory, which agent state protection otherwise covers: DIR must be exactly one directory
+# listed in lib/agents.sh and must be ALLOWED_ROOT. Only the agent state entries containing DIR are
+# lifted; other built-ins, protected trees, the whitelist file and in-use checks still apply, and
+# anything that looks like credentials is refused.
 mm_rm() {
   local mode=remove
   [[ "${1:-}" == --trash ]] && { mode=trash; shift; }
@@ -364,8 +413,16 @@ mm_rm() {
   real="$parent/$(basename -- "$path")"
   root=$(realpath -e -- "$root" 2>/dev/null) || { _mm_refuse "root missing"; return 1; }
   [[ "$real" == "$root"/* ]] || { _mm_refuse "outside $root"; return 1; }
+  local waived=""
+  if [[ -n "${MM_AGENT_WAIVER:-}" ]]; then
+    waived=$(realpath -e -- "$MM_AGENT_WAIVER" 2>/dev/null)
+    if [[ "$waived" != "$root" ]] || ! mm_agent_dir "$waived"; then
+      _mm_refuse "agent waiver is not this agent directory"; return 1
+    fi
+    mm_credential_like "$real" && { _mm_refuse "looks like credentials"; return 1; }
+  fi
   p=$(mm_protected "$real") && { _mm_refuse "$p"; return 1; }
-  mm_whitelisted "$real" && { _mm_refuse "whitelisted"; return 1; }
+  _MM_WAIVED=$waived mm_whitelisted "$real" && { _mm_refuse "whitelisted"; return 1; }
   mm_in_use "$real" && { _mm_refuse "in use"; return 1; }
 
   id=$(mm_identity "$real") || { _mm_refuse "missing"; return 1; }

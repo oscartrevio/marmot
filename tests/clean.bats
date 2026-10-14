@@ -512,3 +512,98 @@ EOF
   [ "$(_clean_to_bytes 3GiB)" = 3221225472 ]
   [ "$(_clean_to_bytes 2.5GB)" = 2500000000 ]
 }
+
+# ---------------------------------------------------------------- agent session retention
+
+# sessions_fixture — Claude Code and Codex CLI homes, everything 90 days old except one fresh
+# session: sessions in two Claude projects (one only old), a dated Codex session, credentials in
+# both state dirs, and a live plus a rotated Codex log.
+sessions_fixture() {
+  local cl="$HOME/.claude" cx="$HOME/.codex"
+  mkdir -p "$cl/projects/p1" "$cl/projects/p2" "$cx/sessions/2026/01/02" "$cx/log"
+  echo old >"$cl/projects/p1/old.jsonl"; echo new >"$cl/projects/p1/new.jsonl"
+  echo old >"$cl/projects/p2/only.jsonl"; echo '{"t":1}' >"$cl/.credentials.json"
+  echo '{}' >"$cx/auth.json"; echo r >"$cx/sessions/2026/01/02/rollout-a.jsonl"
+  echo l >"$cx/log/codex-tui.log.1"; echo live >"$cx/log/codex-tui.log"
+  mm_age "$cl" 90; mm_age "$cx" 90
+  touch "$cl/projects/p1/new.jsonl"
+}
+
+# sessions_run DAYS — the retention step on its own, confirmed as if on a terminal.
+sessions_run() {
+  src; mm_inuse_refresh >/dev/null 2>&1
+  mm_confirm() { return 0; }
+  _clean_sessions "$1" flag
+}
+
+@test "agent sessions are not touched by default" {
+  sessions_fixture
+  full_run
+  [ "$status" -eq 0 ]
+  exist "$HOME/.claude/projects/p1/old.jsonl" "$HOME/.claude/projects/p2/only.jsonl" \
+    "$HOME/.codex/sessions/2026/01/02/rollout-a.jsonl" "$HOME/.codex/log/codex-tui.log.1"
+  [ ! -e "$XDG_DATA_HOME/Trash/files" ]
+}
+
+@test "retention moves old sessions and rotated logs to the Trash; recent ones, live logs and credentials stay" {
+  sessions_fixture
+  run sessions_run 30
+  [ "$status" -eq 0 ]
+  local cl="$HOME/.claude" cx="$HOME/.codex" t="$XDG_DATA_HOME/Trash"
+  gone "$cl/projects/p1/old.jsonl" "$cl/projects/p2/only.jsonl" "$cx/sessions/2026/01/02/rollout-a.jsonl" \
+    "$cx/log/codex-tui.log.1"
+  exist "$cl/projects/p1/new.jsonl" "$cx/log/codex-tui.log" "$cl/.credentials.json" "$cx/auth.json"
+  exist "$t/files/old.jsonl" "$t/files/only.jsonl" "$t/files/rollout-a.jsonl" "$t/files/codex-tui.log.1"
+  grep -qxF "Path=$cl/projects/p1/old.jsonl" "$t/info/old.jsonl.trashinfo"
+  gone "$cl/projects/p2" "$cx/sessions/2026"             # folders the moves emptied
+  exist "$cl/projects" "$cx/sessions" "$cl/projects/p1"  # session roots and non-empty folders stay
+  [ -z "$(mm_log_rows remove | grep -v -e "^$cl/projects/p2" -e "^$cx/sessions/2026")" ]
+}
+
+@test "retention keeps session files in use and whitelisted ones" {
+  sessions_fixture
+  local p="$HOME/.claude/projects"
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; printf '%s\n' "$p/p2" >"$XDG_CONFIG_HOME/marmot/whitelist"
+  mm_test_bg "$p/p1" tail -f "$p/p1/old.jsonl"
+  run sessions_run 30
+  exist "$p/p1/old.jsonl" "$p/p2/only.jsonl"
+  [ -e "$XDG_DATA_HOME/Trash/files/rollout-a.jsonl" ]     # the rest still goes
+}
+
+@test "a configured retention runs without a terminal; --sessions alone needs one" {
+  sessions_fixture
+  full_run --sessions 30
+  [ "$status" -eq 0 ]
+  [ -e "$HOME/.claude/projects/p1/old.jsonl" ]
+  mkdir -p "$XDG_CONFIG_HOME/marmot"
+  printf '# retention\nsessions_keep_days = 30   # a month\n' >"$XDG_CONFIG_HOME/marmot/config"
+  full_run
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.claude/projects/p1/old.jsonl" ]
+  [ -e "$XDG_DATA_HOME/Trash/files/old.jsonl" ]
+  [ -e "$HOME/.claude/projects/p1/new.jsonl" ]
+  [ -e "$HOME/.claude/.credentials.json" ]
+}
+
+@test "retention dry-run lists what would move and changes nothing" {
+  sessions_fixture
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'sessions_keep_days=30' >"$XDG_CONFIG_HOME/marmot/config"
+  full_run --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Claude Code"*"2 files"* ]]
+  [ -e "$HOME/.claude/projects/p1/old.jsonl" ]
+  [ ! -e "$XDG_DATA_HOME/Trash/files" ]
+}
+
+@test "--sessions needs a whole number of days; a bad config value is ignored" {
+  local v
+  for v in abc 0 -3 ""; do
+    run mm clean --sessions "$v"
+    [ "$status" -ne 0 ] || { echo "accepted --sessions '$v'"; false; }
+  done
+  sessions_fixture
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'sessions_keep_days=soon' >"$XDG_CONFIG_HOME/marmot/config"
+  full_run
+  [ "$status" -eq 0 ]
+  [ -e "$HOME/.claude/projects/p1/old.jsonl" ]
+}

@@ -380,3 +380,54 @@ $HOME/.cache/pip removable" ]
   MM_TTY=1 run mm_can_sudo
   [ "$status" -eq 1 ]
 }
+
+# ---------------------------------------------------------------- agent waiver and config
+
+@test "MM_AGENT_WAIVER acts inside the one agent directory given as the allowed root" {
+  local s="$HOME/.claude/projects" c="$HOME/.codex/sessions"
+  mkdir -p "$s/p" "$c" "$HOME/mine"; echo x >"$s/p/a.jsonl"; echo y >"$c/b.jsonl"; echo z >"$HOME/mine/f"
+  mm_inuse_refresh
+  run try_rm "$s/p/a.jsonl" "$s";                                  [ "$output" = "1 whitelisted" ]
+  MM_DRY_RUN=1 MM_AGENT_WAIVER="$s" run try_rm "$s/p/a.jsonl" "$s"; [ "$output" = "0 " ]
+  MM_AGENT_WAIVER="$s" run try_rm "$c/b.jsonl" "$c";               [ "${output%% *}" = 1 ]   # waiver is another agent's dir
+  MM_AGENT_WAIVER="$s" run try_rm "$s/p/a.jsonl" "$HOME/.claude";  [ "${output%% *}" = 1 ]   # waiver is not the allowed root
+  MM_AGENT_WAIVER="$HOME/mine" run try_rm "$HOME/mine/f" "$HOME/mine"; [ "${output%% *}" = 1 ]   # not an agent dir
+  MM_AGENT_WAIVER="$s/p" run try_rm "$s/p/a.jsonl" "$s/p";         [ "${output%% *}" = 1 ]   # below an agent dir
+  [ -e "$s/p/a.jsonl" ]
+  [ -e "$c/b.jsonl" ]
+  [ -e "$HOME/mine/f" ]
+}
+
+@test "the agent waiver never touches credentials, whitelisted paths, ~/.config or files in use" {
+  local s="$HOME/.claude" o="$HOME/.config/opencode"
+  mkdir -p "$s/debug" "$s/keep" "$s/dir" "$o/log" "$HOME/.codex"
+  echo t >"$s/.credentials.json"; echo t >"$s/dir/auth.json"; echo k >"$s/keep/f"; echo l >"$o/log/x.log.1"
+  echo l >"$s/debug/open.log.1"; echo l >"$s/debug/old.log.1"; echo t >"$HOME/.codex/auth.json"
+  printf '%s\n' "$s/keep" >"$MM_WHITELIST_FILE"
+  mm_test_bg "$s/debug" tail -f "$s/debug/open.log.1"
+  mm_inuse_refresh
+  local p
+  for p in "$s/.credentials.json" "$s/dir" "$s/keep/f" "$s/debug/open.log.1"; do
+    MM_AGENT_WAIVER="$s" run try_rm "$p" "$s"
+    [ "${output%% *}" = 1 ] || { echo "removed $p ($output)"; false; }
+  done
+  MM_AGENT_WAIVER="$HOME/.codex" run try_rm "$HOME/.codex/auth.json" "$HOME/.codex"; [ "${output%% *}" = 1 ]
+  MM_AGENT_WAIVER="$o" run try_rm "$o/log/x.log.1" "$o";           [ "$output" = "1 whitelisted" ]   # ~/.config stays built in
+  MM_AGENT_WAIVER="$s" run try_rm "$s/debug/old.log.1" "$s";       [ "$output" = "0 " ]
+  [ ! -e "$s/debug/old.log.1" ]
+  [ -e "$s/.credentials.json" ]
+  [ -e "$s/dir/auth.json" ]
+  [ -e "$HOME/.codex/auth.json" ]
+}
+
+@test "config file: key=value, comments and spaces ignored, last line wins, missing key fails" {
+  mkdir -p "$(dirname "$MM_CONFIG_FILE")"
+  printf '# marmot\n sessions_keep_days = 14  # two weeks\nother=1\nsessions_keep_days=30\n#sessions_keep_days=1\n' >"$MM_CONFIG_FILE"
+  [ "$(mm_config sessions_keep_days)" = 30 ]
+  [ "$(mm_config other)" = 1 ]
+  run mm_config nope
+  [ "$status" -ne 0 ]
+  rm "$MM_CONFIG_FILE"
+  run mm_config sessions_keep_days
+  [ "$status" -ne 0 ]
+}
