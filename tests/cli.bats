@@ -57,3 +57,15 @@ teardown() { mm_test_teardown; }
   run mm history --limit 1 --json
   [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b" ]
 }
+
+@test "history --json without jq says jq is required" {
+  mkdir -p "$XDG_STATE_HOME/marmot" "$SB/bin"
+  printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t/tmp/a\t1\t' >"$XDG_STATE_HOME/marmot/operations.log"
+  local d f
+  for d in /usr/local/bin /usr/bin /bin; do
+    for f in "$d"/*; do [[ "${f##*/}" == jq || -e "$SB/bin/${f##*/}" ]] || ln -s "$f" "$SB/bin/${f##*/}"; done
+  done
+  PATH="$BATS_TEST_TMPDIR/stubs:$SB/bin" run mm history --json
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"jq is required for --json"* ]]
+}
