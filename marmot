@@ -8,7 +8,7 @@ MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 
 MM_COMMANDS=(clean status analyze optimize purge uninstall history)
 declare -A MM_DESC=(
-  [clean]="Remove caches, old temp files, logs, and package/Docker leftovers"
+  [clean]="Remove caches, old builds, logs, and package/Docker leftovers"
   [status]="Live system health dashboard (--once for a snapshot)"
   [analyze]="Interactive disk explorer"
   [optimize]="Updates, trim, swap reset, orphaned processes, pending reboot"

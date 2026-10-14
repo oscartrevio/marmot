@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# cmd/clean.sh: temp files to Trash, Trash retention sweep, tool cleans, Docker, dry-run.
+# cmd/clean.sh: shared temp report, Trash retention sweep, tool cleans, Docker, dry-run.
 
 # Busy-tool tests start processes named after real tools (uv, pnpm, npx); clean's busy check sees
 # the whole machine, so tests in this file must not run concurrently with each other.
@@ -25,21 +25,10 @@ none() { if "$@"; then return 1; fi; }
 # src — source core and the command into the test shell (to call its functions directly).
 src() { mm_core; . "$MM_SRC/cmd/clean.sh"; }
 
-# tmp_scan DAYS — the temp scan over $SB/tmp (or $DIRS), with a fresh in-use snapshot.
-tmp_scan() {
-  mm_inuse_refresh >/dev/null 2>&1
-  _CLEAN_TMP_DIRS="${DIRS:-$SB/tmp}" _clean_tmp "$1"
-}
-
 # fake_rec NAME [BODY] — double that appends "<cwd> NAME <args>" to $CALLS, then runs BODY.
 fake_rec() {
   mm_test_fake "$1" "echo \"\$(pwd) $1 \$*\" >>\"\$CALLS\"
 ${2:-}"
-}
-
-# at_clock_days_ago PATH DAYS — set PATH's mtime/atime DAYS before the shifted clock (mm_test_clock).
-at_clock_days_ago() {
-  touch -h -d "@$(( $(command date +%s) + ${MM_TEST_CLOCK_SHIFT:-0} - $2 * 86400 ))" "$1"
 }
 
 # trash_item NAME DAYS_AGO [INFO] — a Trash entry with a spec .trashinfo (INFO=none: no .trashinfo).
@@ -84,114 +73,77 @@ fake_tools() {
   blob "$SB/store/blob"; blob "$SB/yarncache/blob"
 }
 
-# ---------------------------------------------------------------- temp files
+# ---------------------------------------------------------------- shared temp folders
 
-@test "an idle /tmp entry goes to the Trash with a .trashinfo, never to rm" {
-  mkdir -p "$SB/tmp/old-dir/sub"; echo x >"$SB/tmp/old-dir/sub/f"; mm_age "$SB/tmp/old-dir" 30
-  mm_test_clock 40
-  src; run tmp_scan 7
-  [ ! -e "$SB/tmp/old-dir" ]
-  [ -f "$XDG_DATA_HOME/Trash/files/old-dir/sub/f" ]
-  grep -qxF "Path=$SB/tmp/old-dir" "$XDG_DATA_HOME/Trash/info/old-dir.trashinfo"
-  [[ "$(mm_log_rows trash)" == "$SB/tmp/old-dir"* ]]
-  [ -z "$(mm_log_rows remove)" ]
+# tmpfiles DIR NAME LINE... — a tmpfiles.d config file $SB/DIR/NAME.
+tmpfiles() { local d="$SB/$1" f="$2"; shift 2; mkdir -p "$d"; printf '%s\n' "$@" >"$d/$f"; }
+# tmpfiles_src — source clean with its tmpfiles.d search path pointed at $SB/{etc,run,usrlib}.
+tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
+
+@test "tmpfiles.d: a file in /etc replaces the same-named one in /run, which replaces /usr/lib's" {
+  tmpfiles usrlib tmp.conf 'D /tmp 1777 root root -' 'q /var/tmp 1777 root root 30d'
+  tmpfiles run tmp.conf 'D /tmp 1777 root root 3d'
+  tmpfiles etc tmp.conf '# Age /tmp at 7 days' 'D /tmp 1777 root root 7d'
+  tmpfiles_src
+  [ "$(_clean_tmpfiles_age /tmp)" = "7d"$'\t'"$SB/etc/tmp.conf" ]
+  [ -z "$(_clean_tmpfiles_age /var/tmp)" ]   # the whole /usr/lib file is replaced
+  rm "$SB/etc/tmp.conf"
+  [ "$(_clean_tmpfiles_age /tmp)" = "3d"$'\t'"$SB/run/tmp.conf" ]
 }
 
-@test "a recently changed entry is kept even when its mtime is old (ctime counts)" {
-  echo x >"$SB/tmp/fresh"; mm_age "$SB/tmp/fresh" 30
-  src; run tmp_scan 7
-  [ -e "$SB/tmp/fresh" ]
-  [ ! -e "$XDG_DATA_HOME/Trash/files/fresh" ]
+@test "tmpfiles.d: across names the first file in order wins; a /dev/null symlink masks" {
+  tmpfiles usrlib tmp.conf 'q /var/tmp 1777 root root 30d'
+  tmpfiles etc zz-local.conf 'q /var/tmp 1777 root root 5d'
+  tmpfiles usrlib 00-early.conf '#q /var/tmp 1777 root root 1d' 'x /var/tmp/keep-*'
+  tmpfiles_src
+  [ "$(_clean_tmpfiles_age /var/tmp)" = "30d"$'\t'"$SB/usrlib/tmp.conf" ]
+  ln -s /dev/null "$SB/etc/tmp.conf"
+  [ "$(_clean_tmpfiles_age /var/tmp)" = "5d"$'\t'"$SB/etc/zz-local.conf" ]
 }
 
-@test "an old folder holding one recent file is kept" {
-  mkdir -p "$SB/tmp/mixed"; echo x >"$SB/tmp/mixed/old"; echo y >"$SB/tmp/mixed/new"
-  mm_age "$SB/tmp/mixed" 30
-  mm_test_clock 40
-  at_clock_days_ago "$SB/tmp/mixed/new" 2
-  src; run tmp_scan 7
-  exist "$SB/tmp/mixed/new" "$SB/tmp/mixed/old"
+@test "/tmp and /var/tmp are reported with their OS age; a never-aged one gets the tmpfiles.d line" {
+  tmpfiles usrlib tmp.conf 'D /tmp 1777 root root -'
+  tmpfiles etc tmp.conf 'D /tmp 1777 root root 7d'
+  tmpfiles_src
+  _clean_tmpfiles_runs() { return 0; }
+  run _clean_review_print
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Shared temp /tmp · "*"7d ($SB/etc/tmp.conf)"* ]]
+  [[ "$output" == *"Shared temp /var/tmp · "*"never aged"* ]]
+  grep -qF "echo 'q /var/tmp 1777 root root 30d' | sudo tee /etc/tmpfiles.d/" <<<"$output"
 }
 
-@test "an entry that is some process's cwd is kept" {
-  mkdir -p "$SB/tmp/busy"; echo x >"$SB/tmp/busy/f"; mm_age "$SB/tmp/busy" 30
-  mm_test_bg "$SB/tmp/busy" sleep 60
-  mm_test_clock 40
-  src; run tmp_scan 7
-  [ -e "$SB/tmp/busy/f" ]
-  [[ "$(mm_log_rows refused)" == *"in use"* ]]
+@test "a tmpfiles.d line without an age points at the file to override" {
+  tmpfiles usrlib tmp.conf 'D /tmp 1777 root root -'
+  tmpfiles_src
+  _clean_tmpfiles_runs() { return 0; }
+  run _clean_review_print
+  [[ "$output" == *"Shared temp /tmp · "*"never aged"* ]]
+  grep -qF "sudo cp $SB/usrlib/tmp.conf /etc/tmpfiles.d/" <<<"$output"
 }
 
-@test "a whitelisted entry is kept" {
-  mkdir -p "$SB/tmp/keep-me" "$XDG_CONFIG_HOME/marmot"; echo x >"$SB/tmp/keep-me/f"; mm_age "$SB/tmp/keep-me" 30
-  echo "$SB/tmp/keep-me" >"$XDG_CONFIG_HOME/marmot/whitelist"
-  mm_test_clock 40
-  src; run tmp_scan 7
-  [ -e "$SB/tmp/keep-me/f" ]
+@test "without systemd nothing ages temp folders, and no tmpfiles.d fix is offered" {
+  tmpfiles usrlib tmp.conf 'D /tmp 1777 root root 10d'
+  tmpfiles_src
+  _clean_tmpfiles_runs() { return 1; }
+  run _clean_review_print
+  [[ "$output" == *"Shared temp /tmp · "*"systemd-tmpfiles does not run"* ]]
+  none grep -F 'tmpfiles.d/' <<<"$output"
 }
 
-@test "sockets are kept" {
-  python3 -c 'import socket, sys; socket.socket(socket.AF_UNIX).bind(sys.argv[1])' "$SB/tmp/app.sock"
-  mm_age "$SB/tmp/app.sock" 30
-  mm_test_clock 40
-  src; run tmp_scan 7
-  [ -S "$SB/tmp/app.sock" ]
+@test "a real run leaves old entries in temp folders alone" {
+  mkdir -p "$SB/tmp/old-dir/sub"; echo x >"$SB/tmp/old-dir/sub/f"; mm_age "$SB/tmp/old-dir" 60
+  mm_test_clock 60
+  full_run
+  [ "$status" -eq 0 ]
+  [ -e "$SB/tmp/old-dir/sub/f" ]
+  [ ! -e "$XDG_DATA_HOME/Trash/files/old-dir" ]
+  [ -z "$(mm_log_rows trash)" ]
 }
 
-@test "tmux-*, systemd-private-* and other reserved names are skipped" {
-  local n
-  for n in tmux-1001 systemd-private-abc-chrony.service-x snap-private-tmp .X11-unix .ICE-unix ssh-agent.1 \
-           fnm_multishells marmot-test-other .mount_app; do
-    mkdir -p "$SB/tmp/$n"; echo x >"$SB/tmp/$n/f"
-  done
-  mm_age "$SB/tmp" 30
-  mm_test_clock 40
-  src; run tmp_scan 7
-  for n in tmux-1001 systemd-private-abc-chrony.service-x snap-private-tmp .X11-unix .ICE-unix ssh-agent.1 \
-           fnm_multishells marmot-test-other .mount_app; do
-    [ -e "$SB/tmp/$n/f" ] || { echo "removed $n"; false; }
-  done
-}
-
-@test "/var/tmp needs 30 idle days while /tmp follows --days" {
-  local d
-  for d in tmp vartmp; do
-    mkdir -p "$SB/$d/mid"; echo x >"$SB/$d/mid/f"; mm_age "$SB/$d/mid" 35
-  done
-  mkdir -p "$SB/vartmp/ancient"; echo x >"$SB/vartmp/ancient/f"; mm_age "$SB/vartmp/ancient" 60
-  mm_test_clock 40
-  at_clock_days_ago "$SB/tmp/mid/f" 20; at_clock_days_ago "$SB/vartmp/mid/f" 20
-  src
-  DIRS="$SB/tmp $SB/vartmp" _CLEAN_TMP_PERSIST="$SB/vartmp" run tmp_scan 7
-  [ ! -e "$SB/tmp/mid" ]          # idle 20 days >= 7
-  [ -e "$SB/vartmp/mid/f" ]       # idle 20 days < 30
-  [ ! -e "$SB/vartmp/ancient" ]   # idle 40 days
-}
-
-@test "_CLEAN_TMP_DIRS outside /tmp and /var/tmp is rejected before anything runs" {
-  mkdir -p "$HOME/docs"; echo x >"$HOME/docs/f"; mm_age "$HOME/docs" 60
-  local v
-  for v in "$HOME" /tmp /var/tmp "/tmp/../$HOME" /tmp/mo-does-not-exist; do
-    _CLEAN_TMP_DIRS="$v" run mm clean
-    [ "$status" -ne 0 ] || { echo "accepted $v"; false; }
-  done
-  _CLEAN_TMP_DIRS="$SB/tmp" _CLEAN_TMP_PERSIST="$HOME" run mm clean
+@test "--days is not an option anymore" {
+  run mm clean --days 3
   [ "$status" -ne 0 ]
-  [ -f "$HOME/docs/f" ]
-  [ ! -s "$CALLS" ]
-}
-
-@test "with the Trash on another filesystem, temp entries are kept and reported once" {
-  [[ "$(stat -c %d /dev/shm)" != "$(stat -c %d "$SB")" ]] || skip "/dev/shm is on the same filesystem"
-  local shm; shm=$(mktemp -d /dev/shm/marmot-test-clean.XXXX)
-  export XDG_DATA_HOME="$shm"
-  mkdir -p "$SB/tmp/a" "$SB/tmp/b"; echo x >"$SB/tmp/a/f"; echo x >"$SB/tmp/b/f"; mm_age "$SB/tmp" 30
-  mm_test_clock 40
-  src; run tmp_scan 7
-  rm -rf "$shm"
-  exist "$SB/tmp/a/f" "$SB/tmp/b/f"
-  [ "$(grep -c 'another filesystem' <<<"$output")" -eq 1 ]
-  [ -z "$(mm_log_rows refused)" ]
 }
 
 # ---------------------------------------------------------------- Trash retention
@@ -224,17 +176,6 @@ fake_tools() {
   run bash -c 'set -uo pipefail; . "$1/lib/core.sh"; . "$1/cmd/clean.sh"; _clean_trash "$MM_TRASH_DIR"' _ "$MM_SRC"
   [ "$status" -eq 0 ]
   [ -e "$XDG_DATA_HOME/Trash/files/new" ]
-}
-
-@test "a temp entry marmot trashed today survives the next day's Trash sweep" {
-  mkdir -p "$SB/tmp/report"; echo x >"$SB/tmp/report/f"; mm_age "$SB/tmp/report" 30
-  mm_test_clock 40
-  src; run tmp_scan 7
-  [ -e "$XDG_DATA_HOME/Trash/files/report/f" ]
-  mm_test_clock 1   # tomorrow, measured from the real DeletionDate written today
-  mm_confirm() { return 0; }
-  run _clean_trash "$MM_TRASH_DIR"
-  [ -e "$XDG_DATA_HOME/Trash/files/report/f" ]
 }
 
 # ---------------------------------------------------------------- developer tools
@@ -312,8 +253,8 @@ fake_tools() {
 # catalog — source core + clean, load the catalog (built-in, user file, agents), take an in-use snapshot.
 catalog() { src; mm_catalog_load; mm_inuse_refresh >/dev/null 2>&1; }
 
-# full_run ARGS... — `mm clean` with every machine-changing tool faked and the temp scan in $SB/tmp.
-full_run() { fake_tools; fake_docker; _CLEAN_TMP_DIRS="$SB/tmp" run mm clean "$@"; }
+# full_run ARGS... — `mm clean` with every machine-changing tool faked.
+full_run() { fake_tools; fake_docker; run mm clean "$@"; }
 
 # busy_proc NAME — run a process called NAME (a script, so its process name is NAME) until teardown.
 busy_proc() {
@@ -486,7 +427,7 @@ EOF
   mkdir -p "$HOME/.cache/go-build/aa" "$HOME/.vscode-server/cli/servers/Stable-a" "$HOME/.vscode-server/cli/servers/Stable-b"
   touch -d '10 days ago' "$HOME/.vscode-server/cli/servers/Stable-a"
   mm_test_clock 40
-  _CLEAN_TMP_DIRS="$SB/tmp" run mm clean --dry-run
+  run mm clean --dry-run
   [ "$status" -eq 0 ]
   [[ "$output" == *"Dry run complete"* ]]
   none grep -E ' (prune|rm|clean|purge)( |$)' "$CALLS"
