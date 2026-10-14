@@ -33,8 +33,9 @@ mm_test_setup() {
   export GIT_CONFIG_GLOBAL="$sandbox/gitconfig" GIT_CONFIG_NOSYSTEM=1
   printf '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n' >"$GIT_CONFIG_GLOBAL"
   unset MM_CONFIG_DIR MM_CONFIG_FILE MM_STATE_DIR MM_WHITELIST_FILE MM_PURGE_PATHS_FILE MM_LOG_FILE MM_DRY_RUN MM_DEBUG
-  # Tool caches located through the environment would point outside the sandbox.
-  unset UV_CACHE_DIR GOPATH GOMODCACHE GOFLAGS GOPROXY GOTOOLCHAIN
+  # Tool caches and the host's gcloud/Azure config folders located through the environment would
+  # point outside the sandbox (lib/core.sh carve-outs).
+  unset UV_CACHE_DIR GOPATH GOMODCACHE GOFLAGS GOPROXY GOTOOLCHAIN CLOUDSDK_CONFIG AZURE_CONFIG_DIR
   export MM_TTY=0 NO_COLOR=1 LC_ALL=C.UTF-8
   export MM_TEST_UNSTUBBED_LOG="$sandbox/unstubbed.log"
   : >"$MM_TEST_UNSTUBBED_LOG"

@@ -431,3 +431,110 @@ $HOME/.cache/pip removable" ]
   run mm_config sessions_keep_days
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------- carve-outs
+
+# gcloud_tree — $G: a gcloud config folder, credentials next to a logs folder with one day folder.
+gcloud_tree() {
+  G="$HOME/.config/gcloud"
+  mkdir -p "$G/logs/2026.01.01" "$G/configurations" "$G/legacy_credentials/me@example.com"
+  echo log >"$G/logs/2026.01.01/10.00.00.000000.log"
+  echo c >"$G/credentials.db"; echo t >"$G/access_tokens.db"
+  echo '[core]' >"$G/configurations/config_default"; echo '{}' >"$G/legacy_credentials/me@example.com/adc.json"
+}
+
+# refused_all ROOT PATH... — mm_rm refuses every PATH as whitelisted, and each survives.
+refused_all() {
+  local root="$1" p out; shift
+  for p; do
+    out=$(try_rm "$p" "$root")
+    [ "$out" = "1 whitelisted" ] || { echo "not protected: $p ($out)"; return 1; }
+    [ -e "$p" ] || { echo "gone: $p"; return 1; }
+  done
+}
+
+@test "carve-out: a gcloud log can go, never credentials, configurations or the logs folder itself" {
+  gcloud_tree
+  mkdir -p "$HOME/.config/other"; echo x >"$HOME/.config/other/f"
+  mm_inuse_refresh
+  run try_rm "$G/logs/2026.01.01/10.00.00.000000.log" "$G/logs"
+  [ "$output" = "0 " ]
+  [ ! -e "$G/logs/2026.01.01/10.00.00.000000.log" ]
+  run try_rm "$G/logs/2026.01.01" "$G/logs"
+  [ "$output" = "0 " ]
+  refused_all "$G" "$G/credentials.db" "$G/access_tokens.db" "$G/legacy_credentials" "$G/configurations" "$G/logs"
+  refused_all "$HOME" "$G/logs" "$G"
+  run try_rm "$G/logs" "$G/logs"
+  [[ "$output" == "1 outside"* ]]
+  refused_all "$HOME/.config" "$HOME/.config/other"
+  refused_all "$HOME/.config/other" "$HOME/.config/other/f"
+}
+
+@test "carve-out: names that look like credentials are refused inside the logs folder too" {
+  gcloud_tree
+  local f out
+  mkdir -p "$G/logs/x/configurations" "$G/logs/y/legacy_credentials" "$G/logs/z" "$G/logs/2026.01.02" "$G/logs/u/locked"
+  for f in access_tokens.db credentials.db Credentials.json my_token.txt key.pem server.key auth-cache.json; do
+    echo s >"$G/logs/$f"
+  done
+  echo s >"$G/logs/z/ACCESS_TOKENS.DB"; echo l >"$G/logs/2026.01.02/a.log"
+  echo c >"$G/logs/x/configurations/config_default"; echo c >"$G/logs/y/legacy_credentials/adc.json"
+  mm_inuse_refresh
+  refused_all "$G/logs" "$G/logs/access_tokens.db" "$G/logs/credentials.db" "$G/logs/Credentials.json" \
+    "$G/logs/my_token.txt" "$G/logs/key.pem" "$G/logs/server.key" "$G/logs/auth-cache.json" \
+    "$G/logs/x/configurations" "$G/logs/x" "$G/logs/y" "$G/logs/z" "$G/logs/z/ACCESS_TOKENS.DB" \
+    "$G/logs/x/configurations/config_default" "$G/logs/y/legacy_credentials/adc.json"
+  run try_rm "$G/logs/2026.01.02" "$G/logs"
+  [ "$output" = "0 " ]
+  if (( EUID != 0 )); then   # root reads any folder
+    chmod 000 "$G/logs/u/locked"
+    out=$(try_rm "$G/logs/u" "$G/logs"); chmod 755 "$G/logs/u/locked"
+    [ "$out" = "1 whitelisted" ]   # what an unreadable folder holds is unknown: kept
+  fi
+}
+
+@test "carve-out: the whitelist file, in-use checks and agent state still apply inside one" {
+  gcloud_tree
+  mkdir -p "$G/logs/2026.01.02" "$HOME/.config/opencode/logs"
+  echo l >"$G/logs/2026.01.02/a.log"; echo l >"$HOME/.config/opencode/logs/a.log"
+  printf '%s\n' "$G/logs/2026.01.01" >"$MM_WHITELIST_FILE"
+  mm_test_bg "$G/logs/2026.01.02" sleep 30
+  mm_inuse_refresh
+  refused_all "$G/logs" "$G/logs/2026.01.01/10.00.00.000000.log" "$G/logs/2026.01.01"
+  run try_rm "$G/logs/2026.01.02" "$G/logs"
+  [ "$output" = "1 in use" ]
+  MM_CLEAN_CARVEOUTS+=("$HOME/.config/opencode/logs")   # opencode keeps its state in ~/.config/opencode
+  refused_all "$HOME/.config/opencode/logs" "$HOME/.config/opencode/logs/a.log"
+}
+
+@test "carve-out: one array entry opens another cache folder, never its neighbours" {
+  mkdir -p "$HOME/.kube/cache/discovery/host"; echo k >"$HOME/.kube/config"; echo d >"$HOME/.kube/cache/discovery/host/v1.json"
+  mm_inuse_refresh
+  refused_all "$HOME/.kube/cache" "$HOME/.kube/cache/discovery"
+  MM_CLEAN_CARVEOUTS+=("$HOME/.kube/cache")
+  run try_rm "$HOME/.kube/cache/discovery" "$HOME/.kube/cache"
+  [ "$output" = "0 " ]
+  refused_all "$HOME/.kube" "$HOME/.kube/config" "$HOME/.kube/cache"
+}
+
+@test "carve-out: symlinks widen nothing (linked logs folder, link inside it, linked CLOUDSDK_CONFIG)" {
+  mkdir -p "$HOME/.config/gcloud" "$HOME/.aws"; echo c >"$HOME/.aws/config"
+  ln -s "$HOME/.aws" "$HOME/.config/gcloud/logs"
+  mm_inuse_refresh
+  run mm_whitelisted "$HOME/.config/gcloud/logs/config"
+  [ "$status" -eq 0 ]
+  refused_all "$HOME/.config/gcloud/logs" "$HOME/.config/gcloud/logs/config"
+  unlink "$HOME/.config/gcloud/logs"
+
+  gcloud_tree
+  ln -s "$HOME/.aws" "$G/logs/d"
+  run mm_whitelisted "$G/logs/d/config"
+  [ "$status" -eq 0 ]
+  run try_rm "$G/logs/d/config" "$G/logs"
+  [[ "$output" == "1 "* ]]
+  [ -e "$HOME/.aws/config" ]
+
+  ln -s "$G" "$HOME/gc"
+  CLOUDSDK_CONFIG="$HOME/gc" mm_core
+  refused_all "$HOME/gc/logs" "$G/logs/2026.01.01/10.00.00.000000.log"
+}
