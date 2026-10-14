@@ -5,6 +5,9 @@
 # Fast probes read /proc every tick; slow probes (apt, systemd, dpkg, docker) run in the
 # background at start and then every ST_SLOW_EVERY seconds. Nothing here changes the system.
 
+# shellcheck source=../lib/schedule.sh
+. "$MM_HOME/lib/schedule.sh"
+
 ST_SLOW_EVERY=300
 ST_HIST=16
 ST_SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
@@ -234,6 +237,33 @@ _status_init() {
   command -v tailscale >/dev/null && command -v jq >/dev/null && ST_TS=1
   ST_CL_ADDR="" ST_CL_NAME="" ST_CL_PATH="" ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0 ST_CL_LAGGY=0
   ST_RTTH=() ST_TS_FOR="" ST_TS_AT=0
+  _status_sched
+}
+
+# _status_sched — what `mm schedule enable` installed (ST_SCHED: "systemd daily", or empty) and
+# whether a scheduled run left a summary (ST_LAST=1, details in lib/schedule.sh's MM_LAST_*).
+# Files only: no command is asked.
+_status_sched() {
+  ST_SCHED=$(mm_schedule_installed) || ST_SCHED=""
+  ST_LAST=0
+  mm_schedule_last && ST_LAST=1
+  return 0
+}
+
+# _status_sched_text VAR — the scheduled cleanup in one plain line: "daily (systemd) · last run
+# 5h ago, freed 1.2GB", or "not scheduled: mm schedule enable" (plus the last run if any).
+# shellcheck disable=SC2031 # MM_LAST_* are set in this shell by mm_schedule_last (_status_sched)
+_status_sched_text() {
+  local __t __a
+  if [[ -n "$ST_SCHED" ]]; then __t="${ST_SCHED#* } (${ST_SCHED%% *})"; else __t="not scheduled: mm schedule enable"; fi
+  if ((ST_LAST)); then
+    _status_age __a $(($(date +%s) - MM_LAST_EPOCH))
+    __t+=" · last run $__a ago, freed $(mm_human "$MM_LAST_FREED")"
+    ((MM_LAST_ERRORS)) && __t+=", $MM_LAST_ERRORS errors (mm schedule status)"
+  elif [[ -n "$ST_SCHED" ]]; then
+    __t+=" · no run yet"
+  fi
+  printf -v "$1" '%s' "$__t"
 }
 
 # ---------------------------------------------------------------- fast probes (every tick)
@@ -1370,6 +1400,9 @@ _status_panel_sys() {
   _status_check_lines "$w"
   t=Checks
   for e in "${ST_LINES[@]}"; do _status_row "$t" "$e"; t=""; done
+  _status_sched_text t
+  _status_trunc t "$t" "$w"
+  _status_row Cleanup "$t"
 
   if ((${#ST_LINGER[@]})); then
     _status_row Lingering "${#ST_LINGER[@]} $older · $(mm_human $((ST_LINGER_KB * 1024)))"
@@ -1635,6 +1668,9 @@ _status_compact() {
   for e in "${ST_LINES[@]}"; do
     if [[ -n "$t" ]]; then _status_cline "$t" "$e"; t=""; else ST_FRAME+=("       $e"); fi
   done
+  _status_sched_text t
+  _status_trunc t "$t" $((w - 7))
+  _status_cline CLEAN "$t"
 
   t=""
   for e in "${ST_TOPMEM[@]:0:3}"; do
@@ -1657,7 +1693,10 @@ _status_cols() {
 # ---------------------------------------------------------------- JSON
 
 _status_json() {
-  local tc tm ag li orph po df nets e ifc i core_list=""
+  local tc tm ag li orph po df nets e ifc i core_list="" last=null
+  # The last scheduled run's summary as written (lib/schedule.sh), if it is valid JSON.
+  # shellcheck disable=SC2031 # a lib/schedule.sh constant
+  ((ST_LAST)) && { last=$(jq -c . "$MM_SCHEDULE_LAST" 2>/dev/null) || last=null; }
   tc=$(printf '%s\n' "${ST_TOPCPU[@]}")
   tm=$(printf '%s\n' "${ST_TOPMEM[@]}")
   ag=$(printf '%s\n' "${ST_AGENTS[@]}")
@@ -1687,6 +1726,7 @@ _status_json() {
     --arg cl_rtt "$ST_CL_RTT" --arg cl_min "$ST_CL_MIN" --arg cl_var "$ST_CL_VAR" \
     --arg cl_retr "$ST_CL_RETR" --arg cl_laggy "$ST_CL_LAGGY" \
     --arg ctr "$ST_CTR" --arg cgmem "$ST_CG_MEM_MAX" --arg cgcpu "$ST_CG_MILLI" \
+    --argjson last "${last:-null}" --arg sched "$ST_SCHED" \
     --arg kpending "${ST_KPENDING:-0}" '
     def num: if . == null or . == "" then null else tonumber end;
     def lines: split("\n") | map(select(length > 0) | split("\t"));
@@ -1775,6 +1815,12 @@ _status_json() {
           oldest_age_seconds: ($po | lines | map(.[4] | tonumber) | max),
           ports: ($po | lines | map({ port: (.[0] | tonumber), address: .[1], pid: (.[2] | tonumber),
             name: .[3], age_seconds: (.[4] | tonumber) }))
+        },
+        scheduled_cleanup: {
+          scheduled: ($sched != ""),
+          backend: (if $sched == "" then null else ($sched | split(" ") | .[0]) end),
+          frequency: (if $sched == "" then null else ($sched | split(" ") | .[1]) end),
+          last_run: $last
         }
       }
     }'
@@ -1895,6 +1941,8 @@ _status_agent_text() {
   for e in "${ST_CHK_NOTE[@]}"; do t+="${t:+ · }$e"; done
   [[ "${ST_SLOW[upgradable]:-0}" != 0 ]] && t+=" (mm optimize upgrades)"
   printf 'checks: %s\n' "${t:-none}"
+  _status_sched_text t
+  printf 'scheduled cleanup: %s\n' "$t"
   _status_age a "$ST_LINGER_AGE"
   t=""
   for e in "${ST_LINGER[@]:0:8}"; do IFS=$'\t' read -r pid name _ <<<"$e"; t+="${t:+, }$name (pid $pid)"; done

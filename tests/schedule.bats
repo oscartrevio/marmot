@@ -298,3 +298,39 @@ esac'
   run mm schedule enable --hourly
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------- mm status
+
+# status_fakes — read-only answers for mm status's slow probes (as in status.bats).
+status_fakes() {
+  mm_test_fake apt 'exit 0'
+  mm_test_fake systemctl '[[ "$1" == is-active ]] && echo active; exit 0'
+  mm_test_fake docker 'exit 1'
+}
+
+@test "mm status shows the last scheduled run and what it freed, or how to schedule one" {
+  needs_jq
+  status_fakes
+  run mm status --agent
+  [ "$status" -eq 0 ]
+  grep -qx 'scheduled cleanup: not scheduled: mm schedule enable' <<<"$output"
+  run mm status --json
+  [ "$(jq -c '.system.scheduled_cleanup' <<<"$output")" = '{"scheduled":false,"backend":null,"frequency":null,"last_run":null}' ]
+
+  profile_tools; fake_systemd yes; fake_cron
+  trash_item old31 31; trash_item big 40; blob "$XDG_DATA_HOME/Trash/files/big"
+  run mm schedule enable --weekly
+  run mm schedule run
+  [ "$status" -eq 0 ]
+  local freed; freed=$(jq -r .freed_bytes "$LAST")
+  (( freed > 1000000 ))
+  status_fakes
+  run mm status --agent
+  grep -qx "scheduled cleanup: weekly (systemd) · last run 0m ago, freed $(. "$MM_SRC/lib/core.sh"; mm_human "$freed")" <<<"$output"
+  run mm status --json
+  [ "$(jq -r '.system.scheduled_cleanup | [.scheduled, .backend, .frequency, .last_run.freed_bytes] | join(",")' <<<"$output")" = "true,systemd,weekly,$freed" ]
+  run mm status --once
+  grep -qE "^CLEAN +weekly \(systemd\) · last run 0m ago, freed " <<<"$output"
+  run mm status --once --view full
+  grep -qE "Cleanup +weekly \(systemd\)" <<<"$output"
+}

@@ -13,7 +13,7 @@ mm clean       caches, old browser builds, old agent CLI versions, agent and gcl
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
 mm status      live health dashboard, agent sessions first: CPU, memory, disk and inodes,
                network/VPN, your link's latency, lingering dev servers and ports, updates,
-               pending reboot (`v` switches to the full panel view)
+               pending reboot, the last scheduled cleanup (`v` switches to the full panel view)
 mm analyze     disk overview, then a read-only explorer; move what you pick to the Trash
 mm optimize    upgrades, swap reset, stranded processes, orphaned headless browsers, SSD trim,
                DNS flush, reboot check
