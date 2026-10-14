@@ -434,6 +434,8 @@ _purge_to_trash() { [[ "${1##*/}" == venv || "${1##*/}" == .venv ]]; }
 # `pnpm store prune` drops the store files nothing links to any more.
 
 _PURGE_PNPM_PATHS=()   # pnpm-managed artifacts/worktrees removed (or that would be, in a dry run)
+_PURGE_STORE_BYTES=0   # what the pnpm store prune after them freed (a scheduled dry run: estimate)
+_PURGE_MODE=ask        # see _purge_run
 
 # _purge_pnpm_managed DIR — 0 if DIR is a node_modules pnpm installed, or a project/worktree with
 # one at its top or up to two levels down (workspace packages).
@@ -469,18 +471,21 @@ _purge_store_frees() {
 }
 
 # _purge_pnpm_prune — real runs, after pnpm-managed removals: `pnpm store prune` unless pnpm is
-# missing or running or the store is whitelisted. Prints the banner line (bytes from the store
-# filesystem's df delta).
+# missing or running or the store is whitelisted. Sets _PURGE_PRUNE_LINE (the banner line) and
+# _PURGE_STORE_BYTES (freed, from the store filesystem's df delta).
 _purge_pnpm_prune() {
   local store before after
+  _PURGE_PRUNE_LINE="" _PURGE_STORE_BYTES=0
   store=$(_purge_pnpm_store) || return 0
-  if mm_whitelisted "$store"; then printf 'pnpm store prune: skipped (store whitelisted)'; return 0; fi
-  if mm_proc_running pnpm; then printf 'pnpm store prune: skipped (pnpm busy)'; return 0; fi
+  if mm_whitelisted "$store"; then _PURGE_PRUNE_LINE='pnpm store prune: skipped (store whitelisted)'; return 0; fi
+  if mm_proc_running pnpm; then _PURGE_PRUNE_LINE='pnpm store prune: skipped (pnpm busy)'; return 0; fi
   before=$(mm_free_bytes "$store")
-  mm_run "prune the pnpm store" env -C "$HOME" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 timeout 300 pnpm store prune </dev/null ||
-    { printf 'pnpm store prune: failed'; return 0; }
+  if ! mm_run "prune the pnpm store" env -C "$HOME" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 timeout 300 pnpm store prune </dev/null; then
+    _PURGE_PRUNE_LINE='pnpm store prune: failed'; return 0
+  fi
   after=$(mm_free_bytes "$store")
-  printf 'pnpm store prune: freed %s' "$(mm_human $(( after > before ? after - before : 0 )))"
+  _PURGE_STORE_BYTES=$(( after > before ? after - before : 0 ))
+  _PURGE_PRUNE_LINE="pnpm store prune: freed $(mm_human "$_PURGE_STORE_BYTES")"
 }
 
 # _purge_size_label SIZE FREES PNPM — "1.4GB" or "1.4GB (frees 70.0MB; rest shared with the pnpm
@@ -784,6 +789,23 @@ mm_cmd_main() {
     "${VISUAL:-${EDITOR:-nano}}" "$MM_PURGE_PATHS_FILE"
     return
   fi
+  local mode=ask
+  (( all )) && mode=all
+  (( yes )) && mode=yes
+  _purge_run "$mode" "$days" "${dirs[@]}"
+}
+
+# _purge_run MODE DAYS [DIR...] — scan, list and purge. MODE: ask (a terminal picks; stale
+# artifacts by default), all (--all: every artifact by default), yes (--yes: stale artifacts, no
+# questions, worktrees only listed) or scheduled (`mm schedule run`: like yes, under a section
+# instead of the header and banner, worktrees left out, and roots that are gone are skipped, not
+# fatal). The pnpm store prune that follows is counted in _PURGE_STORE_BYTES.
+_purge_run() {
+  _PURGE_MODE=$1
+  local days=$2 all=0 yes=0
+  shift 2
+  local -a dirs=("$@")
+  case "$_PURGE_MODE" in all) all=1 ;; yes|scheduled) yes=1 ;; esac
 
   # ---- where to look
   local -a roots=() listed=() missing=()
@@ -800,7 +822,12 @@ mm_cmd_main() {
       for r in "${listed[@]}"; do
         if [[ -d "$r" ]]; then roots+=("$(realpath -e -- "$r")"); else missing+=("$r"); fi
       done
-      (( ${#roots[@]} )) || mm_die "none of the roots in $MM_PURGE_PATHS_FILE exist (mm purge --paths)"
+      if (( ${#roots[@]} == 0 )); then
+        [[ "$_PURGE_MODE" == scheduled ]] || mm_die "none of the roots in $MM_PURGE_PATHS_FILE exist (mm purge --paths)"
+        mm_section "Stale build artifacts"
+        mm_skip "Build artifacts" "none of the roots in $(_purge_tilde "$MM_PURGE_PATHS_FILE") exist"
+        return 0
+      fi
       where="file"
     else
       roots=("$HOME") where=discover
@@ -810,7 +837,7 @@ mm_cmd_main() {
   fi
 
   local free_before; free_before=$(mm_free_bytes /)
-  mm_header "Purge Project Artifacts"
+  if [[ "$_PURGE_MODE" == scheduled ]]; then mm_section "Stale build artifacts"; else mm_header "Purge Project Artifacts"; fi
   for r in "${missing[@]}"; do mm_skip "$(_purge_tilde "$r")" "not found"; done
 
   # ---- scan: artifacts, repositories, worktrees
@@ -857,7 +884,7 @@ mm_cmd_main() {
 
   # ---- finished and abandoned worktrees (before artifacts: removing one takes its artifacts with it)
   _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=() _PURGE_GH=""
-  _purge_worktrees "$yes" "${roots[@]}"
+  [[ "$_PURGE_MODE" == scheduled ]] || _purge_worktrees "$yes" "${roots[@]}"
 
   # ---- validate artifacts
   local -a kept_out=()
@@ -1032,7 +1059,8 @@ mm_cmd_main() {
   esac
   if (( ${#sel[@]} == 0 )); then
     mm_info ""
-    mm_info "Nothing selected$( [[ "$mode" == stale ]] && echo " (no project idle > ${days}d; use --all or --days N)")."
+    if [[ "$_PURGE_MODE" == scheduled ]]; then mm_info "Nothing to remove: no project idle > ${days}d."
+    else mm_info "Nothing selected$( [[ "$mode" == stale ]] && echo " (no project idle > ${days}d; use --all or --days N)")."; fi
     _purge_banner "$free_before" 0
     return 0
   fi
@@ -1049,7 +1077,7 @@ mm_cmd_main() {
     while IFS= read -r p; do [[ -n "$p" ]] && busy[$p]=1; done < <(_purge_busy "${recheck[@]}")
   fi
   local -a how=()
-  local keep_state
+  local keep_state freed0=$MM_FREED
   local -A done_proj=()
   for i in "${sel[@]}"; do
     art="${arts[$i]}" proj="${projs[$i]}" g="${gits[$i]}"
@@ -1072,13 +1100,15 @@ mm_cmd_main() {
   # Items hard-linked only among themselves (a project's .pnpm-store and its node_modules, cp -al
   # copies) free those files once all of them are gone, as the real run's later deletes count:
   # a dry run sizes what it would delete as one selection.
-  [[ "$MM_DRY_RUN" == 1 ]] && (( ${#freed_paths[@]} > 1 )) && MM_FREED=$(mm_frees "${freed_paths[@]}")
+  [[ "$MM_DRY_RUN" == 1 ]] && (( ${#freed_paths[@]} > 1 )) && MM_FREED=$(( freed0 + $(mm_frees "${freed_paths[@]}") ))
   _purge_banner "$free_before" "${#done_proj[@]}"
 }
 
 # _purge_banner FREE_BEFORE PROJECTS — closing summary (artifacts plus worktrees). After a real
 # run that removed pnpm-managed items it prunes the pnpm store first; a dry run estimates that.
+# A scheduled run gets no banner, only that prune (_purge_scheduled_end).
 _purge_banner() {
+  [[ "$_PURGE_MODE" == scheduled ]] && { _purge_scheduled_end; return 0; }
   local free_after trash="" wt="" pn="" est
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     (( MM_TRASHED )) && trash=" | Would move to Trash: $(mm_human "$MM_TRASHED")"
@@ -1100,7 +1130,7 @@ _purge_banner() {
   else
     (( MM_TRASHED )) && trash=" | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)"
     (( _PURGE_WT_DONE )) && wt="Worktrees removed: $_PURGE_WT_DONE ($(mm_human "$_PURGE_WT_BYTES"); branches kept)"
-    (( ${#_PURGE_PNPM_PATHS[@]} )) && pn=$(_purge_pnpm_prune)
+    (( ${#_PURGE_PNPM_PATHS[@]} )) && { _purge_pnpm_prune; pn=$_PURGE_PRUNE_LINE; }
     free_after=$(mm_free_bytes /)
     local gained=$(( free_after - $1 )); (( gained < 0 )) && gained=0
     mm_banner "Purge complete" \
@@ -1109,4 +1139,23 @@ _purge_banner() {
       ${wt:+"$wt"} \
       "Free space: $(mm_human "$free_after") (+$(mm_human "$gained"))"
   fi
+}
+
+# _purge_scheduled_end — after a scheduled run's pnpm-managed removals: `pnpm store prune`, or in
+# a dry run its estimate, as a line of the section; the bytes go to _PURGE_STORE_BYTES.
+_purge_scheduled_end() {
+  _PURGE_STORE_BYTES=0
+  (( ${#_PURGE_PNPM_PATHS[@]} )) || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _PURGE_STORE_BYTES=$(_purge_store_frees "${_PURGE_PNPM_PATHS[@]}")
+    _PURGE_STORE_BYTES=${_PURGE_STORE_BYTES:-0}
+    (( _PURGE_STORE_BYTES )) && mm_ok "pnpm store prune" "~$(mm_human "$_PURGE_STORE_BYTES") (store files only these used)"
+    return 0
+  fi
+  _purge_pnpm_prune
+  case "$_PURGE_PRUNE_LINE" in
+    "") ;;
+    *"skipped ("*) local why=${_PURGE_PRUNE_LINE#*skipped (}; mm_skip "pnpm store prune" "${why%)}" ;;
+    *) mm_ok "pnpm store prune" "${_PURGE_PRUNE_LINE#pnpm store prune: }" ;;
+  esac
 }
