@@ -51,3 +51,24 @@ jobs:
         run: |
           chown -R tester .
           su tester -c 'tests/run.sh'
+
+  # The agent-VM scenario (tests/e2e/agent-vm.sh) in a container: real npm/pnpm installs, agent
+  # worktrees, caches, Trash, sessions and logs; marmot runs for real and must free what it says
+  # and keep what it must. As a normal user with passwordless sudo and as root, plus once on an
+  # image without procps, psmisc, iproute2 or sudo.
+  e2e:
+    name: e2e (${{ matrix.image }}, ${{ matrix.as }}${{ matrix.minimal && ', minimal' || '' }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "ubuntu:22.04"]
+        as: [user, root]
+        minimal: [false]
+        include:
+          - { image: "debian:12", as: user, minimal: true }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Agent VM scenario
+        run: tests/e2e/run.sh "${{ matrix.image }}" ${{ matrix.as == 'root' && '--root' || '' }} ${{ matrix.minimal && '--minimal' || '' }}
