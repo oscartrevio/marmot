@@ -1,7 +1,8 @@
 # shellcheck shell=bash
 # Known AI coding agent CLIs and the orchestrators that run them, shared by every command that
 # needs to recognize them:
-#   - their state (settings, credentials, session transcripts) is whitelisted and only reported;
+#   - their state (settings, credentials, session transcripts) is whitelisted and only reported,
+#     except old session files when the user opts in to retention (`mm clean --sessions DAYS`);
 #   - their processes count as agent sessions in `mm status`;
 #   - tools that keep every installed version get old versions pruned by `mm clean`
 #     (the active one, resolved through its launcher symlink, plus one previous are kept);
@@ -78,4 +79,16 @@ mm_agent_state_paths() {
   for s in "${MM_AGENT_STATE[@]}"; do
     for p in $s; do printf '%s\n' "~${p#"$HOME"}"; done
   done
+}
+
+# mm_agent_dir PATH — 0 if the resolved PATH is exactly one known agent's session or state
+# directory (not a file, not a folder above or below one) and lies strictly inside $HOME.
+mm_agent_dir() {
+  local s p r
+  for s in "${MM_AGENT_SESSIONS[@]}" "${MM_AGENT_STATE[@]}"; do
+    for p in $s; do
+      r=$(realpath -e -- "$p" 2>/dev/null) && [[ -d "$r" && "$r" == "$1" && "$r" == "$HOME"/?* ]] && return 0
+    done
+  done
+  return 1
 }

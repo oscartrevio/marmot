@@ -18,7 +18,7 @@ _mo() {
     return
   fi
   case $words[2] in
-    clean)     _arguments $global '--whitelist[edit protected paths]' ;;
+    clean)     _arguments $global '--whitelist[edit protected paths]' '--sessions[move agent sessions older than N days to the Trash]:days' ;;
     status)    _arguments '--once[single snapshot]' '--json[machine-readable]' '--agent[plain text for AI agents]' '--view[layout]:view:(compact full)' '--interval[refresh seconds]:seconds' ;;
     analyze|analyse) _files -/ ;;
     optimize)  _arguments $global ;;

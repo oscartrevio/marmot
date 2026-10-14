@@ -50,7 +50,8 @@ marmot deletes files, so it is built to refuse rather than guess:
 - **Built-in protections** that cannot be edited away: `~/.ssh`, `~/.gnupg`, credentials
   (`~/.aws`, `~/.kube`, `~/.docker`, `~/.netrc`, ...), `~/.config`, and the state of every known
   coding agent (settings, credentials, session transcripts; see `lib/agents.sh`). Agent sessions
-  are only ever reported.
+  are only reported unless you opt in to session retention (below); credentials inside agent
+  state are never touched even then.
 - **Trash for anything personal.** Uninstall leftovers, Python virtualenvs and whatever you
   pick in `mm analyze` go to the standard Trash (`~/.local/share/Trash`) and can be restored
   with `trash-restore`. If the Trash is on another filesystem, the item is kept, never deleted
@@ -60,8 +61,8 @@ marmot deletes files, so it is built to refuse rather than guess:
   working files, so marmot never sweeps them; `mm clean` shows their size and the
   systemd-tmpfiles age that applies (and the `tmpfiles.d` line to add when nothing ages them).
 - **Confirmations need a terminal.** Run without one (cron, pipes) and every step that asks is
-  skipped. There is no global `--yes`; the only unattended deletion is `mm purge --yes`, which
-  removes build artifacts of stale projects only.
+  skipped. There is no global `--yes`; the only unattended deletions are `mm purge --yes`, which
+  removes build artifacts of stale projects only, and a session retention you configured.
 - **When unsure, keep.** A git check that fails keeps the folder; an agent version that can't be
   identified as active keeps all versions; a worktree with uncommitted or unreachable work is
   never offered; base-system packages, cloud guest agents and remote-access/VPN software are
@@ -73,9 +74,19 @@ marmot deletes files, so it is built to refuse rather than guess:
 
 | File | Purpose |
 |---|---|
+| `~/.config/marmot/config` | settings, `key=value` per line, `#` comments (see below) |
 | `~/.config/marmot/whitelist` | your own protected paths or globs (`mm clean --whitelist`) |
 | `~/.config/marmot/catalog` | extra cache folders for `mm clean` (format in `lib/catalog.sh`) |
 | `~/.config/marmot/purge_paths` | fixed project roots for `mm purge` instead of discovery (`mm purge --paths`) |
+
+Settings in `~/.config/marmot/config` (`$XDG_CONFIG_HOME` is honored):
+
+```ini
+# Agent session retention, off by default. Session files of known agents (and rotated logs in
+# their state) last written more than N days ago and not in use move to the Trash on every
+# `mm clean`, also without a terminal. `mm clean --sessions N` does the same for one run.
+sessions_keep_days = 30
+```
 
 Environment: `MM_STATUS_LINGER_AGE`, `MM_STATUS_VPN_IFACES`, `MM_OPTIMIZE_ORPHAN_AGE`,
 `MM_ANALYZE_TIMEOUT` (see each command's `--help`). Known agents and cleanup targets live in
