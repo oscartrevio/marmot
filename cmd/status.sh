@@ -376,7 +376,7 @@ _status_procs() {
       pid = substr($0, 1, l - 2); comm = substr($0, l + 1, r - l - 1)
       split(substr($0, r + 2), f, " ")
       ticks = f[12] + f[13]; a = int(up - f[20] / hz)
-      print pid, ticks > cur
+      printf "%s\t%.0f\n", pid, ticks > cur
       total++; ppid[pid] = f[2]
       if (f[1] == "Z") zombies++
       if (dt > 0 && (pid in prev)) { pct = int((ticks - prev[pid]) * 1e9 / (hz * dt) + 0.5); if (pct > 0) { cpu[pid] = pct; cn[pid] = comm } }

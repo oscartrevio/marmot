@@ -41,7 +41,7 @@ mm_cmd_main() {
   done < <("${src[@]}")
   local removed trashed
   read -r removed trashed < <(awk -F'\t' '$3 == "remove" { r += $5 } $3 == "trash" { t += $5 }
-    END { print r + 0, t + 0 }' "$MM_LOG_FILE")
+    END { printf "%.0f %.0f\n", r, t }' "$MM_LOG_FILE")
   printf '\nAll-time: %s removed, %s moved to Trash (restore: trash-restore), %s log rows\n' \
     "$(mm_human "$removed")" "$(mm_human "$trashed")" "$(wc -l <"$MM_LOG_FILE")"
 }

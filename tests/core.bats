@@ -264,3 +264,19 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   [ "$(wc -l <"$XDG_STATE_HOME/marmot/operations.log")" -eq 1 ]
   [ "$(awk -F'\t' '{ print NF }' "$XDG_STATE_HOME/marmot/operations.log")" -eq 6 ]
 }
+
+@test "sizes above 2 GiB come back as exact integers" {
+  mm_test_fake du 'printf "3000000001\t%s\n3000000001\ttotal\n" "$4"'
+  mm_test_fake df 'printf "Avail\n5000000003\n"'
+  [ "$(mm_size "$SB/root")" = 3000000001 ]
+  [ "$(mm_free_bytes /)" = 5000000003 ]
+}
+
+@test "a size bash cannot count is refused before anything is removed" {
+  mkdir -p "$SB/root/big"
+  mm_inuse_refresh
+  mm_size() { echo 2.14748e+09; }
+  run try_rm "$SB/root/big" "$SB/root"
+  [ "$output" = "1 size unreadable" ]
+  [ -d "$SB/root/big" ]
+}

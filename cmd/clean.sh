@@ -64,7 +64,7 @@ _clean_to_bytes() {
     n = substr(s, 1, RLENGTH); u = toupper(substr(s, RLENGTH + 1)); gsub(/[^A-Z]/, "", u)
     base = (u ~ /I/ || length(u) == 1) ? 1024 : 1000
     p = index("KMGTP", substr(u, 1, 1))
-    printf "%d\n", n * (p ? base ^ p : 1)
+    printf "%.0f\n", n * (p ? base ^ p : 1)
   }'
 }
 
@@ -475,7 +475,7 @@ _clean_apt_busy() {
 # _clean_pkg_bytes PKG... — Installed-Size total in bytes.
 _clean_pkg_bytes() {
   (( $# )) || { echo 0; return; }
-  dpkg-query -W -f='${Installed-Size}\n' "$@" 2>/dev/null | awk '{ s += $1 } END { print s * 1024 }'
+  dpkg-query -W -f='${Installed-Size}\n' "$@" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f\n", s * 1024 }'
 }
 
 # _clean_ask LABEL QUESTION — gate an irreversible step. Dry-run: proceed (callers only list).
@@ -499,7 +499,7 @@ _clean_confirm_pkgs() {
 _clean_apt_cache() {
   local n b
   read -r n b < <(mm_sudo find /var/cache/apt/archives -type f \( -name '*.deb' -o -path '*/partial/*' \) \
-    -printf '%b\n' 2>/dev/null | awk '{ n++; s += $1 * 512 } END { print n + 0, s + 0 }')
+    -printf '%b\n' 2>/dev/null | awk '{ n++; s += $1 * 512 } END { printf "%.0f %.0f\n", n, s }')
   if (( n == 0 )); then mm_ok "APT package cache" "nothing to clean"; return; fi
   _clean_apt_run "apt-get clean" clean || return 0
   _clean_track "$b" "$n"
