@@ -6,8 +6,9 @@ Gemini CLI, Copilot CLI, opencode, Aider, ...), Node/Python/Go/Rust toolchains, 
 of git worktrees. Inspired by [Mole](https://github.com/tw93/Mole), which does this for Macs.
 
 ```text
-mm clean       caches, old browser builds, old agent CLI versions, apt/snap/journal, old kernels,
-               Docker leftovers, stale editor servers; reports /tmp and how the OS ages it
+mm clean       caches, old browser builds, old agent CLI versions, gcloud/Azure CLI logs,
+               apt/snap/journal, old kernels, Docker leftovers, stale editor servers; reports /tmp
+               and how the OS ages it
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
 mm status      live health dashboard, agent sessions first: CPU, memory, disk and inodes,
                network/VPN, your link's latency, lingering dev servers and ports, updates,
@@ -51,7 +52,14 @@ marmot deletes files, so it is built to refuse rather than guess:
   (`~/.aws`, `~/.kube`, `~/.docker`, `~/.netrc`, ...), `~/.config`, and the state of every known
   coding agent (settings, credentials, session transcripts; see `lib/agents.sh`). Agent sessions
   are only reported unless you opt in to session retention (below); credentials inside agent
-  state are never touched even then.
+  state are never touched even then. Besides that, a short list of log folders inside these
+  protections is open (`MM_CLEAN_CARVEOUTS` in `lib/core.sh`): `mm clean` deletes gcloud logs
+  (`~/.config/gcloud/logs`, or `$CLOUDSDK_CONFIG/logs`) and Azure CLI logs (`~/.azure/logs`, or
+  `$AZURE_CONFIG_DIR/logs`) older than 7 days. Inside them your whitelist and the in-use checks
+  still apply, a symlinked folder gets no opening, and names that look like credentials (one
+  list for agent state and log folders: `*credential*`, `*token*`, `*secret*`, `*.pem`, `*.key`,
+  `auth*.json`, `configurations`, ...) are kept anyway. The AWS CLI writes no log files, and its
+  caches hold credentials, so `~/.aws` stays closed.
 - **Trash for anything personal.** Uninstall leftovers, Python virtualenvs and whatever you
   pick in `mm analyze` go to the standard Trash (`~/.local/share/Trash`) and can be restored
   with `trash-restore`. If the Trash is on another filesystem, the item is kept, never deleted

@@ -727,3 +727,87 @@ hide_tool() {
   none grep -F 'go clean' "$CALLS"
   exist "$SB/gomod/cache/download/blob"
 }
+
+# ---------------------------------------------------------------- cloud CLI logs
+
+# cloud_log PATH DAYS — a 6KB file last written DAYS days ago.
+cloud_log() { mkdir -p "$(dirname "$1")"; head -c 6000 /dev/zero >"$1"; touch -d "$2 days ago" "$1"; }
+# old_dirs DIR... — folders last changed 20 days ago (adding files made them look new).
+old_dirs() { touch -d '20 days ago' "$@"; }
+
+@test "cloud CLI logs: gcloud and Azure logs 7+ days old are deleted; recent logs and credentials kept" {
+  local g="$HOME/.config/gcloud/logs" a="$HOME/.azure"
+  cloud_log "$g/2026.01.01/10.00.00.000001.log" 30
+  cloud_log "$g/2026.01.01/11.00.00.000002.log" 29
+  cloud_log "$g/2026.01.20/09.00.00.000003.log" 9
+  cloud_log "$g/2026.01.20/23.59.00.000004.log" 1
+  cloud_log "$g/2026.01.28/10.00.00.000005.log" 1
+  mkdir -p "$g/2026.01.05"
+  old_dirs "$g/2026.01.01" "$g/2026.01.05" "$g/2026.01.20"
+  cloud_log "$HOME/.config/gcloud/credentials.db" 100; cloud_log "$HOME/.config/gcloud/access_tokens.db" 100
+  cloud_log "$HOME/.config/gcloud/configurations/config_default" 100
+  cloud_log "$HOME/.config/gcloud/legacy_credentials/me@example.com/adc.json" 100
+  cloud_log "$a/logs/az.log.1" 20; cloud_log "$a/logs/az.log" 2; cloud_log "$a/msal_token_cache.json" 100
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_cloud_logs
+  [ "$status" -eq 0 ]
+  gone "$g/2026.01.01" "$g/2026.01.05" "$g/2026.01.20/09.00.00.000003.log" "$a/logs/az.log.1"
+  exist "$g/2026.01.20/23.59.00.000004.log" "$g/2026.01.28/10.00.00.000005.log" "$a/logs/az.log"
+  exist "$HOME/.config/gcloud/credentials.db" "$HOME/.config/gcloud/access_tokens.db" \
+    "$HOME/.config/gcloud/configurations/config_default" "$HOME/.config/gcloud/legacy_credentials/me@example.com/adc.json" \
+    "$a/msal_token_cache.json"
+  [ -d "$g" ]
+  [ -d "$a/logs" ]
+}
+
+@test "cloud CLI logs: an old log held open is kept, the rest of its folder goes" {
+  local d="$HOME/.config/gcloud/logs/2026.01.01"
+  cloud_log "$d/a.log" 10; cloud_log "$d/b.log" 10; old_dirs "$d"
+  mm_test_bg "$SB" bash -c 'exec 7<"$1"; sleep 30' _ "$d/a.log"
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_cloud_logs
+  [ "$status" -eq 0 ]
+  exist "$d/a.log"
+  gone "$d/b.log"
+}
+
+@test "cloud CLI logs: CLOUDSDK_CONFIG and AZURE_CONFIG_DIR move the folders that are cleaned" {
+  export CLOUDSDK_CONFIG="$HOME/.config/gcloud-work" AZURE_CONFIG_DIR="$HOME/.config/azure-work"
+  cloud_log "$CLOUDSDK_CONFIG/logs/2026.01.01/a.log" 10; old_dirs "$CLOUDSDK_CONFIG/logs/2026.01.01"
+  cloud_log "$CLOUDSDK_CONFIG/credentials.db" 100
+  cloud_log "$AZURE_CONFIG_DIR/logs/az.log.2" 10
+  cloud_log "$HOME/.config/gcloud/logs/2026.01.01/a.log" 10; old_dirs "$HOME/.config/gcloud/logs/2026.01.01"
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_cloud_logs
+  [ "$status" -eq 0 ]
+  gone "$CLOUDSDK_CONFIG/logs/2026.01.01" "$AZURE_CONFIG_DIR/logs/az.log.2"
+  exist "$CLOUDSDK_CONFIG/credentials.db" "$HOME/.config/gcloud/logs/2026.01.01/a.log"
+}
+
+@test "cloud CLI logs: dry-run counts exactly what a real run frees, and changes nothing" {
+  local g="$HOME/.config/gcloud/logs" i before after est
+  for i in 1 2 3 4 5; do cloud_log "$g/2026.01.0$i/1$i.00.00.000000.log" $((10 + i)); done
+  cloud_log "$g/2026.01.20/09.00.00.000000.log" 8; cloud_log "$g/2026.01.20/10.00.00.000000.log" 0
+  old_dirs "$g"/2026.01.0? "$g/2026.01.20"
+  src; mm_inuse_refresh >/dev/null 2>&1
+  before=$(du -sB1 "$g" | cut -f1)
+  MM_DRY_RUN=1; _clean_cloud_logs >/dev/null
+  est=$MM_FREED
+  [ "$(du -sB1 "$g" | cut -f1)" -eq "$before" ]
+  (( est > 0 ))
+  MM_DRY_RUN=0 MM_FREED=0; _clean_cloud_logs >/dev/null
+  after=$(du -sB1 "$g" | cut -f1)
+  [ "$MM_FREED" -eq "$est" ]
+  [ $((before - after)) -eq "$est" ]
+  exist "$g/2026.01.20/10.00.00.000000.log"
+}
+
+@test "cloud CLI logs: a logs folder that is a symlink is left alone" {
+  mkdir -p "$SB/elsewhere" "$HOME/.config/gcloud"
+  cloud_log "$SB/elsewhere/old.log" 30
+  ln -s "$SB/elsewhere" "$HOME/.config/gcloud/logs"
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_cloud_logs
+  [ "$status" -eq 0 ]
+  exist "$SB/elsewhere/old.log"
+}
