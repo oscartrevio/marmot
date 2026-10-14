@@ -17,6 +17,7 @@ teardown() { mm_test_teardown; }
   [ "${#MM_AGENT_SESSIONS[@]}" -eq "$n" ]
   [ "${#MM_AGENT_VERSIONS[@]}" -eq "$n" ]
   [ "${#MM_AGENT_ACTIVE[@]}" -eq "$n" ]
+  [ "${#MM_AGENT_WORKTREES[@]}" -eq "$n" ]
 }
 
 @test "every agent has a process name and at least one state path, all under HOME" {
@@ -24,7 +25,7 @@ teardown() { mm_test_teardown; }
   for i in "${!MM_AGENT_NAME[@]}"; do
     [ -n "${MM_AGENT_PROCS[i]}" ] || { echo "no process: ${MM_AGENT_NAME[i]}"; false; }
     [ -n "${MM_AGENT_STATE[i]}" ] || { echo "no state: ${MM_AGENT_NAME[i]}"; false; }
-    for p in ${MM_AGENT_STATE[i]} ${MM_AGENT_SESSIONS[i]} ${MM_AGENT_VERSIONS[i]} ${MM_AGENT_ACTIVE[i]}; do
+    for p in ${MM_AGENT_STATE[i]} ${MM_AGENT_SESSIONS[i]} ${MM_AGENT_VERSIONS[i]} ${MM_AGENT_ACTIVE[i]} ${MM_AGENT_WORKTREES[i]}; do
       [[ "$p" == "$HOME"/* ]] || { echo "not under HOME: $p"; false; }
     done
   done
@@ -54,4 +55,12 @@ teardown() { mm_test_teardown; }
   [ "$status" -eq 0 ]
   [ -z "$(grep -v '^~/' <<<"$output")" ]
   grep -qx '~/.claude' <<<"$output"
+}
+
+@test "mm_agent_worktree_dirs lists each worktree dir once, expanded" {
+  run mm_agent_worktree_dirs
+  [ "$status" -eq 0 ]
+  [ "$(sort <<<"$output" | uniq -d)" = "" ]
+  [ -z "$(grep -v "^$HOME/" <<<"$output")" ]
+  grep -qxF "$HOME/.cursor/worktrees" <<<"$output"
 }
