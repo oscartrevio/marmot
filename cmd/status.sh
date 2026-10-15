@@ -22,6 +22,18 @@ ST_DEV_RE='^(node|nodejs|bun|deno|python[0-9.]*|tsc|vite|next-server.*|nuxt|esbu
 ST_INTERP_RE='^(node|nodejs|bun|deno|python[0-9.]*|.*MainThread.*)$'
 # Long-lived helpers that belong to an editor, not a forgotten server (matched on the full argv).
 ST_LINGER_SKIP_RE='(--stdio|--lsp|/\.(vscode|vscode-insiders|cursor|windsurf|vscodium)-server/|/\.vscode-remote/)'
+# Terminal hosts: the program holding the master side of the person's terminal (process name:
+# comm, or argv[0]'s base name) → the name shown after "via". It only names the host: how the
+# person reaches it always comes from the host's own sockets (see _status_classify), so a host
+# missing here still works and shows under its process name. tmux and screen servers are
+# followed to their attached clients instead; login/getty mean a local console.
+declare -gA ST_HOST_LABEL=(
+  [sshd]=SSH [sshd-session]=SSH [mosh-server]=mosh [dropbear]=SSH
+  [code]="VS Code tunnel" [code-tunnel]="VS Code tunnel" [code-insiders]="VS Code tunnel"
+  [cursor]="Cursor tunnel" [code-server]=code-server [coder]=Coder [tern]=tern [orca-ide]=Orca
+  [ttyd]=ttyd [gotty]=gotty [wetty]=wetty [tmate]=tmate [upterm]=upterm [sshx]=sshx
+  [cloudflared]=cloudflared [script]=script [login]=console [agetty]=console [getty]=console
+)
 
 _status_usage() {
   cat <<EOF
@@ -52,11 +64,17 @@ Agents: one row per running AI coding agent session (lib/agents.sh catalog; matc
 Lingering: dev servers/toolchains (node, bun, deno, python, vite, next-server, esbuild, uvicorn,
   gunicorn, ...) of yours running longer than the linger age and not part of a live agent session.
 Ports: TCP ports your processes have listened on longer than the linger age.
-You: the network link to whoever is watching: your SSH session (SSH_CONNECTION), else the remote
-  peer most recently active on a port this machine listens on. Round-trip time (smoothed and
-  best), its history, and retransmits, from the kernel's TCP stats (ss); Tailscale peers are
-  named. "link to you is laggy" (RTT >= 150 ms, jitter >= 100 ms or new retransmits) is your
-  network, so it never lowers the health score.
+You: how whoever is watching reaches this machine. From the terminal mm runs on (or its nearest
+  ancestor's), the program hosting it (sshd, tern, a VS Code tunnel, ttyd, script, ...; tmux
+  and screen are followed to their attached client) and that program's own sockets: an inbound
+  connection is direct, SSH and mosh name their client, only outbound connections mean a relay
+  (no round trip to you is measurable), none at all a local terminal. Last input is the time
+  since that terminal last read a keystroke (in steps of about 8 s). Without any terminal (cron,
+  a detached script): your SSH session (SSH_CONNECTION), else the remote peer most recently
+  active on a port this machine listens on. Round-trip time (smoothed and best), its history,
+  and retransmits, from the kernel's TCP stats (ss); Tailscale peers are named. "link to you is
+  laggy" (RTT >= 150 ms, jitter >= 100 ms or new retransmits) is your network, so it never
+  lowers the health score.
 Containers: the header says "container"; CPU and memory follow the cgroup v2 limits (cpu.max,
   memory.max) when set; the load average and time since boot are the host's, and the reboot and
   kernel checks (the host's too) are left out.
@@ -239,8 +257,10 @@ _status_init() {
   command -v ss >/dev/null && ST_SS=1
   command -v tailscale >/dev/null && command -v jq >/dev/null && ST_TS=1
   ST_CL_ADDR="" ST_CL_NAME="" ST_CL_PATH="" ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0 ST_CL_LAGGY=0
+  ST_CL_VIA="" ST_CL_TRANSPORT=none ST_CL_TTY="" ST_CL_IDLE="" ST_TERM_NAME="" ST_TERM_SSH="" ST_TERM_INO=() ST_TERM_LOCAL=0
   ST_RTTH=() ST_TS_FOR="" ST_TS_AT=0
   _status_sched
+  _status_term_find
 }
 
 # _status_sched — what `mm schedule enable` installed (ST_SCHED: "systemd daily", or empty) and
@@ -770,57 +790,110 @@ _status_ports() {
   return 0
 }
 
-# _status_client — the remote client of the person watching, from the kernel's TCP state: `ss`
-# with -i (no root, no -p; -n so nothing is looked up). Inbound connections are established ones
-# whose local port this machine listens on (any non-loopback listener) from a non-loopback peer.
-# The client is SSH_CONNECTION's (else SSH_CLIENT's) address when set, else the inbound peer
-# heard from most recently (smallest lastrcv). Sets ST_CL_ADDR ("" = none), ST_CL_RTT, ST_CL_VAR,
-# ST_CL_MIN (ms as ss prints them; "" when the connection is not visible, e.g. SSH served from
-# inside a VPN daemon), ST_CL_RETR (retransmits since the previous sample, not lifetime),
+# _status_client — how the person watching reaches this machine. With a terminal up marmot's
+# process chain (_status_term), the program hosting it is classified by its own sockets
+# (_status_classify). Without one (cron, a detached script), the inbound guess: SSH_CONNECTION's
+# (else SSH_CLIENT's) address, else the remote peer most recently heard on a port this machine
+# listens on. Sets ST_CL_VIA (the host's label, "" unknown), ST_CL_TRANSPORT (direct, ssh,
+# relay, udp, local or none), ST_CL_TTY, ST_CL_IDLE (seconds since the last keystroke, "" when
+# unknown), ST_CL_ADDR ("" = none), ST_CL_RTT, ST_CL_VAR, ST_CL_MIN (ms as ss prints them; ""
+# when not measured), ST_CL_RETR (retransmits since the previous sample, not lifetime),
 # ST_CL_LAGGY, and the RTT history ST_RTTH. The user's own network: never part of the score.
 _status_client() {
-  local a p lp rtt var minrtt tot rcv key best="" bestrank=0 rank want_a="" want_p="" prev last=$ST_CL_ADDR r v
-  local -A retr=()
-  read -r want_a want_p _ <<<"${SSH_CONNECTION:-${SSH_CLIENT:-}}"
+  local last=$ST_CL_ADDR r v
+  ST_CL_ADDR="" ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0 ST_CL_LAGGY=0
+  ST_CL_VIA="" ST_CL_TRANSPORT=none ST_CL_TTY="" ST_CL_IDLE=""
+  if _status_term; then
+    if ((ST_TERM_LOCAL)); then ST_CL_TRANSPORT=local
+    else _status_classify host "$ST_TERM_NAME" "$ST_TERM_SSH" "${ST_TERM_INO[@]}"; fi
+  else
+    _status_classify any "" "${SSH_CONNECTION:-${SSH_CLIENT:-}}"
+  fi
+  [[ "$ST_CL_ADDR" == "$last" ]] || ST_RTTH=()
+  if [[ -n "$ST_CL_RTT" ]]; then
+    _status_ms r "$ST_CL_RTT"
+    _status_ms v "${ST_CL_VAR:-0}"
+    _status_push ST_RTTH "$r"
+    ((r >= 150 || v >= 100 || ST_CL_RETR > 0)) && ST_CL_LAGGY=1
+  fi
+  if [[ "$ST_CL_ADDR" != "$ST_TS_FOR" ]] || ((EPOCHSECONDS - ST_TS_AT >= 60)); then _status_ts_lookup "$ST_CL_ADDR"; fi
+  return 0
+}
+
+# _status_classify MODE NAME SSH_CONNECTION [INODE...] — the transport from the kernel's socket
+# tables: `ss -e` (no root, no -p; -n so nothing is looked up), sockets matched to processes by
+# inode. Established TCP connections from a non-loopback peer to a port this machine listens on
+# are inbound; ones to a non-loopback address that is not this machine's own are outbound.
+#   MODE host: INODEs are the sockets of the terminal host's own processes. NAME sshd* → ssh and
+#     mosh-server → udp, with the address from SSH_CONNECTION (sshd: RTT from that connection);
+#     else an inbound connection of theirs → direct (the peer heard from most recently), only
+#     outbound ones → relay (no address: the person is behind it), a non-loopback UDP socket →
+#     udp, nothing → local.
+#   MODE any (no terminal): SSH_CONNECTION's address → ssh, else the most recent inbound peer of
+#     any process → direct, else none.
+# Sets ST_CL_TRANSPORT, ST_CL_ADDR, ST_CL_RTT, ST_CL_VAR, ST_CL_MIN, ST_CL_RETR and ST_CL_PREV.
+_status_classify() {
+  local mode=$1 name=$2 dir a p lp rtt var minrtt tot rcv ino key best="" bestrank=0 rank out=0
+  # Socket inodes (-e) cost ss a lookup per connection: asked for only when matching a host.
+  local want_a="" want_p="" prev opt=-Htin
+  [[ "$mode" == host ]] && opt=-Htine
+  local -A mine=() retr=()
+  [[ "$mode" == host && "$name" != sshd* && "$name" != mosh-server ]] || read -r want_a want_p _ <<<"$3"
   want_a=${want_a#::ffff:}
+  shift 3
+  for ino; do mine[$ino]=1; done
   if [[ -n "$ST_SS" ]]; then
-    while IFS=$'\t' read -r a p lp rtt var minrtt tot rcv; do
+    while IFS=$'\t' read -r dir a p lp rtt var minrtt tot rcv ino; do
       retr["$a $p $lp"]=$tot
       rank=$rcv
       if [[ -n "$want_a" ]]; then
         [[ "$a" == "$want_a" ]] || continue
         # The exact SSH connection first, then the address's most recently active one.
         [[ "$p" == "$want_p" ]] || rank=$((rcv + 10000000000))
+      elif [[ "$mode" == any ]]; then
+        [[ "$dir" == in ]] || continue
+      else
+        [[ -n "${mine[$ino]:-}" ]] || continue
+        [[ "$dir" == in ]] || { out=1; continue; }
       fi
       [[ -z "$best" ]] || ((rank < bestrank)) || continue
       best="$a"$'\t'"$p"$'\t'"$lp"$'\t'"$rtt"$'\t'"$var"$'\t'"$minrtt"$'\t'"$tot" bestrank=$rank
-    done < <({ ss -Htln; echo --; ss -Htin state established; } 2>/dev/null | awk '
+    done < <({ ss -Htln; echo --; ss "$opt" state established; } 2>/dev/null | awk '
       function hostof(s) { sub(/:[^:]*$/, "", s); gsub(/[][]/, "", s); sub(/%.*/, "", s); sub(/^::ffff:/, "", s); return s }
       function portof(s) { sub(/.*:/, "", s); return s }
       function lo(h) { return h ~ /^127\./ || h == "::1" }
-      function flush(   n, i, t, kv, rv, rtt, var, minrtt, tot, rcv) {
-        if (loc != "" && (portof(loc) in listen) && !lo(hostof(peer))) {
+      function flush(   i, t, kv, rv, rtt, var, minrtt, tot, rcv) {
+        if (loc != "" && !lo(hostof(peer))) {
           rtt = var = minrtt = "-"; tot = 0; rcv = 9999999999
-          n = split(info, t, " ")
-          for (i = 1; i <= n; i++) {
+          split(info, t, " ")
+          for (i in t) {
             split(t[i], kv, ":")
             if (kv[1] == "rtt") { split(kv[2], rv, "/"); rtt = rv[1]; var = rv[2] }
             else if (kv[1] == "minrtt") minrtt = kv[2]
             else if (kv[1] == "retrans") { split(kv[2], rv, "/"); tot = rv[2] + 0 }
             else if (kv[1] == "lastrcv") rcv = kv[2] + 0
           }
-          print hostof(peer), portof(peer), portof(loc), rtt, var, minrtt, tot, rcv
+          n++
+          row[n] = hostof(peer) OFS portof(peer) OFS portof(loc) OFS rtt OFS var OFS minrtt OFS tot OFS rcv OFS ino
+          inb[n] = (portof(loc) in listen); ph[n] = hostof(peer)
         }
         loc = ""
       }
       BEGIN { OFS = "\t" }
       $0 == "--" { sec = 1; next }
-      !sec { if (NF >= 2 && !lo(hostof($(NF - 1)))) listen[portof($(NF - 1))] = 1; next }
-      /^[^ \t]/ { flush(); loc = $(NF - 1); peer = $NF; info = ""; next }
+      !sec { if (NF >= 2) { if (!lo(hostof($(NF - 1)))) listen[portof($(NF - 1))] = 1; self[hostof($(NF - 1))] = 1 }; next }
+      /^[^ \t]/ {
+        flush(); loc = $3; peer = $4; info = ""; ino = ""; self[hostof(loc)] = 1
+        for (i = 5; i <= NF; i++) if ($i ~ /^ino:/) ino = substr($i, 5)
+        next
+      }
       { info = info " " $0 }
-      END { flush() }')
+      END {
+        flush()
+        # An outbound connection to an address of this machine never leaves it.
+        for (i = 1; i <= n; i++) if (inb[i] || !(ph[i] in self)) print (inb[i] ? "in" : "out"), row[i]
+      }')
   fi
-  ST_CL_ADDR="" ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0 ST_CL_LAGGY=0
   if [[ -n "$best" ]]; then
     IFS=$'\t' read -r a p lp rtt var minrtt tot <<<"$best"
     ST_CL_ADDR=$a
@@ -834,14 +907,197 @@ _status_client() {
   fi
   ST_CL_PREV=()
   for key in "${!retr[@]}"; do ST_CL_PREV[$key]=${retr[$key]}; done
-  [[ "$ST_CL_ADDR" == "$last" ]] || ST_RTTH=()
-  if [[ -n "$ST_CL_RTT" ]]; then
-    _status_ms r "$ST_CL_RTT"
-    _status_ms v "${ST_CL_VAR:-0}"
-    _status_push ST_RTTH "$r"
-    ((r >= 150 || v >= 100 || ST_CL_RETR > 0)) && ST_CL_LAGGY=1
+  if [[ "$mode" == any ]]; then
+    if [[ -n "$want_a" ]]; then ST_CL_TRANSPORT=ssh; elif [[ -n "$best" ]]; then ST_CL_TRANSPORT=direct; else ST_CL_TRANSPORT=none; fi
+  elif [[ "$name" == sshd* ]]; then ST_CL_TRANSPORT=ssh
+  elif [[ "$name" == mosh-server ]]; then
+    ST_CL_TRANSPORT=udp ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0
+  elif [[ -n "$best" ]]; then ST_CL_TRANSPORT=direct
+  elif ((out)); then ST_CL_TRANSPORT=relay
+  elif ((${#mine[@]})) && [[ -n "$ST_SS" ]] && _status_udp_own "${!mine[@]}"; then ST_CL_TRANSPORT=udp
+  else ST_CL_TRANSPORT=local; fi
+  return 0
+}
+
+# _status_udp_own INODE... — 0 if one of these sockets is UDP bound to a non-loopback address.
+_status_udp_own() {
+  ss -Huane 2>/dev/null | awk -v want=" $* " '
+    { a = $4; sub(/:[^:]*$/, "", a); gsub(/[][]/, "", a); sub(/%.*/, "", a); ino = ""
+      for (i = 5; i <= NF; i++) if ($i ~ /^ino:/) ino = substr($i, 5)
+      if (ino != "" && index(want, " " ino " ") && a !~ /^127\./ && a != "::1") { found = 1; exit } }
+    END { exit !found }'
+}
+
+# _status_pstat PID — fields of /proc/PID/stat: ST_PS_PPID, ST_PS_SID (session), ST_PS_TTY
+# (tty_nr, 0 = no controlling terminal) and ST_PS_COMM.
+_status_pstat() {
+  local st
+  local -a f
+  { IFS= read -r st <"/proc/$1/stat"; } 2>/dev/null || return 1
+  read -r -a f <<<"${st##*) }"
+  ST_PS_PPID=${f[1]:-0} ST_PS_SID=${f[3]:-0} ST_PS_TTY=${f[4]:-0}
+  st=${st#*\(}
+  ST_PS_COMM=${st%) *}
+}
+
+# _status_ttydev TTY_NR — the device node of a tty_nr into REPLY: /dev/pts/N, /dev/ttyN (virtual
+# console), /dev/ttySN (serial) or /dev/console.
+_status_ttydev() {
+  local maj=$((($1 >> 8) & 0xfff)) min=$((($1 & 0xff) | (($1 >> 12) & 0xfff00)))
+  REPLY=""
+  if ((maj >= 136 && maj <= 143)); then REPLY=/dev/pts/$(((maj - 136) * 256 + min))
+  elif ((maj == 4 && min < 64)); then REPLY=/dev/tty$min
+  elif ((maj == 4)); then REPLY=/dev/ttyS$((min - 64))
+  elif ((maj == 5 && min == 1)); then REPLY=/dev/console
   fi
-  if [[ "$ST_CL_ADDR" != "$ST_TS_FOR" ]] || ((EPOCHSECONDS - ST_TS_AT >= 60)); then _status_ts_lookup "$ST_CL_ADDR"; fi
+  [[ -n "$REPLY" ]]
+}
+
+# _status_term_find — the terminal marmot runs on: its controlling tty, else the nearest
+# ancestor's (agents run commands without one, under a process that has it). Sets ST_TERM_TTY
+# ("" = none anywhere up the chain) and ST_TERM_SID, that terminal's session. The test suite sets
+# MM_TEST_NO_TTY=1 to stand for "no terminal"; it is honored only inside bats.
+_status_term_find() {
+  local pid=$$ n
+  ST_TERM_TTY="" ST_TERM_SID=""
+  [[ -n "${MM_TEST_NO_TTY:-}" && -n "${BATS_TEST_TMPDIR:-}" ]] && return 0
+  for ((n = 0; n < 64 && pid > 1; n++)); do
+    _status_pstat "$pid" || return 0
+    if ((ST_PS_TTY != 0)); then
+      _status_ttydev "$ST_PS_TTY" && ST_TERM_TTY=$REPLY ST_TERM_SID=$ST_PS_SID
+      return 0
+    fi
+    pid=$ST_PS_PPID
+  done
+}
+
+# _status_host_name PID — the program name of PID in REPLY: its comm when ST_HOST_LABEL knows it
+# (or it is a tmux or screen server), else argv[0]'s base name when that is known, else comm.
+_status_host_name() {
+  local a
+  local -a argv=()
+  _status_pstat "$1" || return 1
+  REPLY=$ST_PS_COMM
+  [[ -n "${ST_HOST_LABEL[$REPLY]:-}" || "$REPLY" == tmux* || "$REPLY" == screen || "$REPLY" == SCREEN ]] && return 0
+  mapfile -d '' -t -n 1 argv 2>/dev/null <"/proc/$1/cmdline"
+  a=${argv[0]:-}
+  a=${a##*/}
+  [[ -n "$a" && -n "${ST_HOST_LABEL[$a]:-}" ]] && REPLY=$a
+  return 0
+}
+
+# _status_tmux_client LEADER — the tmux client most recently active ("pid tty" in REPLY), from
+# the server whose socket the pane's shell (LEADER) names in TMUX, else marmot's own TMUX.
+_status_tmux_client() {
+  local sock="" line pid tty act best=-1
+  local -a env=()
+  REPLY=""
+  command -v tmux >/dev/null || return 1
+  mapfile -d '' -t env 2>/dev/null <"/proc/$1/environ"
+  for line in "${env[@]}"; do [[ "$line" == TMUX=* ]] && { sock=${line#TMUX=}; break; }; done
+  [[ -n "$sock" ]] || sock=${TMUX:-}
+  sock=${sock%%,*}
+  while read -r pid tty act; do
+    [[ "$pid" =~ ^[0-9]+$ && "$tty" == /dev/* && "$act" =~ ^[0-9]+$ ]] || continue
+    ((act > best)) && { best=$act REPLY="$pid $tty"; }
+  done < <(timeout 1 tmux ${sock:+-S "$sock"} list-clients -F '#{client_pid} #{client_tty} #{client_activity}' 2>/dev/null)
+  [[ -n "$REPLY" ]]
+}
+
+# _status_screen_client — the screen client with the most recent input ("pid tty" in REPLY): a
+# process of this user named screen (the attached client; the server is SCREEN) on a terminal.
+_status_screen_client() {
+  local p c at best=-1 pick=""
+  for p in /proc/[0-9]*; do
+    [[ -O "$p" ]] || continue
+    { IFS= read -r c <"$p/comm"; } 2>/dev/null || continue
+    [[ "$c" == screen ]] || continue
+    _status_pstat "${p#/proc/}" || continue
+    if ((ST_PS_TTY == 0)) || ! _status_ttydev "$ST_PS_TTY"; then continue; fi
+    at=$(stat -c %X -- "$REPLY" 2>/dev/null) || continue
+    ((at > best)) && best=$at pick="${p#/proc/} $REPLY"
+  done
+  REPLY=$pick
+  [[ -n "$REPLY" ]]
+}
+
+# _status_own_sockets HOST — socket inodes of the terminal host's own processes into
+# ST_TERM_INO: HOST, its ancestors running the same program (a daemon's parent holding the
+# network connection), and their descendants running it too (a network-service child). The
+# program is the file /proc/PID/exe points to, which only this user's processes let us see, so
+# the chain never crosses into another user's (sshd's privileged parent) or into the shell that
+# started the host. Builtins only, but for one find(1).
+_status_own_sockets() {
+  local head=$1 p c t l
+  local -a queue=() dirs=() kids=()
+  local -A seen=()
+  ST_TERM_INO=()
+  [[ -e "/proc/$1/exe" ]] || return 0
+  while _status_pstat "$head" && ((ST_PS_PPID > 1)) && [[ "/proc/$ST_PS_PPID/exe" -ef "/proc/$1/exe" ]]; do
+    head=$ST_PS_PPID
+  done
+  queue=("$head")
+  while ((${#queue[@]})) && ((${#dirs[@]} < 64)); do
+    p=${queue[0]} queue=("${queue[@]:1}")
+    dirs+=("/proc/$p/fd")
+    for t in "/proc/$p/task/"*/children; do
+      # The file has no trailing newline: read reports EOF but fills the array.
+      kids=()
+      { read -r -a kids <"$t"; } 2>/dev/null
+      for c in "${kids[@]}"; do [[ "/proc/$c/exe" -ef "/proc/$1/exe" ]] && queue+=("$c"); done
+    done
+  done
+  [[ " ${dirs[*]} " == *" /proc/$1/fd "* ]] || dirs+=("/proc/$1/fd")
+  while IFS= read -r l; do
+    l=${l#socket:\[} l=${l%\]}
+    [[ -n "${seen[$l]:-}" ]] || { seen[$l]=1; ST_TERM_INO+=("$l"); }
+  done < <(find "${dirs[@]}" -mindepth 1 -maxdepth 1 -lname 'socket:*' -printf '%l\n' 2>/dev/null)
+}
+
+# _status_term — the person's terminal and the program hosting it, from marmot's terminal
+# (ST_TERM_TTY, see _status_term_find). The host is the parent of the terminal's session leader:
+# the process holding the pty's master side (sshd, tern, script, a terminal emulator). A tmux
+# server is followed to its most recently active client, a screen server to its newest one, and
+# on from that client's terminal. Sets ST_CL_TTY, ST_CL_IDLE (now − the tty's atime: the kernel
+# stamps it on input, about every 8 s), ST_CL_VIA, ST_TERM_LOCAL (1 for a console: getty/login
+# or a virtual console), and for _status_classify ST_TERM_NAME, ST_TERM_SSH (SSH_CONNECTION of
+# sshd's session leader or of mosh-server) and ST_TERM_INO. 1 when there is no terminal.
+_status_term() {
+  local tty=$ST_TERM_TTY sid=$ST_TERM_SID host="" name="" hop at line pid
+  local -a env=()
+  ST_TERM_NAME="" ST_TERM_SSH="" ST_TERM_INO=() ST_TERM_LOCAL=0
+  [[ -n "$tty" ]] || return 1
+  for ((hop = 0; hop < 4; hop++)); do
+    host="" name=""
+    _status_pstat "$sid" && host=$ST_PS_PPID
+    [[ -n "$host" ]] && _status_host_name "$host" && name=$REPLY
+    case "$name" in
+      tmux*) _status_tmux_client "$sid" || break ;;
+      screen | SCREEN) _status_screen_client || break ;;
+      *) break ;;
+    esac
+    read -r pid tty <<<"$REPLY"
+    _status_pstat "$pid" || break
+    sid=$ST_PS_SID
+  done
+  ST_CL_TTY=$tty
+  if at=$(stat -c %X -- "$tty" 2>/dev/null) && [[ "$at" =~ ^[0-9]+$ ]]; then
+    ST_CL_IDLE=$((EPOCHSECONDS > at ? EPOCHSECONDS - at : 0))
+  fi
+  if [[ "$tty" == /dev/tty[0-9]* || "$tty" == /dev/console || "$name" =~ ^(login|getty|agetty|mingetty)$ ]]; then
+    ST_TERM_LOCAL=1 ST_CL_VIA=console
+    return 0
+  fi
+  # The session leader is gone: the host is unknown, so is the transport.
+  [[ -n "$host" && -n "$name" ]] || return 1
+  ST_TERM_NAME=$name ST_CL_VIA=${ST_HOST_LABEL[$name]:-$name}
+  if [[ "$name" == sshd* || "$name" == mosh-server ]]; then
+    pid=$sid
+    [[ "$name" == mosh-server ]] && pid=$host
+    mapfile -d '' -t env 2>/dev/null <"/proc/$pid/environ"
+    for line in "${env[@]}"; do [[ "$line" == SSH_CONNECTION=* ]] && { ST_TERM_SSH=${line#SSH_CONNECTION=}; break; }; done
+  fi
+  _status_own_sockets "$host"
   return 0
 }
 
@@ -1164,37 +1420,104 @@ _status_panel_net() {
   done
 }
 
-# _status_link WIDTH — the client link as text in REPLY: "rtt 23 ms (best 18) · 5 retransmits"
-# and, in what WIDTH leaves, the RTT history.
+# _status_idle VAR SECONDS — time since the last keystroke: "<10 s" (the kernel moves a tty's
+# atime in steps of about 8 s), "42 s", then "7m", "2h 5m".
+_status_idle() {
+  if (($2 < 10)); then printf -v "$1" '<10 s'
+  elif (($2 < 60)); then printf -v "$1" '%d s' "$2"
+  else _status_age "$1" "$2"; fi
+}
+
+# _status_who — who is watching and how, plain text in REPLY: "via tern · relay", "via SSH ·
+# 203.0.113.7 laptop · Tailscale direct", "local terminal (script)", "local console", or, with
+# no terminal up the chain, "no terminal (run from a script)".
+_status_who() {
+  local t=""
+  case "$ST_CL_TRANSPORT" in
+    local)
+      if [[ "$ST_CL_VIA" == console ]]; then REPLY="local console"; else REPLY="local terminal${ST_CL_VIA:+ ($ST_CL_VIA)}"; fi
+      return 0 ;;
+    none)
+      if [[ -n "$ST_CL_TTY" ]]; then REPLY="terminal $ST_CL_TTY, host not found"; else REPLY="no terminal (run from a script)"; fi
+      return 0 ;;
+  esac
+  [[ -n "$ST_CL_VIA" ]] && t="via $ST_CL_VIA"
+  case "$ST_CL_TRANSPORT" in
+    ssh) [[ -n "$t" ]] || t=SSH ;;
+    *) [[ -n "$t" ]] && t+=" · $ST_CL_TRANSPORT" ;;
+  esac
+  [[ -n "$ST_CL_ADDR" ]] && t+="${t:+ · }$ST_CL_ADDR${ST_CL_NAME:+ $ST_CL_NAME}${ST_CL_PATH:+ · $ST_CL_PATH}"
+  REPLY=$t
+}
+
+# _status_link WIDTH — the client link as text in REPLY: "rtt 23 ms (best 18) · 5 retransmits",
+# in what WIDTH leaves the RTT history, then "· last input 3 s ago". Without a measured RTT, the
+# last input and why there is none ("round trip not measurable through a relay").
 _status_link() {
-  local t r b sp
+  local t r b sp in="" il=0
+  if [[ -n "$ST_CL_IDLE" ]]; then _status_idle in "$ST_CL_IDLE"; in="last input $in ago" il=$((${#in} + 3)); fi
   if [[ -z "$ST_CL_RTT" ]]; then
-    if [[ -n "$ST_SS" ]]; then REPLY="${C_DIM}connection not visible to the kernel's TCP table$C_RESET"
-    else REPLY="${C_DIM}link quality needs ss (iproute2)$C_RESET"; fi
+    case "$ST_CL_TRANSPORT" in
+      relay) t="round trip not measurable through a relay" ;;
+      udp) t="round trip not measurable over UDP" ;;
+      direct | ssh)
+        if [[ -n "$ST_SS" ]]; then t="connection not visible to the kernel's TCP table"
+        else t="link quality needs ss (iproute2)"; fi ;;
+      *) t="" ;;
+    esac
+    [[ -n "$t" ]] && _status_trunc t "$t" $(($1 - il))
+    REPLY="$in${in:+${t:+ · }}${t:+$C_DIM$t$C_RESET}"
     return 0
   fi
   _status_ms r "$ST_CL_RTT"
   _status_ms b "${ST_CL_MIN:-0}"
   t="rtt $r ms (best $b)"
   ((ST_CL_RETR)) && t+=" · $ST_CL_RETR retransmits"
-  r=$(($1 - 1 - ${#t}))
+  r=$(($1 - 1 - ${#t} - il))
   ((r > ${#ST_RTTH[@]})) && r=${#ST_RTTH[@]}
   ((ST_CL_LAGGY)) && t="$C_YELLOW$t$C_RESET"
   ((r >= 2)) && { _status_spark sp 50 "${ST_RTTH[@]: -r}"; t+=" $sp"; }
-  REPLY=$t
+  REPLY="$t${in:+ · $in}"
 }
 
-# _status_panel_you — the link to the person watching (see _status_client).
+# _status_you_lines WIDTH — the link to the person watching as one or two lines of at most WIDTH
+# columns in ST_YOU: who and how, then the measured link; a link without a measured RTT (relay,
+# UDP) joins the first line, and a local terminal needs none.
+_status_you_lines() {
+  local t
+  _status_who
+  t=$REPLY
+  ST_YOU=()
+  case "$ST_CL_TRANSPORT" in
+    none | local)
+      _status_trunc t "$t" "$1"
+      [[ "$ST_CL_TRANSPORT" == none ]] && t="$C_DIM$t$C_RESET"
+      ST_YOU=("$t") ;;
+    *)
+      if [[ -n "$ST_CL_RTT" ]]; then
+        _status_trunc t "$t" "$1"
+        _status_link "$1"
+        ST_YOU=("$t" "$REPLY")
+      else
+        local C_DIM="" C_RESET=""
+        _status_link "$1"
+        t+="${REPLY:+ · $REPLY}"
+        _status_trunc t "$t" "$1"
+        ST_YOU=("$t")
+      fi ;;
+  esac
+}
+
+# _status_panel_you — the link to the person watching (see _status_client): who and how, then the
+# link (the round trip or why there is none, and the last input) on a row of its own.
 _status_panel_you() {
   local t
   _status_title "⇄ You"
-  if [[ -z "$ST_CL_ADDR" ]]; then
-    _status_row Client "${C_DIM}no remote session detected$C_RESET"
-    return 0
-  fi
-  t="$ST_CL_ADDR${ST_CL_NAME:+ $ST_CL_NAME}${ST_CL_PATH:+ · $ST_CL_PATH}"
-  _status_trunc t "$t" $((ST_W - 9))
+  _status_who
+  _status_trunc t "$REPLY" $((ST_W - 9))
+  [[ "$ST_CL_TRANSPORT" == none ]] && t="$C_DIM$t$C_RESET"
   _status_row Client "$t"
+  [[ "$ST_CL_TRANSPORT" == local || "$ST_CL_TRANSPORT" == none ]] && return 0
   _status_link $((ST_W - 9))
   _status_row Link "$REPLY"
 }
@@ -1639,15 +1962,9 @@ _status_compact() {
   ((helpers)) && _status_helper_rows "  "
   ST_FRAME+=("${ST_PANEL[@]}")
 
-  if [[ -z "$ST_CL_ADDR" ]]; then
-    _status_cline YOU "${C_DIM}no remote session detected$C_RESET"
-  else
-    t="$ST_CL_ADDR${ST_CL_NAME:+ $ST_CL_NAME}${ST_CL_PATH:+ · $ST_CL_PATH}"
-    _status_trunc t "$t" $((w - 7))
-    _status_cline YOU "$t"
-    _status_link $((w - 7))
-    ST_FRAME+=("       $REPLY")
-  fi
+  _status_you_lines $((w - 7))
+  _status_cline YOU "${ST_YOU[0]}"
+  ((${#ST_YOU[@]} > 1)) && ST_FRAME+=("       ${ST_YOU[1]}")
 
   _status_bar bar "${ST_CPU[0]:-0}" 12
   if [[ -n "$ST_CG_CPU_TXT" ]]; then
@@ -1782,10 +2099,12 @@ _status_json() {
     --arg cl_addr "$ST_CL_ADDR" --arg cl_name "$ST_CL_NAME" --arg cl_path "$ST_CL_PATH" \
     --arg cl_rtt "$ST_CL_RTT" --arg cl_min "$ST_CL_MIN" --arg cl_var "$ST_CL_VAR" \
     --arg cl_retr "$ST_CL_RETR" --arg cl_laggy "$ST_CL_LAGGY" \
+    --arg cl_via "$ST_CL_VIA" --arg cl_tr "$ST_CL_TRANSPORT" --arg cl_tty "$ST_CL_TTY" --arg cl_idle "$ST_CL_IDLE" \
     --arg ctr "$ST_CTR" --arg cgmem "$ST_CG_MEM_MAX" --arg cgcpu "$ST_CG_MILLI" \
     --argjson last "${last:-null}" --arg sched "$ST_SCHED" \
     --arg kpending "${ST_KPENDING:-0}" '
     def num: if . == null or . == "" then null else tonumber end;
+    def str: if . == "" then null else . end;
     def lines: split("\n") | map(select(length > 0) | split("\t"));
     def words: split(" ") | map(select(length > 0));
     def pct10: (tonumber / 10);
@@ -1799,13 +2118,14 @@ _status_json() {
       health_score: ($score | tonumber),
       health_reasons: ($reasons | split("\n") | map(select(length > 0))),
       collected_at: (now | todate),
-      client: (if $cl_addr == "" then null else {
-        address: $cl_addr, name: ($cl_name | if . == "" then null else . end),
-        path: ($cl_path | if . == "" then null else . end),
+      client: {
+        address: ($cl_addr | str), name: ($cl_name | str), path: ($cl_path | str),
         rtt_ms: ($cl_rtt | num), min_rtt_ms: ($cl_min | num), rttvar_ms: ($cl_var | num),
         retrans_delta: (if $cl_rtt == "" then null else ($cl_retr | tonumber) end),
-        laggy: ($cl_laggy == "1")
-      } end),
+        laggy: ($cl_laggy == "1"),
+        via: ($cl_via | str), transport: $cl_tr, tty: ($cl_tty | str),
+        last_input_seconds: ($cl_idle | num)
+      },
       cpu: {
         usage: ($cpu | pct10), logical_cpu: ($ncores | tonumber),
         per_core: ($cores | words | map(pct10)),
@@ -1969,17 +2289,27 @@ _status_agent_text() {
   done
   printf 'agent helpers: %s\n' "${t:-none}"
 
-  if [[ -z "$ST_CL_ADDR" ]]; then
-    printf 'client: none (no remote session detected)\n'
-  else
-    t="$ST_CL_ADDR${ST_CL_NAME:+ ($ST_CL_NAME)}${ST_CL_PATH:+ · $ST_CL_PATH}"
-    if [[ -n "$ST_CL_RTT" ]]; then
-      a=no
-      ((ST_CL_LAGGY)) && a=yes
-      t+=" · rtt $ST_CL_RTT ms · best ${ST_CL_MIN:-?} ms · jitter ${ST_CL_VAR:-?} ms · retransmits $ST_CL_RETR · laggy $a"
-    fi
-    printf 'client: %s\n' "$t"
-  fi
+  i=""
+  if [[ -n "$ST_CL_IDLE" ]]; then _status_idle i "$ST_CL_IDLE"; i=" · last input ${i// /}"; fi
+  case "$ST_CL_TRANSPORT" in
+    none)
+      if [[ -n "$ST_CL_TTY" ]]; then printf 'client: none (terminal %s, host not found)\n' "$ST_CL_TTY"
+      else printf 'client: none (no terminal: run from a script)\n'; fi ;;
+    local) _status_who; printf 'client: %s%s\n' "$REPLY" "$i" ;;
+    *)
+      t=$ST_CL_TRANSPORT
+      [[ -n "$ST_CL_VIA" ]] && t="via $ST_CL_VIA ($t)"
+      [[ -n "$ST_CL_ADDR" ]] && t+=" · $ST_CL_ADDR${ST_CL_NAME:+ ($ST_CL_NAME)}${ST_CL_PATH:+ · $ST_CL_PATH}"
+      t+=$i
+      if [[ -n "$ST_CL_RTT" ]]; then
+        a=no
+        ((ST_CL_LAGGY)) && a=yes
+        t+=" · rtt $ST_CL_RTT ms · best ${ST_CL_MIN:-?} ms · jitter ${ST_CL_VAR:-?} ms · retransmits $ST_CL_RETR · laggy $a"
+      else
+        t+=" · rtt n/a"
+      fi
+      printf 'client: %s\n' "$t" ;;
+  esac
 
   _status_dec t "${ST_CPU[0]:-0}"
   printf 'cpu: %s%%%s · %sload %s %s %s · %d cores\n' "$t" "${ST_CG_CPU_TXT:+ of a $ST_CG_CPU_TXT-core limit}" \
