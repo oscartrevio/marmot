@@ -43,6 +43,11 @@ Agents: one row per running AI coding agent session (lib/agents.sh catalog; matc
 Lingering: dev servers/toolchains (node, bun, deno, python, vite, next-server, esbuild, uvicorn,
   gunicorn, ...) of yours running longer than the linger age and not part of a live agent session.
 Ports: TCP ports your processes have listened on longer than the linger age.
+You: the network link to whoever is watching: your SSH session (SSH_CONNECTION), else the remote
+  peer most recently active on a port this machine listens on. Round-trip time (smoothed and
+  best), its history, and retransmits, from the kernel's TCP stats (ss); Tailscale peers are
+  named. "link to you is laggy" (RTT >= 150 ms, jitter >= 100 ms or new retransmits) is your
+  network, so it never lowers the health score.
 
 Environment:
   MM_STATUS_LINGER_AGE   seconds before a dev process or listener counts as lingering (86400)
@@ -201,7 +206,13 @@ _status_init() {
   ST_PF=0 ST_T=0 ST_SLOW_PID="" ST_SLOW_AT=0 ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1 ST_IF=""
   ST_SHOWN=() ST_REPAINT=1 ST_SIZE=""
   ST_CT=() ST_CI=() ST_CPU=() ST_CPUH=() ST_RXH=() ST_TXH=() ST_FAILED=() ST_ORPHANS=() ST_KPENDING=0
-  declare -gA ST_SLOW=() ST_NRX=() ST_NTX=() ST_P_NRX=() ST_P_NTX=() ST_RBPS=() ST_TBPS=()
+  declare -gA ST_SLOW=() ST_NRX=() ST_NTX=() ST_P_NRX=() ST_P_NTX=() ST_RBPS=() ST_TBPS=() ST_CL_PREV=()
+  # The client link (see _status_client): ss is in iproute2; names need tailscale and jq.
+  ST_SS="" ST_TS=""
+  command -v ss >/dev/null && ST_SS=1
+  command -v tailscale >/dev/null && command -v jq >/dev/null && ST_TS=1
+  ST_CL_ADDR="" ST_CL_NAME="" ST_CL_PATH="" ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0 ST_CL_LAGGY=0
+  ST_RTTH=() ST_TS_FOR="" ST_TS_AT=0
 }
 
 # ---------------------------------------------------------------- fast probes (every tick)
@@ -307,6 +318,7 @@ _status_sample() {
 
   _status_procs
   _status_ports
+  _status_client
 }
 
 # _status_procs — one pass over /proc/*/stat and /proc/*/status: per-process CPU deltas (top 5),
@@ -654,6 +666,108 @@ _status_ports() {
   return 0
 }
 
+# _status_client — the remote client of the person watching, from the kernel's TCP state: `ss`
+# with -i (no root, no -p; -n so nothing is looked up). Inbound connections are established ones
+# whose local port this machine listens on (any non-loopback listener) from a non-loopback peer.
+# The client is SSH_CONNECTION's (else SSH_CLIENT's) address when set, else the inbound peer
+# heard from most recently (smallest lastrcv). Sets ST_CL_ADDR ("" = none), ST_CL_RTT, ST_CL_VAR,
+# ST_CL_MIN (ms as ss prints them; "" when the connection is not visible, e.g. SSH served from
+# inside a VPN daemon), ST_CL_RETR (retransmits since the previous sample, not lifetime),
+# ST_CL_LAGGY, and the RTT history ST_RTTH. The user's own network: never part of the score.
+_status_client() {
+  local a p lp rtt var minrtt tot rcv key best="" bestrank=0 rank want_a="" want_p="" prev last=$ST_CL_ADDR r v
+  local -A retr=()
+  read -r want_a want_p _ <<<"${SSH_CONNECTION:-${SSH_CLIENT:-}}"
+  want_a=${want_a#::ffff:}
+  if [[ -n "$ST_SS" ]]; then
+    while IFS=$'\t' read -r a p lp rtt var minrtt tot rcv; do
+      retr["$a $p $lp"]=$tot
+      rank=$rcv
+      if [[ -n "$want_a" ]]; then
+        [[ "$a" == "$want_a" ]] || continue
+        # The exact SSH connection first, then the address's most recently active one.
+        [[ "$p" == "$want_p" ]] || rank=$((rcv + 10000000000))
+      fi
+      [[ -z "$best" ]] || ((rank < bestrank)) || continue
+      best="$a"$'\t'"$p"$'\t'"$lp"$'\t'"$rtt"$'\t'"$var"$'\t'"$minrtt"$'\t'"$tot" bestrank=$rank
+    done < <({ ss -Htln; echo --; ss -Htin state established; } 2>/dev/null | awk '
+      function hostof(s) { sub(/:[^:]*$/, "", s); gsub(/[][]/, "", s); sub(/%.*/, "", s); sub(/^::ffff:/, "", s); return s }
+      function portof(s) { sub(/.*:/, "", s); return s }
+      function lo(h) { return h ~ /^127\./ || h == "::1" }
+      function flush(   n, i, t, kv, rv, rtt, var, minrtt, tot, rcv) {
+        if (loc != "" && (portof(loc) in listen) && !lo(hostof(peer))) {
+          rtt = var = minrtt = "-"; tot = 0; rcv = 9999999999
+          n = split(info, t, " ")
+          for (i = 1; i <= n; i++) {
+            split(t[i], kv, ":")
+            if (kv[1] == "rtt") { split(kv[2], rv, "/"); rtt = rv[1]; var = rv[2] }
+            else if (kv[1] == "minrtt") minrtt = kv[2]
+            else if (kv[1] == "retrans") { split(kv[2], rv, "/"); tot = rv[2] + 0 }
+            else if (kv[1] == "lastrcv") rcv = kv[2] + 0
+          }
+          print hostof(peer), portof(peer), portof(loc), rtt, var, minrtt, tot, rcv
+        }
+        loc = ""
+      }
+      BEGIN { OFS = "\t" }
+      $0 == "--" { sec = 1; next }
+      !sec { if (NF >= 2 && !lo(hostof($(NF - 1)))) listen[portof($(NF - 1))] = 1; next }
+      /^[^ \t]/ { flush(); loc = $(NF - 1); peer = $NF; info = ""; next }
+      { info = info " " $0 }
+      END { flush() }')
+  fi
+  ST_CL_ADDR="" ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0 ST_CL_LAGGY=0
+  if [[ -n "$best" ]]; then
+    IFS=$'\t' read -r a p lp rtt var minrtt tot <<<"$best"
+    ST_CL_ADDR=$a
+    [[ "$rtt" == - ]] || ST_CL_RTT=$rtt
+    [[ "$var" == - ]] || ST_CL_VAR=$var
+    [[ "$minrtt" == - ]] || ST_CL_MIN=$minrtt
+    prev=${ST_CL_PREV["$a $p $lp"]:-}
+    [[ -n "$prev" ]] && ((tot > prev)) && ST_CL_RETR=$((tot - prev))
+  elif [[ -n "$want_a" ]]; then
+    ST_CL_ADDR=$want_a
+  fi
+  ST_CL_PREV=()
+  for key in "${!retr[@]}"; do ST_CL_PREV[$key]=${retr[$key]}; done
+  [[ "$ST_CL_ADDR" == "$last" ]] || ST_RTTH=()
+  if [[ -n "$ST_CL_RTT" ]]; then
+    _status_ms r "$ST_CL_RTT"
+    _status_ms v "${ST_CL_VAR:-0}"
+    _status_push ST_RTTH "$r"
+    ((r >= 150 || v >= 100 || ST_CL_RETR > 0)) && ST_CL_LAGGY=1
+  fi
+  if [[ "$ST_CL_ADDR" != "$ST_TS_FOR" ]] || ((EPOCHSECONDS - ST_TS_AT >= 60)); then _status_ts_lookup "$ST_CL_ADDR"; fi
+  return 0
+}
+
+# _status_ts_lookup ADDR — Tailscale's host name for ADDR and how it is reached ("Tailscale
+# direct", "Tailscale relay <region>") into ST_CL_NAME and ST_CL_PATH, from the local daemon
+# (`tailscale status --json`; no DNS). Only Tailscale addresses (100.64.0.0/10, fd7a:115c:a1e0::/48)
+# are looked up; the answer is cached for a minute.
+_status_ts_lookup() {
+  local o=${1#*.}
+  o=${o%%.*}
+  ST_TS_FOR=$1 ST_TS_AT=$EPOCHSECONDS ST_CL_NAME="" ST_CL_PATH=""
+  [[ -n "$ST_TS" && -n "$1" ]] || return 0
+  if [[ "$1" == 100.* && "$o" =~ ^[0-9]+$ ]] && ((o >= 64 && o < 128)) || [[ "$1" == fd7a:115c:a1e0:* ]]; then
+    IFS=$'\t' read -r ST_CL_NAME ST_CL_PATH < <(timeout 1 tailscale status --json 2>/dev/null | jq -r --arg ip "$1" '
+      [.Peer[]? | select(.TailscaleIPs // [] | index($ip))] | first // empty
+      | [.HostName // "", (if (.CurAddr // "") != "" then "Tailscale direct"
+          elif (.Relay // "") != "" then "Tailscale relay " + .Relay else "Tailscale" end)] | @tsv' 2>/dev/null)
+  fi
+  return 0
+}
+
+# _status_ms VAR MS — whole milliseconds from ss's "435.123".
+_status_ms() {
+  local __i=${2%%.*} __d=0
+  [[ "$2" == *.* ]] && __d=${2#*.} __d=${__d:0:1}
+  [[ "$__i" =~ ^[0-9]+$ ]] || __i=0
+  [[ "$__d" =~ ^[0-9]$ ]] || __d=0
+  printf -v "$1" '%d' $((10#$__i + (__d >= 5 ? 1 : 0)))
+}
+
 # _status_derive — rates and percentages from the last two samples; feeds the histories.
 _status_derive() {
   local dt=$((ST_T - ST_P_T)) i t d v k m sz us av it iu
@@ -936,6 +1050,33 @@ _status_panel_net() {
   done
 }
 
+# _status_panel_you — the link to the person watching (see _status_client).
+_status_panel_you() {
+  local t r b sp
+  _status_title "⇄ You"
+  if [[ -z "$ST_CL_ADDR" ]]; then
+    _status_row Client "${C_DIM}no remote session detected$C_RESET"
+    return 0
+  fi
+  t="$ST_CL_ADDR${ST_CL_NAME:+ $ST_CL_NAME}${ST_CL_PATH:+ · $ST_CL_PATH}"
+  _status_trunc t "$t" $((ST_W - 9))
+  _status_row Client "$t"
+  if [[ -z "$ST_CL_RTT" ]]; then
+    _status_row Link "${C_DIM}connection not visible to the kernel's TCP table$C_RESET"
+    return 0
+  fi
+  _status_ms r "$ST_CL_RTT"
+  _status_ms b "${ST_CL_MIN:-0}"
+  t="rtt $r ms (best $b)"
+  ((ST_CL_RETR)) && t+=" · $ST_CL_RETR retransmits"
+  # The RTT history fills what the row has left.
+  r=$((ST_W - 10 - ${#t}))
+  ((r > ${#ST_RTTH[@]})) && r=${#ST_RTTH[@]}
+  ((ST_CL_LAGGY)) && t="$C_YELLOW$t$C_RESET"
+  ((r >= 2)) && { _status_spark sp 50 "${ST_RTTH[@]: -r}"; t+=" $sp"; }
+  _status_row Link "$t"
+}
+
 _status_panel_proc() {
   local e pid v name ctx meter pct nw pw=3 label size z row
   # PID column as wide as the widest PID shown, not pid_max's seven digits.
@@ -1191,6 +1332,8 @@ _status_frame() {
     r=${ST_REASONS[0]}${ST_REASONS[1]:+ · ${ST_REASONS[1]}}
     head+="  $col$r$C_RESET"
   fi
+  # The link to the viewer is their network, not this machine's health: flagged, never scored.
+  ((ST_CL_LAGGY)) && head+="  ${C_YELLOW}link to you is laggy$C_RESET"
   info="$ST_HOST · $ST_MODEL · ${ST_MEMGB}GB · $ST_OS"
   _status_vlen len "$head"
   ilen=${#info}
@@ -1202,21 +1345,24 @@ _status_frame() {
   fi
   ST_FRAME+=("")
 
-  local -a P_CPU P_MEM P_DISK P_NET P_PROC P_SYS
+  local pair a b
+  local -a sep=("")
+  ((ST_GAP)) || sep=()
+  local -a P_CPU P_MEM P_DISK P_NET P_YOU P_PROC P_SYS
   _status_panel_cpu; P_CPU=("${ST_PANEL[@]}")
   _status_panel_mem; P_MEM=("${ST_PANEL[@]}")
   _status_panel_disk; P_DISK=("${ST_PANEL[@]}")
   _status_panel_net; P_NET=("${ST_PANEL[@]}")
+  _status_panel_you; P_YOU=("${ST_PANEL[@]}")
   _status_panel_proc; P_PROC=("${ST_PANEL[@]}")
   _status_panel_sys; P_SYS=("${ST_PANEL[@]}")
 
-  local pair a b
-  local -a sep=("")
-  ((ST_GAP)) || sep=()
   # Agent sessions first, across the whole width: their folders need the room.
   _status_panel_agents $((two ? 2 * ST_W + 2 : ST_W))
   ST_FRAME+=("${ST_PANEL[@]}" "${sep[@]}")
   if ((two)); then
+    # The client link sits under Network, beside the taller Disk panel.
+    P_NET+=("${sep[@]}" "${P_YOU[@]}")
     for pair in "P_CPU P_MEM" "P_DISK P_NET" "P_PROC P_SYS"; do
       read -r a b <<<"$pair"
       local -n pa=$a pb=$b
@@ -1235,7 +1381,7 @@ _status_frame() {
     done
   else
     # One column: upkeep (System) before the long process lists so short terminals keep it.
-    for a in P_CPU P_MEM P_DISK P_NET P_SYS P_PROC; do
+    for a in P_CPU P_MEM P_DISK P_NET P_YOU P_SYS P_PROC; do
       local -n pa=$a
       ST_FRAME+=("${pa[@]}" "${sep[@]}")
       unset -n pa
@@ -1282,6 +1428,9 @@ _status_json() {
     --arg or "$or" --arg po "$po" --arg nlisten "$ST_NLISTEN" \
     --argjson slow "$(for e in "${!ST_SLOW[@]}"; do printf '%s\t%s\n' "$e" "${ST_SLOW[$e]}"; done |
       jq -Rn '[inputs | split("\t") | {(.[0]): .[1]}] | add // {}')" \
+    --arg cl_addr "$ST_CL_ADDR" --arg cl_name "$ST_CL_NAME" --arg cl_path "$ST_CL_PATH" \
+    --arg cl_rtt "$ST_CL_RTT" --arg cl_min "$ST_CL_MIN" --arg cl_var "$ST_CL_VAR" \
+    --arg cl_retr "$ST_CL_RETR" --arg cl_laggy "$ST_CL_LAGGY" \
     --arg kpending "${ST_KPENDING:-0}" '
     def num: if . == null or . == "" then null else tonumber end;
     def lines: split("\n") | map(select(length > 0) | split("\t"));
@@ -1293,6 +1442,13 @@ _status_json() {
       health_score: ($score | tonumber),
       health_reasons: ($reasons | split("\n") | map(select(length > 0))),
       collected_at: (now | todate),
+      client: (if $cl_addr == "" then null else {
+        address: $cl_addr, name: ($cl_name | if . == "" then null else . end),
+        path: ($cl_path | if . == "" then null else . end),
+        rtt_ms: ($cl_rtt | num), min_rtt_ms: ($cl_min | num), rttvar_ms: ($cl_var | num),
+        retrans_delta: (if $cl_rtt == "" then null else ($cl_retr | tonumber) end),
+        laggy: ($cl_laggy == "1")
+      } end),
       cpu: {
         usage: ($cpu | pct10), logical_cpu: ($ncores | tonumber),
         per_core: ($cores | words | map(pct10)),
