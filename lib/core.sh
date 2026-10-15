@@ -264,24 +264,30 @@ mm_sudo() {
 # ---------------------------------------------------------------- in-use detection
 
 MM_INUSE=""        # newline-separated snapshot; kept in memory so a killed run leaves no files
+MM_INUSE_REFS=""   # "path<TAB>source" for snapshot paths that only a reference keeps (mm_inuse_why)
 MM_INUSE_TAKEN=0
 # mm_inuse_refresh — snapshot every path any process has as cwd, root, exe, open fd, mapping, or
 # bound unix socket, plus every mount point and bind-mount source (per mount namespace), so a
-# target containing a mount is never removed through it. Sees all processes as root or with
-# passwordless sudo; otherwise only this user's (MM_INUSE_PARTIAL=1, warned). An empty snapshot is
-# fatal: it would mean "nothing is in use".
+# target containing a mount is never removed through it; then add references (_mm_inuse_refs):
+# files that a process's arguments, a launcher, a tool config, a systemd user unit or the crontab name.
+# Sees all processes as root or with passwordless sudo; otherwise only this user's
+# (MM_INUSE_PARTIAL=1, warned). An empty process snapshot is fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
-  local script
+  local out live refs script
   script="$(declare -f _mm_inuse_scan); _mm_inuse_scan"
   MM_INUSE_PARTIAL=0
   if (( EUID == 0 )) || { [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; }; then
-    MM_INUSE=$(mm_sudo bash -c "$script")
+    out=$(mm_sudo bash -c "$script")
   else
     MM_INUSE_PARTIAL=1
-    MM_INUSE=$(bash -c "$script")
+    out=$(bash -c "$script")
   fi
-  MM_INUSE_TAKEN=1
-  [[ -n "$MM_INUSE" ]] || mm_die "could not list in-use paths; refusing to delete anything"
+  live=$(grep '^/' <<<"$out")
+  MM_INUSE_TAKEN=1 MM_INUSE="" MM_INUSE_REFS=""
+  [[ -n "$live" ]] || mm_die "could not list in-use paths; refusing to delete anything"
+  refs=$(grep '^A' <<<"$out" | _mm_inuse_refs)
+  MM_INUSE_REFS=$(awk -F'\t' 'NR == FNR { live[$0] = 1; next } !($1 in live)' - <(printf '%s\n' "$refs") <<<"$live")
+  MM_INUSE=$({ printf '%s\n' "$live"; [[ -n "$MM_INUSE_REFS" ]] && cut -f1 <<<"$MM_INUSE_REFS"; } | sort -u)
   if [[ "$MM_INUSE_PARTIAL" == 1 && -z "${_MM_PARTIAL_WARNED:-}" ]]; then
     _MM_PARTIAL_WARNED=1
     if [[ "$MM_NO_SUDO" == 1 ]]; then mm_warn "Running without sudo: only your own processes are checked for in-use paths"
@@ -290,10 +296,11 @@ mm_inuse_refresh() {
   mm_debug "in-use snapshot: $(mm_inuse_paths | wc -l) paths (partial=$MM_INUSE_PARTIAL)"
 }
 
-# _mm_inuse_scan — every live path, sorted, one per line. Runs in a child bash (as root when
-# possible), so it uses nothing else from this file. Batch reads: one find, one cat, a few awks,
-# whatever the process count.
+# _mm_inuse_scan — every live path (sorted, one per line), then "A<TAB>process PID (comm)<TAB>word"
+# for each argument containing a /. Runs in a child bash (as root when possible), so it uses
+# nothing else from this file. Batch reads: one find, one cat, a few awks, whatever the process count.
 _mm_inuse_scan() {
+  local p w c a=()
   { find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
     # cat, not one awk over the files: mawk stops at the first unreadable one
     cat /proc/[0-9]*/maps | awk '$6 ~ /^\// && !seen[$6]++ { print $6 }'
@@ -302,6 +309,101 @@ _mm_inuse_scan() {
     } | xargs -d '\n' cat | awk '{ print $4; print $5 }'
     awk 'NR > 1 && $8 ~ /^\// { print $8 }' /proc/net/unix
   } 2>/dev/null | sed 's/ (deleted)$//' | grep '^/' | sort -u
+  for p in /proc/[0-9]*; do
+    [[ "${p#/proc/}" == "$$" || "${p#/proc/}" == "$PPID" ]] && continue   # this scan and its sudo
+    { mapfile -d '' -t a <"$p/cmdline" && IFS= read -r c <"$p/comm"; } 2>/dev/null || continue
+    for w in "${a[@]}"; do [[ "$w" == */* ]] && printf 'A\tprocess %s (%s)\t%s\n' "${p#/proc/}" "$c" "$w"; done
+  done
+  return 0
+}
+
+# _mm_inuse_refs < ARGV_LINES — "path<TAB>source" for every existing regular file (never a
+# directory) named by a running process's arguments (stdin, from _mm_inuse_scan); by a launcher in
+# ~/.local/bin, ~/bin or a $PATH dir inside $HOME (symlink target, both as written and resolved, or
+# a path inside a text file up to 64KB); by a tool config (agent state files and *.json/jsonc/toml/
+# yaml/yml at depth <= 2 in agent state dirs outside their session and logs dirs, up to 16MB: a
+# long-used ~/.claude.json holds user-scope MCP servers and grows past 1MB; and files named *mcp*
+# with those extensions up to depth 4 in dot-folders, up to 1MB); by a systemd user unit; or by
+# the crontab.
+# Paths are normalized (~, $HOME, . and .. ) but not resolved through symlinks: a venv's bin/python
+# must keep the venv. Tokens are words starting with / or ~/ cut at quotes, spaces and , = : ; ( ) etc.
+_mm_inuse_refs() {
+  local re='(^|[^A-Za-z0-9_.~/-])(~|\$HOME|\$\{HOME\})?/[^[:space:]"'\''`,=:;(){}<>|&]+'
+  local ext=(\( -name '*.json' -o -name '*.jsonc' -o -name '*.toml' -o -name '*.yaml' -o -name '*.yml' \))
+  local d s p bins=() states=() dirs=() dots=() prune=() links=() targets=() parts=()
+  IFS=: read -r -a parts <<<"$PATH"
+  for d in "${parts[@]}" "$HOME/.local/bin" "$HOME/bin"; do
+    [[ "$d" == "$HOME"/* && -d "$d" ]] && bins+=("$d")
+  done
+  for s in "${MM_AGENT_STATE[@]}"; do
+    for p in $s; do
+      if [[ -d "$p" ]]; then dirs+=("$p"); elif [[ -f "$p" ]]; then states+=("$p"); fi
+    done
+  done
+  for s in "${MM_AGENT_SESSIONS[@]}" "${MM_AGENT_LOGS[@]}"; do
+    for p in $s; do prune+=(-path "$p" -o); done
+  done
+  for p in "$HOME"/.[!.]*; do
+    case "${p##*/}" in .cache | .npm | .rustup | .cargo | .*-server | .*-server-insiders) continue ;; esac
+    dots+=("$p")
+  done
+  for d in "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" "$HOME/.config/systemd/user"; do
+    for p in "$d"/*.service; do [[ -f "$p" ]] && states+=("$p"); done
+  done
+  {
+    cat
+    if (( ${#bins[@]} )); then
+      find "${bins[@]}" -maxdepth 1 -type l -printf 'L\t%p\t%l\n'
+      mapfile -d '' -t links < <(find "${bins[@]}" -maxdepth 1 -type l -print0)
+      (( ${#links[@]} )) && mapfile -d '' -t targets < <(realpath -mz -- "${links[@]}" 2>/dev/null)
+      if (( ${#targets[@]} != ${#links[@]} )); then   # a symlink loop prints nothing: pair one by one
+        targets=(); for p in "${links[@]}"; do targets+=("$(realpath -m -- "$p" 2>/dev/null)"); done
+      fi
+      for p in "${!links[@]}"; do printf 'R\t%s\t%s\n' "${links[$p]}" "${targets[$p]}"; done
+    fi
+    command -v crontab >/dev/null && crontab -l 2>/dev/null | awk '{ print "S\tcrontab\t" $0 }'
+    {
+      (( ${#bins[@]} )) && find "${bins[@]}" -maxdepth 1 -type f -size -65k -print0
+      (( ${#states[@]} )) && find "${states[@]}" -maxdepth 0 -size -16385k -print0
+      (( ${#dirs[@]} )) && find -H "${dirs[@]}" -maxdepth 2 \( "${prune[@]}" -false \) -prune -o \
+        -type f "${ext[@]}" -size -16385k -print0
+      (( ${#dots[@]} )) && find -H "${dots[@]}" -maxdepth 3 \( -name node_modules -o -name .git -o -name extensions \
+        -o -path "$HOME/.local/share/Trash" \) -prune -o -type f -iname '*mcp*' "${ext[@]}" -size -1025k -print0
+    } 2>/dev/null | xargs -0r grep -IsoHZE -- "$re" | tr '\0' '\t'
+  } | awk -F'\t' -v home="$HOME" '
+    function norm(t,   n, a, s, i, k, o) {
+      if (substr(t, 1, 2) == "~/") t = home substr(t, 2)
+      else if (substr(t, 1, 6) == "$HOME/") t = home substr(t, 6)
+      else if (substr(t, 1, 8) == "${HOME}/") t = home substr(t, 8)
+      n = split(t, a, "/"); k = 0
+      for (i = 1; i <= n; i++) {
+        if (a[i] == "" || a[i] == ".") continue
+        if (a[i] == "..") { if (k) k--; continue }
+        s[++k] = a[i]
+      }
+      o = ""; for (i = 1; i <= k; i++) o = o "/" s[i]
+      return o
+    }
+    function label(f) {
+      if (f ~ /\/systemd\/user\/[^\/]+$/) { sub(/.*\//, "", f); return "systemd unit " f }
+      if (index(f, home "/") == 1) return "~" substr(f, length(home) + 1)
+      return f
+    }
+    function add(t, src,   p) { p = norm(t); if (p != "" && !(p in seen)) { seen[p] = 1; print p "\t" src } }
+    function scan(t, src) {
+      while (match(t, /(~|\$HOME|\$\{HOME\})?\/[^ \t"\047`,=:;(){}<>|&]+/)) {
+        if (RSTART == 1 || substr(t, RSTART - 1, 1) !~ /[A-Za-z0-9_.~\/-]/) add(substr(t, RSTART, RLENGTH), src)
+        t = substr(t, RSTART + RLENGTH)
+      }
+    }
+    { text = substr($0, length($1) + length($2) + 3) }
+    $1 == "A" { if (substr(text, 1, 1) == "/") add(text, $2); scan(text, $2); next }
+    $1 == "S" { scan(text, $2); next }
+    $1 == "L" { d = $2; sub(/\/[^\/]*$/, "", d); add(substr(text, 1, 1) == "/" ? text : d "/" text, label($2)); next }
+    $1 == "R" { add(text, label($2)); next }
+    { text = substr($0, length($1) + 2); sub(/^[^~$\/]/, "", text); add(text, label($1)) }   # grep: file<TAB>match
+  ' | while IFS=$'\t' read -r p s; do [[ -f "$p" ]] && printf '%s\t%s\n' "$p" "$s"; done
+  return 0
 }
 
 # mm_inuse_paths — print the current snapshot, one path per line (taking one if needed).
@@ -311,12 +413,27 @@ mm_inuse_paths() {
   return 0
 }
 
-# mm_in_use PATH — 0 if PATH or anything under it is in use per the last snapshot.
+# mm_in_use PATH — 0 if PATH or anything under it is in use or referenced per the last snapshot.
 mm_in_use() {
   (( MM_INUSE_TAKEN )) || mm_inuse_refresh
   [[ -n "$MM_INUSE" ]] || return 0   # no snapshot (e.g. refresh died in a subshell): fail closed
   MM_P="${1%/}" awk 'BEGIN { p = ENVIRON["MM_P"] }
     $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !found }' <<<"$MM_INUSE"
+}
+
+# mm_inuse_why PATH — print why PATH is kept and return 0: "in use" when a process uses it or
+# something below it (or there is no snapshot), else "used by <source>" for the first reference at
+# or below it (~/.claude.json, ~/.local/bin/tool, process 1234 (node), systemd unit x.service,
+# crontab). Returns 1, printing nothing, when nothing at or below PATH is in use. Take the snapshot
+# in the calling shell first when calling it in $(...): a refresh that dies there cannot stop marmot.
+mm_inuse_why() {
+  (( MM_INUSE_TAKEN )) || mm_inuse_refresh
+  [[ -n "$MM_INUSE" ]] || { echo "in use"; return 0; }
+  MM_P="${1%/}" awk -F'\t' 'BEGIN { p = ENVIRON["MM_P"] }
+    NR == FNR { if ($1 != "" && !($1 in why)) why[$1] = $2; next }
+    $0 == p || index($0, p "/") == 1 { if (!($0 in why)) { live = 1; exit } if (ref == "") ref = why[$0] }
+    END { if (live) print "in use"; else if (ref != "") print "used by " ref; else exit 1 }' \
+    <(printf '%s\n' "$MM_INUSE_REFS") - <<<"$MM_INUSE"
 }
 
 # mm_proc_age PID — seconds since process start. Fields are counted after the last ") " because
@@ -560,7 +677,8 @@ mm_rm() {
   fi
   p=$(mm_protected "$real") && { _mm_refuse "$p"; return 1; }
   _MM_WAIVED=$waived mm_whitelisted "$real" && { _mm_refuse "whitelisted"; return 1; }
-  mm_in_use "$real" && { _mm_refuse "in use"; return 1; }
+  (( MM_INUSE_TAKEN )) || mm_inuse_refresh   # here, not inside $(...): a failed snapshot must stop marmot
+  p=$(mm_inuse_why "$real") && { _mm_refuse "$p"; return 1; }
 
   id=$(mm_identity "$real") || { _mm_refuse "missing"; return 1; }
   bytes=$(mm_frees "$real")
