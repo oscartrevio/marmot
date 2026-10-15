@@ -14,6 +14,7 @@ _CLEAN_TOOL_BYTES=0      # bytes freed by tool-driven cleans (estimates in dry-r
 _CLEAN_TOOL_ITEMS=0      # items cleaned by tool-driven cleans
 _CLEAN_CATS=0            # categories that freed something
 _CLEAN_CAT_MARK=""       # "bytes items" snapshot at category start
+_CLEAN_HANDLED=()        # cache folders a tool's own clean looked after this run
 _CLEAN_MIN_TOOL=1048576  # below this a tool cache is not worth running the tool for
 _CLEAN_TRASH_DAYS=7      # Trash retention: items trashed longer ago than this are removed for good
 _CLEAN_IMAGE_DAYS=30     # unused Docker images built and pulled longer ago than this are offered
@@ -47,8 +48,9 @@ puppeteer_dev_chrome_profile-*, playwright-artifacts-*, [.]org.chromium.Chromium
 Entries of the lib/catalog.sh caches used in the last 7 days stay (such as the packages
 \`npx -y\` installs for MCP servers). Model stores, dependency repositories (Maven, the Go module
 cache, ...), Node versions, Docker volumes and agent state are never touched: they are listed
-with their size under "Kept for you to review". Steps that cannot be undone (Trash sweep,
-packages, logs, crash dumps, containers, images) ask first and are skipped without a terminal.
+with their size under "Kept for you to review", along with the biggest folders in your cache
+folder marmot knows nothing about. Steps that cannot be undone (Trash sweep, packages, logs,
+crash dumps, containers, images) ask first and are skipped without a terminal.
 
 Docker is cleaned only when its daemon is this machine's own: not when DOCKER_HOST or the
 current docker context points at another machine, and not from inside a container (a mounted
@@ -180,6 +182,7 @@ _clean_busy() {
 _clean_tool() {
   local prune=0; [[ "$1" == --prune ]] && { prune=1; shift; }
   local label="$1" procs="$2" dir="$3" busy size before after freed; shift 3
+  _CLEAN_HANDLED+=("$dir")
   [[ -d "$dir" ]] || { mm_ok "$label" "nothing to clean"; return; }
   if mm_whitelisted "$dir"; then mm_skip "$label" "whitelisted"; return; fi
   if busy=$(_clean_busy "$procs"); then mm_skip "$label" "$busy busy"; return; fi
@@ -487,6 +490,7 @@ _clean_pnpm() {
   local store before after freed
   store=$(env -C "$HOME" timeout 15 pnpm store path 2>/dev/null) || return 0
   [[ -d "$store" ]] || return 0
+  _CLEAN_HANDLED+=("$store")
   if mm_whitelisted "$store"; then mm_skip "pnpm store" "whitelisted"; return; fi
   if mm_proc_running pnpm; then mm_skip "pnpm store" "pnpm busy"; return; fi
   before=$(mm_size "$store")
@@ -775,6 +779,7 @@ _clean_conda() {
     dirs+=("$d")
   done < <(env -C / timeout 30 conda config --show pkgs_dirs 2>/dev/null | awk '/^[[:space:]]*- / { sub(/^[[:space:]]*- /, ""); print }')
   (( ${#dirs[@]} )) || return 0
+  _CLEAN_HANDLED+=("${dirs[@]}")
   if busy=$(_clean_busy "conda mamba micromamba"); then mm_skip "$label" "$busy busy"; return; fi
   mapfile -d '' -t parts < <(find "${dirs[@]}" -mindepth 1 -maxdepth 1 \
     \( -name '*.tar.bz2' -o -name '*.conda' -o -name cache -o -name .logs \) -print0 2>/dev/null)
@@ -799,6 +804,7 @@ _clean_brew() {
   if busy=$(_clean_busy "brew f:Homebrew/brew\.(sh|rb)"); then mm_skip "$label" "$busy busy"; return; fi
   cache=$("${brew[@]}" --cache 2>/dev/null) cellar=$("${brew[@]}" --cellar 2>/dev/null)
   [[ "$cache" == /* && "$cellar" == /* ]] || { mm_skip "$label" "brew paths unknown"; return; }
+  _CLEAN_HANDLED+=("$cache")
   if mm_whitelisted "$cache" || mm_whitelisted "$cellar"; then mm_skip "$label" "whitelisted"; return; fi
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     # "This operation would free approximately 1.2GB of disk space." (binary units)
@@ -1623,6 +1629,41 @@ _clean_review_catalog() {
   done
 }
 
+# Folders directly in the cache folder that no catalog row, agent or tool clean knows (one of
+# their paths at or below the folder): never touched; the biggest, from _CLEAN_UNKNOWN_MIN up, are
+# listed so the user can add a catalog row for the tool that owns one.
+_CLEAN_UNKNOWN_MIN=$((50 * 1048576))
+_clean_review_unknown() {
+  local cache i p rel size list="" n=0
+  local -a known=() cand=()
+  local -A cov=()
+  cache=$(mm_catalog_expand %CACHE%)
+  [[ -d "$cache" ]] || return 0
+  known=("${MM_CAT_PATH[@]}" "${_CLEAN_HANDLED[@]}" "${_CLEAN_BROWSER_PROFILE_DIRS[@]}"
+    "$cache/thumbnails" "$cache/JetBrains/RemoteDev/dist")
+  for i in "${!MM_AGENT_NAME[@]}"; do
+    # shellcheck disable=SC2206 # space-separated path lists (lib/agents.sh)
+    known+=(${MM_AGENT_STATE[$i]} ${MM_AGENT_SESSIONS[$i]} ${MM_AGENT_VERSIONS[$i]} ${MM_AGENT_LOGS[$i]} ${MM_AGENT_WORKTREES[$i]})
+  done
+  for p in "${known[@]}"; do
+    p=${p%/}
+    [[ "$p" == "$cache" ]] && return 0
+    [[ "$p" == "$cache"/?* ]] || continue
+    rel=${p#"$cache"/}; cov[${rel%%/*}]=1
+  done
+  while IFS= read -r -d '' p; do
+    [[ -z "${cov[$p]+x}" ]] && cand+=("$cache/$p")
+  done < <(find "$cache" -mindepth 1 -maxdepth 1 -type d -printf '%f\0' 2>/dev/null)
+  (( ${#cand[@]} )) || return 0
+  while IFS=$'\t' read -r -d '' size p; do
+    (( size >= _CLEAN_UNKNOWN_MIN && n < 5 )) || break
+    list+="${list:+, }${p##*/} $(mm_human "$size")"; n=$((n + 1))
+  done < <(timeout 60 du -0 -sB1 --one-file-system -- "${cand[@]}" 2>/dev/null | sort -z -rn)
+  (( n )) || return 0
+  _clean_review "Other cache folders" "$list · ${cache/#$HOME/\~}" \
+    "never cleaned by marmot; to clean one, add a row to ${MM_CONFIG_DIR/#$HOME/\~}/catalog (cache|<label>|<folder>|<process>)"
+}
+
 # Shared temp folders are never swept (automation-browser leftovers aside, see above): other
 # programs keep runtime state there (sockets, locks, the working files of running builds and
 # agents), and the OS ages them with systemd-tmpfiles. They are reported with their size and that
@@ -1691,6 +1732,7 @@ _clean_review_tmp() {
 _clean_review_print() {
   _clean_review_agents
   _clean_review_catalog
+  _clean_review_unknown
   _clean_review_tmp
   (( ${#_CLEAN_REVIEW[@]} )) || return 0
   mm_section "Kept for you to review"

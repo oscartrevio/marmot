@@ -13,6 +13,8 @@ All notable changes to marmot are recorded here. The format follows
 - Files that running processes, launchers in `~/.local/bin` and `$PATH` folders in your home,
   agent and MCP configs, systemd user units or the crontab point at are never deleted, nor any
   folder containing them; refusals name the source.
+- `mm clean` lists the biggest folders in `~/.cache` that no catalog row covers, never deleting
+  them, with the catalog row that would.
 
 ### Changed
 

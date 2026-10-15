@@ -420,6 +420,18 @@ busy_proc() {
   [[ "$output" == *"npx package cache"*"1 item"*"3 used in the last 7 days kept"* ]]
 }
 
+@test "a big cache folder no catalog row knows is listed for review and kept" {
+  mkdir -p "$HOME/.cache/mytool/blobs" "$HOME/.cache/tiny" "$HOME/.cache/pip"
+  head -c 53000000 /dev/zero >"$HOME/.cache/mytool/blobs/b"; echo t >"$HOME/.cache/tiny/t"
+  head -c 53000000 /dev/zero >"$HOME/.cache/pip/big"   # a catalog row's: not "unknown"
+  full_run
+  [ "$status" -eq 0 ]
+  exist "$HOME/.cache/mytool/blobs/b" "$HOME/.cache/tiny/t"
+  [[ "$output" == *"Other cache folders"*"mytool 5"*"MB"* ]]
+  [[ "$output" == *"/catalog (cache|"* ]]
+  none grep -E 'Other cache folders.*(tiny|pip)' <<<"$output"
+}
+
 @test "a catalog cache is skipped while its tool runs" {
   mkdir -p "$HOME/.cache/pip/wheels"; echo x >"$HOME/.cache/pip/wheels/w"
   busy_proc pip
