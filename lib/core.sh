@@ -291,13 +291,26 @@ mm_log() {
 
 # ---------------------------------------------------------------- safe actions
 
-MM_PROTECTED_EXACT=("/" "$HOME" "/home" "/tmp" "/var/tmp" "/var")
+MM_PROTECTED_EXACT=("/" "$HOME" "/home" "/root" "/tmp" "/var/tmp" "/var")
 # Whole trees marmot never deletes inside: the OS, package-manager and service state (cleaned only
-# through their own tools), other disks, and credentials.
-MM_PROTECTED_TREES=(/bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /root /run /sbin /sys /usr /snap
+# through their own tools), other disks, and credentials. /root is one too, except for root's own
+# runs: with HOME=/root its contents follow the same rules as a /home/<user> home (the folder
+# itself stays protected above, its credentials below and through the built-in whitelist).
+MM_PROTECTED_TREES=(/bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /run /sbin /sys /usr /snap
   /opt /srv /mnt /media /lost+found
   /var/lib /var/log /var/cache /var/spool /var/mail /var/backups /var/snap /var/opt /var/www /var/crash
   "$HOME/.ssh" "$HOME/.gnupg")
+[[ "$HOME" == /root ]] || MM_PROTECTED_TREES+=(/root)
+
+# mm_protected REAL — 0 (and prints why) if the resolved path REAL is a protected path, lies in a
+# protected tree, or is a home directory under /home.
+mm_protected() {
+  local p
+  for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" || "$1" == "$p" ]] && { echo protected; return 0; }; done
+  for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && { echo protected; return 0; }; done
+  [[ "$1" == /home/* && "${1#/home/}" != */* ]] && { echo "protected (a home directory)"; return 0; }
+  return 1
+}
 
 # mm_identity PATH — "device:inode:ctime" of PATH itself (a final symlink is not followed).
 mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
@@ -332,9 +345,7 @@ mm_rm() {
   real="$parent/$(basename -- "$path")"
   root=$(realpath -e -- "$root" 2>/dev/null) || { _mm_refuse "root missing"; return 1; }
   [[ "$real" == "$root"/* ]] || { _mm_refuse "outside $root"; return 1; }
-  for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$real" == "${p%/}" || "$real" == "$p" ]] && { _mm_refuse "protected"; return 1; }; done
-  for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$real" == "$p" || "$real" == "$p"/* ]] && { _mm_refuse "protected"; return 1; }; done
-  [[ "$real" == /home/* && "${real#/home/}" != */* ]] && { _mm_refuse "protected (a home directory)"; return 1; }
+  p=$(mm_protected "$real") && { _mm_refuse "$p"; return 1; }
   mm_whitelisted "$real" && { _mm_refuse "whitelisted"; return 1; }
   mm_in_use "$real" && { _mm_refuse "in use"; return 1; }
 
