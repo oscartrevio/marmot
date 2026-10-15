@@ -34,7 +34,8 @@
 #
 # Deliberately NOT listed as caches (they are what tools restore from, or hold user data):
 #   ~/.m2/repository, ~/.nuget/packages, ~/.ivy2   dependency stores builds resolve from
-#   ~/.sbt, ~/.pub-cache                            (these are reported instead)
+#   ~/.sbt, ~/.pub-cache, the Go module cache       (these are reported instead)
+#   (GOMODCACHE, ~/go/pkg/mod)
 #   ~/.cargo/registry/src, ~/.cargo/bin, ~/.rustup  extracted crate sources rust-analyzer reads,
 #                                                   installed binaries and toolchains
 #   ~/.gradle/caches/modules-2, ~/.gradle/wrapper   dependency store and Gradle distributions
@@ -47,8 +48,8 @@
 #   ~/.kube/cache/oidc-login and other plugin       login token caches next to kubectl's
 #   caches                                          discovery/http caches
 #   every coding agent's state (lib/agents.sh)      settings, credentials, session transcripts
-# npm, pnpm, yarn, bun, uv (when installed) and the Go module cache are cleaned through their own
-# tools by cmd/clean.sh, like the mise, conda and Homebrew caches and (opt-in) the nix store.
+# npm, pnpm, yarn, bun and uv (when installed) are cleaned through their own tools by
+# cmd/clean.sh, like the mise, conda and Homebrew caches and (opt-in) the nix store.
 #
 # Users can add rows to $MM_CONFIG_DIR/catalog in the same format: cache rows only, and only for
 # directories inside $HOME (other rows are rejected with a warning).
@@ -122,6 +123,9 @@ report|Hugging Face models|%CACHE%/huggingface|||hf cache delete (or huggingface
 report|Ollama models|~/.ollama/models|||ollama list, then ollama rm <model>
 report|Maven repository|~/.m2/repository|||restore target for Maven builds; prune with mvn dependency:purge-local-repository
 report|NuGet packages|~/.nuget/packages|||dotnet nuget locals global-packages --clear
+report|Go module cache|$GOMODCACHE|||restore target for Go builds (offline builds need it); go clean -modcache removes it all
+report|Go module cache|$GOPATH/pkg/mod|||restore target for Go builds (offline builds need it); go clean -modcache removes it all
+report|Go module cache|~/go/pkg/mod|||restore target for Go builds (offline builds need it); go clean -modcache removes it all
 report|Gradle distributions|~/.gradle/wrapper/dists||count|remove versions no project uses
 report|Rust toolchains|~/.rustup/toolchains||count|rustup toolchain list, then rustup toolchain uninstall <name>
 report|Podman storage|%DATA%/containers|||podman system df, then podman system prune

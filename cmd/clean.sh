@@ -22,7 +22,7 @@ _clean_usage() {
   cat <<EOF
 Usage: mm clean [--whitelist] [--dry-run] [--debug]
 
-Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Cargo downloads,
+Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go build, Cargo downloads,
 Gradle build cache and daemon logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, RubyGems,
 Bundler, Composer, CPAN, Hex, opam, Android, kubectl discovery, Jupyter runtime files when no
 Jupyter runs, ... see lib/catalog.sh), the mise, conda and Homebrew caches through their own
@@ -43,10 +43,10 @@ size and the OS policy are reported. The one exception: temp profiles and files 
 automation browsers leave in /tmp when their script dies (playwright_chromiumdev_profile-*,
 puppeteer_dev_chrome_profile-*, playwright-artifacts-*, [.]org.chromium.Chromium.*,
 [.]com.google.Chrome.*), only your own, untouched for 2 hours and not in use, are deleted.
-Model stores, dependency repositories, Node versions, Docker volumes and agent state are never
-touched: they are listed with their size under "Kept for you to review". Steps that cannot be
-undone (Trash sweep, packages, logs, crash dumps, containers, images) ask first and are skipped
-without a terminal.
+Model stores, dependency repositories (Maven, the Go module cache, ...), Node versions, Docker
+volumes and agent state are never touched: they are listed with their size under "Kept for you
+to review". Steps that cannot be undone (Trash sweep, packages, logs, crash dumps, containers,
+images) ask first and are skipped without a terminal.
 
 Docker is cleaned only when its daemon is this machine's own: not when DOCKER_HOST or the
 current docker context points at another machine, and not from inside a container (a mounted
@@ -368,7 +368,6 @@ _clean_dev() {
   command -v bun >/dev/null && _clean_bun
   command -v yarn >/dev/null && _clean_yarn
   command -v uv >/dev/null && _clean_uv
-  command -v go >/dev/null && _clean_go_modcache
   command -v mise >/dev/null && _clean_mise
   command -v conda >/dev/null && _clean_conda
   command -v brew >/dev/null && _clean_brew
@@ -652,19 +651,6 @@ _clean_uv() {
   dir=$(env -C / timeout 15 uv cache dir 2>/dev/null | tail -1)
   [[ "$dir" == /* ]] || { mm_skip "uv cache" "cache dir unknown"; return; }
   _clean_tool --prune "uv cache" "uv uvx" "$dir" uv cache prune
-}
-
-# Go module cache (GOMODCACHE, default ~/go/pkg/mod) through `go clean -modcache`, which copes with
-# the read-only permissions Go gives module files. Builds download missing modules again (checked
-# against go.sum), so it is a cache like npm's. Skipped while go, gopls or dlv runs (a build, the
-# language server or a debug session reads module sources), and with GOPROXY=off, where nothing
-# could be downloaded back. GOTOOLCHAIN=local: never fetch a toolchain just to clean.
-_clean_go_modcache() {
-  local -a env=()
-  mapfile -t env < <(env -C / GOTOOLCHAIN=local timeout 15 go env GOMODCACHE GOPROXY 2>/dev/null)
-  [[ "${env[0]:-}" == /* ]] || { mm_skip "Go module cache" "location unknown"; return; }
-  if [[ "${env[1]:-}" == off ]]; then mm_skip "Go module cache" "GOPROXY=off, modules could not be downloaded again"; return; fi
-  _clean_tool "Go module cache" "go gopls dlv" "${env[0]}" GOTOOLCHAIN=local go clean -modcache
 }
 
 # ---------------------------------------------------------------- cloud CLI logs

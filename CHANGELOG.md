@@ -30,6 +30,7 @@ All notable changes to marmot are recorded here. The format follows
 - `mm purge` asks git once per repository for tracked files and reads every project's activity in
   one pass: about a third faster.
 - `mm purge` counts unstaged edits and new files anywhere in a project as activity.
+- `mm clean` reports the Go module cache instead of wiping it with `go clean -modcache`.
 
 ## 0.2.0
 

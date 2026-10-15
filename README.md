@@ -69,7 +69,7 @@ every supported tool, not what a machine must have.
   `lib/catalog.sh` (npx, Corepack, TypeScript, pip, Cargo downloads, Gradle build cache and daemon
   logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, RubyGems, Bundler, Composer, CPAN, Hex, opam,
   Android, kubectl discovery/HTTP caches, Jupyter runtime files when no Jupyter runs, ...),
-  thumbnails, and the caches of npm, pnpm, yarn, bun, uv, Go modules, mise, conda and Homebrew
+  thumbnails, and the caches of npm, pnpm, yarn, bun, uv, mise, conda and Homebrew
   through their own clean commands. A cache is skipped while a process that uses it runs. nix
   garbage collection only with `nix_gc = on` (see Configuration).
 - **Old builds**: Playwright/Puppeteer/Cypress browser builds, Firebase emulators and
@@ -100,7 +100,7 @@ every supported tool, not what a machine must have.
   use move to the Trash; empty folders are removed afterwards.
 - **Reported only** under "Kept for you to review", with their size and the command that reclaims
   them: model stores (Hugging Face, Ollama, torch), dependency repositories (`~/.m2`, `~/.ivy2`,
-  sbt, pub, NuGet), Node versions, Docker volumes, W&B, the Terraform plugin cache, agent state.
+  sbt, pub, NuGet, the Go module cache), Node versions, Docker volumes, W&B, the Terraform plugin cache, agent state.
 - **Never swept**: `/tmp` and `/var/tmp` beyond the browser leftovers above. They hold other
   programs' sockets and locks, and the OS ages them; marmot shows their size and the
   systemd-tmpfiles age that applies (or the `tmpfiles.d` line to add when nothing ages them).

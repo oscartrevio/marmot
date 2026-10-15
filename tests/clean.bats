@@ -107,10 +107,10 @@ fake_tools() {
 [[ "$*" == "store path" ]] && echo "$SB/store"; exit 0'
   fake_rec yarn 'case "$*" in --version) echo 1.22.22 ;; "cache dir") echo "$SB/yarncache" ;; esac'
   fake_rec uv '[[ "$*" == "cache dir" ]] && echo "$SB/uvcache"; exit 0'
-  fake_rec go '[[ "$*" == "env GOMODCACHE GOPROXY" ]] && printf "%s\n%s\n" "$SB/gomod" "${FAKE_GOPROXY:-https://proxy.golang.org,direct}"; exit 0'
+  fake_rec go
   fake_rec mise; fake_rec conda; fake_rec brew; fake_rec nix-collect-garbage
   blob "$HOME/.npm/_cacache/blob"; blob "$HOME/.bun/install/cache/blob"
-  blob "$SB/store/blob"; blob "$SB/yarncache/blob"; blob "$SB/uvcache/blob"; blob "$SB/gomod/cache/download/blob"
+  blob "$SB/store/blob"; blob "$SB/yarncache/blob"; blob "$SB/uvcache/blob"
 }
 
 # ---------------------------------------------------------------- shared temp folders
@@ -739,50 +739,16 @@ hide_tool() {
   [[ "$output" == *"uv busy"* ]]
 }
 
-@test "Go module cache is skipped while go runs" {
-  fake_tools
-  busy_proc go
-  src
-  run _clean_go_modcache
-  none grep -F 'go clean' "$CALLS"
-  exist "$SB/gomod/cache/download/blob"
-}
-
-@test "Go module cache is skipped while gopls runs" {
-  fake_tools
-  busy_proc gopls
-  src
-  run _clean_go_modcache
-  none grep -F 'go clean' "$CALLS"
-  exist "$SB/gomod/cache/download/blob"
-}
-
-@test "Go module cache: go clean -modcache from / when no Go tool runs; dry-run estimates it all" {
-  fake_tools
-  fake_rec go '[[ "$*" == "env GOMODCACHE GOPROXY" ]] && printf "%s\n%s\n" "$SB/gomod" direct
-[[ "$*" == "clean -modcache" ]] && rm -rf "$SB/gomod/cache"; exit 0'
-  blob "$SB/gomod/example.com/m@v1.0.0/m.go"
-  src
-  mm_proc_running() { return 1; }
-  local size; size=$(mm_frees "$SB/gomod")
-  MM_DRY_RUN=1 _clean_go_modcache >/dev/null
-  none grep -F 'go clean' "$CALLS"
-  [ "$_CLEAN_TOOL_BYTES" -eq "$size" ]
-  _CLEAN_TOOL_BYTES=0
-  _clean_go_modcache >/dev/null
-  grep -qxF '/ go clean -modcache' "$CALLS"
-  none grep -v '^/ ' "$CALLS"
-  [ "$_CLEAN_TOOL_BYTES" -eq "$((size - $(mm_frees "$SB/gomod")))" ]
-}
-
-@test "Go module cache is kept when GOPROXY=off (modules could not be downloaded again)" {
-  fake_tools
-  export FAKE_GOPROXY=off
-  src
-  mm_proc_running() { return 1; }
-  run _clean_go_modcache
-  none grep -F 'go clean' "$CALLS"
-  exist "$SB/gomod/cache/download/blob"
+@test "Go module cache is reported for review, never removed" {
+  blob "$HOME/go/pkg/mod/cache/download/example.com/m/@v/v1.0.0.zip"
+  mm_age "$HOME/go" 400
+  mm_test_clock 400
+  full_run
+  [ "$status" -eq 0 ]
+  exist "$HOME/go/pkg/mod/cache/download/example.com/m/@v/v1.0.0.zip"
+  none grep -F 'clean -modcache' "$CALLS"
+  [[ "$output" == *"Kept for you to review"*"Go module cache"*"~/go/pkg/mod"* ]]
+  [[ "$output" == *"go clean -modcache"* ]]
 }
 
 # ---------------------------------------------------------------- cloud CLI logs
