@@ -108,6 +108,7 @@ fake_tools() {
   fake_rec yarn 'case "$*" in --version) echo 1.22.22 ;; "cache dir") echo "$SB/yarncache" ;; esac'
   fake_rec uv '[[ "$*" == "cache dir" ]] && echo "$SB/uvcache"; exit 0'
   fake_rec go '[[ "$*" == "env GOMODCACHE GOPROXY" ]] && printf "%s\n%s\n" "$SB/gomod" "${FAKE_GOPROXY:-https://proxy.golang.org,direct}"; exit 0'
+  fake_rec mise; fake_rec conda; fake_rec brew; fake_rec nix-collect-garbage
   blob "$HOME/.npm/_cacache/blob"; blob "$HOME/.bun/install/cache/blob"
   blob "$SB/store/blob"; blob "$SB/yarncache/blob"; blob "$SB/uvcache/blob"; blob "$SB/gomod/cache/download/blob"
 }
@@ -1073,4 +1074,325 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   gone "$HOME/.omp/logs/omp.log.1"
   [ ! -e "$XDG_DATA_HOME/Trash/files/omp.log.1" ]          # logs are not moved to the Trash
   [ -e "$XDG_DATA_HOME/Trash/files/s.jsonl" ]              # the configured retention still runs
+}
+
+# ---------------------------------------------------------------- more tool caches
+
+@test "more caches: tool caches are emptied; filters keep gem notes, Gradle daemon state, opencode snapshots" {
+  local h="$HOME"
+  mkdir -p "$h/.pyenv/cache" "$h/.gem/ruby/3.2.0/cache" "$h/.gem/ruby/3.3.0/cache" "$h/.gradle/daemon/8.5" \
+    "$h/.cache/opencode/node_modules/ai" "$h/.cache/opencode/snapshots/s1" "$h/.npm/_logs" \
+    "$h/.cache/composer/files/acme" "$h/.oh-my-zsh/cache/completions" "$h/.android/build-cache/x" \
+    "$h/.local/share/jupyter/runtime" "$h/.hex/packages/hexpm" "$h/.opam/download-cache/sha256"
+  echo t >"$h/.pyenv/cache/Python-3.12.1.tar.xz"
+  echo g >"$h/.gem/ruby/3.2.0/cache/rake-13.0.6.gem"; echo g >"$h/.gem/ruby/3.3.0/cache/json-2.7.1.gem"
+  echo n >"$h/.gem/ruby/3.2.0/cache/notes.txt"
+  echo l >"$h/.gradle/daemon/8.5/daemon-4242.out.log"; echo r >"$h/.gradle/daemon/8.5/registry.bin"
+  echo m >"$h/.cache/opencode/node_modules/ai/index.js"; echo j >"$h/.cache/opencode/models.json"
+  echo s >"$h/.cache/opencode/snapshots/s1/f"
+  echo l >"$h/.npm/_logs/2026-01-01T00_00_00_000Z-debug-0.log"; echo c >"$h/.cache/composer/files/acme/p.zip"
+  echo z >"$h/.oh-my-zsh/cache/completions/_docker"; echo b >"$h/.android/build-cache/x/b"
+  echo '{}' >"$h/.local/share/jupyter/runtime/kernel-1.json"; echo t >"$h/.hex/packages/hexpm/jason-1.4.1.tar"
+  echo o >"$h/.opam/download-cache/sha256/ab"
+  catalog
+  _clean_busy() { return 1; }   # isolate from tools running on the host
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  gone "$h/.pyenv/cache/Python-3.12.1.tar.xz" "$h/.gem/ruby/3.2.0/cache/rake-13.0.6.gem" \
+    "$h/.gem/ruby/3.3.0/cache/json-2.7.1.gem" "$h/.gradle/daemon/8.5/daemon-4242.out.log" \
+    "$h/.cache/opencode/node_modules" "$h/.cache/opencode/models.json" "$h/.npm/_logs/2026-01-01T00_00_00_000Z-debug-0.log" \
+    "$h/.cache/composer/files" "$h/.oh-my-zsh/cache/completions" "$h/.android/build-cache/x" \
+    "$h/.local/share/jupyter/runtime/kernel-1.json" "$h/.hex/packages/hexpm" "$h/.opam/download-cache/sha256"
+  exist "$h/.gem/ruby/3.2.0/cache/notes.txt" "$h/.gradle/daemon/8.5/registry.bin" "$h/.cache/opencode/snapshots/s1/f"
+  exist "$h/.pyenv/cache" "$h/.gradle/daemon/8.5" "$h/.cache/opencode"
+  [ ! -e "$XDG_DATA_HOME/Trash/files/rake-13.0.6.gem" ]   # regenerable: removed, not trashed
+}
+
+@test "more caches: Gradle daemon logs and Jupyter runtime files are kept while Gradle or Jupyter runs" {
+  mkdir -p "$HOME/.gradle/daemon/8.5" "$HOME/.local/share/jupyter/runtime"
+  echo l >"$HOME/.gradle/daemon/8.5/daemon-1.out.log"; echo '{}' >"$HOME/.local/share/jupyter/runtime/kernel-1.json"
+  busy_proc jupyter-lab
+  mm_test_bg "$SB" bash -c 'sleep 60; :' org.gradle.launcher.daemon.bootstrap.GradleDaemon
+  catalog
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  exist "$HOME/.gradle/daemon/8.5/daemon-1.out.log" "$HOME/.local/share/jupyter/runtime/kernel-1.json"
+}
+
+@test "more caches: a Jupyter connection file held open is kept, stale ones go" {
+  local r="$HOME/.local/share/jupyter/runtime"
+  mkdir -p "$r"; echo '{}' >"$r/kernel-live.json"; echo '{}' >"$r/kernel-dead.json"; echo '{}' >"$r/jpserver-9.json"
+  mm_test_bg "$SB" bash -c 'exec 7<"$1"; sleep 30' _ "$r/kernel-live.json"
+  catalog
+  _clean_busy() { return 1; }   # no Jupyter process: only the per-file in-use check is left
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  exist "$r/kernel-live.json"
+  gone "$r/kernel-dead.json" "$r/jpserver-9.json"
+}
+
+@test "more caches: kubectl discovery and HTTP caches are emptied; ~/.kube/config and plugin token caches stay" {
+  local k="$HOME/.kube"
+  mkdir -p "$k/cache/discovery/api.example.com_443/apps/v1" "$k/cache/http" "$k/cache/oidc-login"
+  echo 'apiVersion: v1' >"$k/config"; echo '{}' >"$k/cache/discovery/api.example.com_443/apps/v1/serverresources.json"
+  echo r >"$k/cache/http/0a1b2c"; echo t >"$k/cache/oidc-login/abc"
+  catalog
+  _clean_busy() { return 1; }
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  gone "$k/cache/discovery/api.example.com_443" "$k/cache/http/0a1b2c"
+  exist "$k/config" "$k/cache/oidc-login/abc" "$k/cache/discovery" "$k/cache/http"
+  [ -z "$(mm_log_rows remove | grep -E "^$k/(config|cache/oidc-login)")" ]
+}
+
+@test "more caches: a folder named by two rows is counted once; dry-run frees what a real run frees" {
+  export PYENV_ROOT="$HOME/.pyenv"
+  mkdir -p "$PYENV_ROOT/cache" "$HOME/.npm/_prebuilds"
+  head -c 300000 /dev/urandom >"$PYENV_ROOT/cache/Python-3.12.1.tar.xz"
+  head -c 200000 /dev/urandom >"$HOME/.npm/_prebuilds/sharp-linux-x64.tar.gz"
+  catalog
+  _clean_busy() { return 1; }
+  local before after est
+  sizes() { du -scB1 "$PYENV_ROOT/cache" "$HOME/.npm/_prebuilds" | tail -1 | cut -f1; }
+  before=$(sizes)
+  MM_DRY_RUN=1; _clean_catalog_caches >/dev/null
+  est=$MM_FREED
+  [ "$(sizes)" -eq "$before" ]
+  MM_DRY_RUN=0 MM_FREED=0; _clean_catalog_caches >/dev/null
+  after=$(sizes)
+  [ "$MM_FREED" -eq "$est" ]
+  [ $((before - after)) -eq "$est" ]
+  (( est >= 500000 ))
+}
+
+# ---------------------------------------------------------------- mise, conda, Homebrew, nix
+
+# fake_pkg_tools — mise, conda and brew doubles that remove what the real commands would: mise its
+# cache; conda tarballs, index cache and logs in $SB/conda/pkgs (the extracted package stays);
+# brew an old formula version and an old download (its own -n estimate says 2.1MB).
+fake_pkg_tools() {
+  fake_rec mise '[[ "$*" == "cache clear" ]] && rm -rf "$HOME/.cache/mise/"*; exit 0'
+  fake_rec conda 'case "$*" in
+    "config --show pkgs_dirs") printf "pkgs_dirs:\n  - %s\n  - /nonexistent/pkgs\n" "$SB/conda/pkgs" ;;
+    clean*) rm -rf "$SB/conda/pkgs/"*.tar.bz2 "$SB/conda/pkgs/"*.conda "$SB/conda/pkgs/cache" "$SB/conda/pkgs/.logs" ;;
+  esac'
+  fake_rec brew 'case "$*" in
+    --cache) echo "$SB/brewcache" ;;
+    --cellar) echo "$SB/Cellar" ;;
+    "cleanup --prune=30 -n") echo "Would remove: $SB/Cellar/jq/1.6 (1.0MB)"
+      echo "==> This operation would free approximately 2.1MB of disk space." ;;
+    "cleanup --prune=30") rm -rf "$SB/Cellar/jq/1.6" "$SB/brewcache/downloads/old" ;;
+  esac'
+  blob "$HOME/.cache/mise/node/node-v20.tar.gz"
+  blob "$SB/conda/pkgs/numpy-1.26.tar.bz2"; blob "$SB/conda/pkgs/scipy-1.11.conda"; blob "$SB/conda/pkgs/cache/repodata.json"
+  blob "$SB/conda/pkgs/numpy-1.26/lib/core.so"
+  blob "$SB/Cellar/jq/1.6/bin/jq"; blob "$SB/Cellar/jq/1.7/bin/jq"; blob "$SB/brewcache/downloads/old"
+}
+pkg_tools() { _clean_mise; _clean_conda; _clean_brew; }
+
+@test "tool cleans: mise, conda and Homebrew clean through their own commands; dry-run is within 5%" {
+  fake_pkg_tools
+  src
+  _clean_busy() { return 1; }   # isolate from tools running on the host
+  local est real
+  MM_DRY_RUN=1; pkg_tools >/dev/null
+  est=$_CLEAN_TOOL_BYTES
+  none grep -E 'cache clear|conda clean|cleanup --prune=30$' "$CALLS"
+  exist "$HOME/.cache/mise/node/node-v20.tar.gz" "$SB/conda/pkgs/numpy-1.26.tar.bz2" "$SB/Cellar/jq/1.6/bin/jq"
+  MM_DRY_RUN=0 _CLEAN_TOOL_BYTES=0; pkg_tools >/dev/null
+  real=$_CLEAN_TOOL_BYTES
+  grep -qxF '/ mise cache clear' "$CALLS"
+  grep -qxF '/ conda clean --yes --index-cache --tarballs --logfiles' "$CALLS"
+  grep -qxF '/ brew cleanup --prune=30' "$CALLS"
+  gone "$HOME/.cache/mise/node" "$SB/conda/pkgs/numpy-1.26.tar.bz2" "$SB/conda/pkgs/cache" "$SB/Cellar/jq/1.6"
+  exist "$SB/conda/pkgs/numpy-1.26/lib/core.so" "$SB/Cellar/jq/1.7/bin/jq"
+  (( real >= 6 * 1100000 ))                                  # measured: 1 mise + 3 conda + 2 brew blobs
+  (( est * 100 >= real * 95 && est * 100 <= real * 105 ))
+}
+
+@test "tool cleans: mise, conda and Homebrew are skipped while they run" {
+  fake_pkg_tools
+  busy_proc mise; busy_proc conda; busy_proc brew
+  src
+  run pkg_tools
+  [ "$status" -eq 0 ]
+  none grep -E 'cache clear|conda clean|cleanup --prune=30' "$CALLS"
+  exist "$HOME/.cache/mise/node/node-v20.tar.gz" "$SB/conda/pkgs/numpy-1.26.tar.bz2" "$SB/Cellar/jq/1.6/bin/jq"
+}
+
+@test "nix: garbage collection runs only when opted in, and reports what nix freed" {
+  fake_rec nix-collect-garbage 'echo "deleting garbage..."; echo "12 store paths deleted, 3.50 MiB freed"'
+  src
+  _clean_busy() { return 1; }
+  mkdir -p "$(dirname "$MM_CONFIG_FILE")"
+  run _clean_nix
+  [ "$status" -eq 0 ]
+  echo 'nix_gc = off' >"$MM_CONFIG_FILE"
+  run _clean_nix
+  [ ! -s "$CALLS" ]
+  printf '# opt in\nnix_gc = on\n' >"$MM_CONFIG_FILE"
+  MM_DRY_RUN=1 _clean_nix >/dev/null
+  [ ! -s "$CALLS" ]
+  _clean_nix >/dev/null
+  grep -qxF '/ nix-collect-garbage --delete-older-than 30d' "$CALLS"
+  [ "$_CLEAN_TOOL_BYTES" -eq 3670016 ]
+}
+
+# ---------------------------------------------------------------- Firebase emulators, agent-browser builds
+
+# firebase_and_agent_browser — two versions of several Firebase emulators (jars, a UI zip plus its
+# unpacked folder, a never-versioned snapshot) and three agent-browser Chrome builds.
+firebase_and_agent_browser() {
+  F="$HOME/.cache/firebase/emulators" A="$HOME/.agent-browser/browsers"
+  mkdir -p "$F/ui-v1.14.0/server" "$F/ui-v1.15.0/server" "$F/ui-vSNAPSHOT/server" \
+    "$A/chrome-99.0.4844.51/chrome-linux64" "$A/chrome-131.0.6778.85/chrome-linux64" "$A/chrome-152.0.7977.82/chrome-linux64"
+  local v
+  for v in v1.19.7 v1.22.0; do echo j >"$F/cloud-firestore-emulator-$v.jar"; done
+  for v in v4.10.0 v4.11.2; do echo j >"$F/firebase-database-emulator-$v.jar"; done
+  echo z >"$F/ui-v1.14.0.zip"; echo z >"$F/ui-v1.15.0.zip"; echo s >"$F/ui-v1.14.0/server/server.mjs"
+  for v in 99.0.4844.51 131.0.6778.85 152.0.7977.82; do echo c >"$A/chrome-$v/chrome-linux64/chrome"; done
+  echo '{}' >"$HOME/.agent-browser/config.json"
+}
+
+@test "Firebase emulators and agent-browser: older versions go; the newest, snapshots and builds in use stay" {
+  firebase_and_agent_browser
+  mm_test_bg "$SB" bash -c 'exec 7<"$1"; sleep 30' _ "$F/firebase-database-emulator-v4.10.0.jar"
+  catalog
+  _clean_busy() { return 1; }   # isolate from tools running on the host
+  run _clean_builds
+  [ "$status" -eq 0 ]
+  gone "$F/cloud-firestore-emulator-v1.19.7.jar" "$F/ui-v1.14.0" "$F/ui-v1.14.0.zip" \
+    "$A/chrome-99.0.4844.51" "$A/chrome-131.0.6778.85"
+  exist "$F/cloud-firestore-emulator-v1.22.0.jar" "$F/firebase-database-emulator-v4.11.2.jar" \
+    "$F/firebase-database-emulator-v4.10.0.jar" "$F/ui-v1.15.0/server" "$F/ui-v1.15.0.zip" "$F/ui-vSNAPSHOT/server" \
+    "$A/chrome-152.0.7977.82/chrome-linux64/chrome" "$HOME/.agent-browser/config.json"
+}
+
+@test "Firebase emulators and agent-browser builds are kept while the tools run" {
+  firebase_and_agent_browser
+  busy_proc firebase; busy_proc agent-browser
+  catalog
+  run _clean_builds
+  [ "$status" -eq 0 ]
+  exist "$F/cloud-firestore-emulator-v1.19.7.jar" "$F/ui-v1.14.0" "$A/chrome-99.0.4844.51"
+}
+
+# ---------------------------------------------------------------- more stores to review
+
+@test "Ivy, sbt, pub, torch, W&B and Terraform plugin stores are listed for review, never touched" {
+  local h="$HOME" f
+  local -a files=("$h/.ivy2/cache/org.scala-lang/scala-library/jars/scala-library-2.13.12.jar"
+    "$h/.sbt/boot/scala-2.12.18/lib/scala-library.jar" "$h/.pub-cache/hosted/pub.dev/http-1.2.0/pubspec.yaml"
+    "$h/.cache/torch/hub/checkpoints/resnet50.pth" "$h/.cache/wandb/artifacts/obj/md5/ab/cd"
+    "$h/.local/share/wandb/artifacts/staging/f" "$h/.terraform.d/plugin-cache/registry.terraform.io/hashicorp/aws/5.31.0/linux_amd64/p")
+  for f in "${files[@]}"; do mkdir -p "$(dirname "$f")"; echo x >"$f"; done
+  mm_age "$h" 400
+  mm_test_clock 400
+  full_run
+  [ "$status" -eq 0 ]
+  exist "${files[@]}"
+  [ -z "$(mm_log_rows remove | grep -E '/(\.ivy2|\.sbt|\.pub-cache|torch|wandb|\.terraform\.d)/')" ]
+  for f in '~/.ivy2' '~/.sbt' '~/.pub-cache' '~/.cache/torch' '~/.cache/wandb' '~/.local/share/wandb' '~/.terraform.d/plugin-cache'; do
+    grep -qF "$f" <<<"${output#*Kept for you to review}" || { echo "not reviewed: $f"; false; }
+  done
+}
+
+# ---------------------------------------------------------------- editor server leftovers
+
+# vscode_leftovers — $V: a VS Code server with an obsolete (updated) extension, a .obsolete entry for
+# a folder that is gone and one that tries to leave the folder, a cached VSIX, an old and a new log.
+vscode_leftovers() {
+  V="$HOME/.vscode-server"
+  local x
+  for x in ms-python.python-2024.1.0-linux-x64 ms-python.python-2024.2.0-linux-x64 esbenp.prettier-vscode-10.1.0; do
+    mkdir -p "$V/extensions/$x"; echo '{}' >"$V/extensions/$x/package.json"
+  done
+  printf '{"ms-python.python-2024.1.0-linux-x64":true,"esbenp.prettier-vscode-9.0.0":true,"../../.ssh":true}' \
+    >"$V/extensions/.obsolete"
+  mkdir -p "$HOME/.ssh" "$V/data/CachedExtensionVSIXs"; echo k >"$HOME/.ssh/id_ed25519"
+  echo v >"$V/data/CachedExtensionVSIXs/ms-python.python-2024.2.0-linux-x64"
+  cloud_log "$V/data/logs/20260101T100000/exthost1/remoteexthost.log" 20
+  old_dirs "$V/data/logs/20260101T100000/exthost1" "$V/data/logs/20260101T100000"
+  cloud_log "$V/data/logs/20260201T100000/remoteagent.log" 1
+}
+
+@test "editor servers: obsolete extensions, cached VSIX packages and week-old logs go; the rest stays" {
+  vscode_leftovers
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_editors
+  [ "$status" -eq 0 ]
+  gone "$V/extensions/ms-python.python-2024.1.0-linux-x64" "$V/data/CachedExtensionVSIXs/ms-python.python-2024.2.0-linux-x64" \
+    "$V/data/logs/20260101T100000"
+  exist "$V/extensions/ms-python.python-2024.2.0-linux-x64/package.json" "$V/extensions/esbenp.prettier-vscode-10.1.0/package.json" \
+    "$V/data/logs/20260201T100000/remoteagent.log" "$HOME/.ssh/id_ed25519" "$V/data/CachedExtensionVSIXs"
+}
+
+@test "editor servers: obsolete extensions wait while the server runs" {
+  vscode_leftovers
+  mm_test_bg "$V/data" sleep 60
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_editors
+  [ "$status" -eq 0 ]
+  exist "$V/extensions/ms-python.python-2024.1.0-linux-x64/package.json"
+}
+
+@test "JetBrains remote backends: the newest of each IDE and backends in use are kept" {
+  local d="$HOME/.cache/JetBrains/RemoteDev/dist" b
+  for b in a1_ideaIU-2023.3.2:40 b2_ideaIU-2024.1.1:20 c3_ideaIU-2024.2.0:10 d4_PyCharm-2024.1.4:50 e5_PyCharm-2023.2.1:60; do
+    mkdir -p "$d/${b%%:*}/bin"; echo s >"$d/${b%%:*}/bin/remote-dev-server.sh"; touch -d "${b##*:} days ago" "$d/${b%%:*}"
+  done
+  mm_test_bg "$d/a1_ideaIU-2023.3.2/bin" sleep 60
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_editors
+  [ "$status" -eq 0 ]
+  gone "$d/b2_ideaIU-2024.1.1" "$d/e5_PyCharm-2023.2.1"
+  exist "$d/a1_ideaIU-2023.3.2" "$d/c3_ideaIU-2024.2.0" "$d/d4_PyCharm-2024.1.4"
+}
+
+# ---------------------------------------------------------------- agent browser profile caches
+
+# browser_profile DIR — a Chromium user-data-dir: 200KB in each cache folder of Default, plus
+# logins, cookies and settings that must stay.
+browser_profile() {
+  local p="$1" leaf
+  for leaf in Cache/Cache_Data "Code Cache/js" GPUCache DawnGraphiteCache GrShaderCache "Service Worker/CacheStorage/ab"; do
+    mkdir -p "$p/Default/$leaf"; head -c 200000 /dev/urandom >"$p/Default/$leaf/data_0"
+  done
+  mkdir -p "$p/Default/Service Worker/ScriptCache" "$p/Default/Local Storage/leveldb"
+  echo s >"$p/Default/Service Worker/ScriptCache/index"; echo c >"$p/Default/Cookies"; echo l >"$p/Default/Login Data"
+  echo l >"$p/Default/Local Storage/leveldb/000003.log"; echo '{}' >"$p/Local State"
+}
+
+@test "agent browser profiles: only cache folders go; dry-run frees what a real run frees" {
+  local p="$HOME/.cache/chrome-devtools-mcp/chrome-profile" before after est
+  browser_profile "$p"
+  src; mm_inuse_refresh >/dev/null 2>&1
+  before=$(du -sB1 "$p" | cut -f1)
+  MM_DRY_RUN=1; _clean_browser_profiles >/dev/null
+  est=$MM_FREED
+  [ "$(du -sB1 "$p" | cut -f1)" -eq "$before" ]
+  MM_DRY_RUN=0 MM_FREED=0; _clean_browser_profiles >/dev/null
+  after=$(du -sB1 "$p" | cut -f1)
+  [ "$MM_FREED" -eq "$est" ]
+  [ $((before - after)) -eq "$est" ]
+  (( est >= 6 * 200000 ))
+  gone "$p/Default/Cache" "$p/Default/Code Cache" "$p/Default/GPUCache" "$p/Default/Service Worker/CacheStorage"
+  exist "$p/Default/Cookies" "$p/Default/Login Data" "$p/Default/Local Storage/leveldb/000003.log" \
+    "$p/Default/Service Worker/ScriptCache/index" "$p/Local State"
+}
+
+@test "agent browser profiles: a profile a browser has open is skipped" {
+  local m="$HOME/.cache/chrome-devtools-mcp" c="$HOME/.cache/chrome-devtools-mcp-cli" host
+  browser_profile "$m/chrome-profile"; browser_profile "$m/chrome-profile-canary"
+  browser_profile "$c/chrome-profile"; browser_profile "$c/chrome-profile-beta"
+  IFS= read -r host </proc/sys/kernel/hostname
+  mm_test_bg "$SB" bash -c 'sleep 60; :' "--user-data-dir=$m/chrome-profile"
+  ln -s "$host-$$" "$m/chrome-profile-canary/SingletonLock"           # live lock: this test's shell
+  ln -s "$host-999999999" "$c/chrome-profile-beta/SingletonLock"      # stale lock: no such process
+  mm_test_bg "$c/chrome-profile/Default" sleep 60                     # a process works inside it
+  src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_browser_profiles
+  [ "$status" -eq 0 ]
+  exist "$m/chrome-profile/Default/Cache" "$m/chrome-profile-canary/Default/Cache" "$c/chrome-profile/Default/Cache"
+  gone "$c/chrome-profile-beta/Default/Cache"
 }

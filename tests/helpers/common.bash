@@ -15,7 +15,7 @@
 MM_SRC="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 MM_TEST_STUBBED=(sudo apt apt-get apt-mark snap docker systemctl journalctl swapon swapoff mount umount
   resolvectl fstrim npm npx pnpm yarn bun uv uvx go pip pip3 pipx ncdu fzf pkill killall reboot shutdown
-  trash-put trash-empty gio tmux gh)
+  trash-put trash-empty gio tmux gh mise conda brew nix-collect-garbage)
 
 mm_test_setup() {
   local sandbox
@@ -35,7 +35,9 @@ mm_test_setup() {
   unset MM_CONFIG_DIR MM_CONFIG_FILE MM_STATE_DIR MM_WHITELIST_FILE MM_PURGE_PATHS_FILE MM_LOG_FILE MM_DRY_RUN MM_DEBUG
   # Tool caches and the host's gcloud/Azure config folders located through the environment would
   # point outside the sandbox (lib/core.sh carve-outs).
-  unset UV_CACHE_DIR GOPATH GOMODCACHE GOFLAGS GOPROXY GOTOOLCHAIN CLOUDSDK_CONFIG AZURE_CONFIG_DIR
+  unset UV_CACHE_DIR GOPATH GOMODCACHE GOFLAGS GOPROXY GOTOOLCHAIN CLOUDSDK_CONFIG AZURE_CONFIG_DIR \
+    MISE_CACHE_DIR PYENV_ROOT RBENV_ROOT COMPOSER_CACHE_DIR HEX_HOME OPAMROOT \
+    FIREBASE_EMULATORS_PATH PUB_CACHE TORCH_HOME WANDB_CACHE_DIR WANDB_DATA_DIR TF_PLUGIN_CACHE_DIR
   export MM_TTY=0 NO_COLOR=1 LC_ALL=C.UTF-8
   export MM_TEST_UNSTUBBED_LOG="$sandbox/unstubbed.log"
   : >"$MM_TEST_UNSTUBBED_LOG"

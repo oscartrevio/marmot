@@ -23,14 +23,20 @@ _clean_usage() {
 Usage: mm clean [--whitelist] [--dry-run] [--debug]
 
 Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go, Cargo downloads,
-Gradle build cache, Deno, Bazel, Zig, Prisma, Electron, ... see lib/catalog.sh), old
-Playwright/Puppeteer/Cypress browser builds, old versions of coding-agent CLIs (the active one
+Gradle build cache and daemon logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, RubyGems,
+Bundler, Composer, CPAN, Hex, opam, Android, kubectl discovery, Jupyter runtime files when no
+Jupyter runs, ... see lib/catalog.sh), the mise, conda and Homebrew caches through their own
+cleanup commands (nix garbage collection only with nix_gc = on in the config file), the cache
+folders of chrome-devtools-mcp's browser profiles while no browser has them open (logins stay), old
+Playwright/Puppeteer/Cypress browser builds, Firebase emulators and agent-browser Chrome builds,
+old versions of coding-agent CLIs (the active one
 and one previous are kept), gcloud and Azure CLI logs older than 7 days (their credentials are
 never touched), apt/journal/snap leftovers, old kernels, rotated system logs and crash dumps
 last written 7+ days ago (/var/log, /var/crash, systemd-coredump, your apport reports; never
 live or open logs, never the journal files), stopped Docker containers, dangling images, images
-no container uses (pulled or built 30+ days ago), old build cache, and stale editor server
-builds.
+no container uses (pulled or built 30+ days ago), old build cache, stale editor server builds
+with their obsolete extensions, cached VSIX packages and week-old logs, and old JetBrains
+remote backends (the newest of each IDE is kept).
 Trash items deleted more than 7 days ago are removed for good. /tmp and /var/tmp are not
 swept: they hold other programs' runtime state, and the OS ages them (systemd-tmpfiles); their
 size and the OS policy are reported. The one exception: temp profiles and files that
@@ -96,9 +102,16 @@ _clean_detail() {
   printf '%s' "$d"
 }
 
-# _clean_contents LABEL DIR — permanently empty a regenerable cache DIR via mm_rm (ALLOWED_ROOT=DIR).
+# _clean_contents LABEL DIR [FILTER] — permanently empty a regenerable cache DIR via mm_rm
+# (ALLOWED_ROOT=DIR). FILTER: name globs for the entries (catalog cache spec; !GLOB = leave alone).
 _clean_contents() {
-  local label="$1" dir="$2" e n=0 b=0 kept=0 fail=0
+  local label="$1" dir="$2" e w n=0 b=0 kept=0 fail=0
+  local -a toks=() sel=() inc=()
+  read -r -a toks <<<"${3:-}"
+  for w in "${toks[@]}"; do
+    if [[ "$w" == '!'?* ]]; then sel+=(! -name "${w#!}"); else inc+=(-o -name "$w"); fi
+  done
+  (( ${#inc[@]} )) && sel+=(\( "${inc[@]:1}" \))
   [[ -d "$dir" ]] || return 0
   while IFS= read -r -d '' e; do
     mm_rm "$e" "$dir"
@@ -107,7 +120,7 @@ _clean_contents() {
       1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
       *) fail=$((fail + 1)) ;;
     esac
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 "${sel[@]}" -print0 2>/dev/null)
   if (( n + kept + fail == 0 )); then mm_ok "$label" "nothing to clean"; return; fi
   mm_ok "$label" "$(_clean_detail "$n" items "$b" "$kept" "$fail")"
 }
@@ -156,22 +169,32 @@ _clean_tool() {
 
 # _clean_home_dir LABEL DIR — 0 if DIR is a non-empty directory that resolves strictly inside $HOME
 # and is not protected. Prints a skip line for protected/outside dirs; silent when absent or empty.
+# A carve-out folder (lib/core.sh MM_CLEAN_CARVEOUTS) passes: mm_rm checks each entry inside it.
 _clean_home_dir() {
   local label="$1" dir="$2" real
   [[ -d "$dir" ]] || return 1
   [[ -n "$(find "$dir" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]] || return 1
   real=$(realpath -e -- "$dir" 2>/dev/null) || return 1
   if [[ "$real" != "$HOME"/?* ]]; then mm_skip "$label" "resolves outside your home folder"; return 1; fi
+  [[ "$real" == "$dir" ]] && _clean_carveout_dir "$dir" && return 0
   if mm_whitelisted "$dir" || mm_whitelisted "$real"; then mm_skip "$label" "protected"; return 1; fi
   return 0
 }
 
-# _clean_cache_row LABEL DIR BUSY — catalog "cache" row: empty DIR (kept) unless a busy process runs.
+# _clean_carveout_dir DIR — 0 if DIR is exactly one of the carve-out folders.
+_clean_carveout_dir() {
+  local c
+  for c in "${MM_CLEAN_CARVEOUTS[@]}"; do [[ "$1" == "$c" ]] && return 0; done
+  return 1
+}
+
+# _clean_cache_row LABEL DIR BUSY [FILTER] — catalog "cache" row: empty DIR (kept) unless a busy
+# process runs. FILTER is the row's spec (see _clean_contents).
 _clean_cache_row() {
   local label="$1" dir="$2" busy
   _clean_home_dir "$label" "$dir" || return 0
   if busy=$(_clean_busy "$3"); then mm_skip "$label" "$busy busy"; return 0; fi
-  _clean_contents "$label" "$dir"
+  _clean_contents "$label" "$dir" "${4:-}"
 }
 
 # _clean_playwright_refs DIR — "<dir-name>-<revision>" for every browser an installed playwright-core
@@ -193,10 +216,11 @@ _clean_playwright_refs() {
 _clean_revisions_row() {
   local label="$1" dir="$2" spec="$4" busy depth regex refs="" rel prod ver n=0 b=0 kept=0 fail=0 refkept=0
   local -A newest=() keep=()
-  local -a rels=() prods=() vers=()
+  local -a rels=() prods=() vers=() types=(-type d)
   _clean_home_dir "$label" "$dir" || return 0
   if busy=$(_clean_busy "$3"); then mm_skip "$label" "$busy busy"; return 0; fi
   depth=${spec%%:*} regex=${spec#*:}
+  [[ "$regex" == *:files ]] && { regex=${regex%:files}; types=(\( -type d -o -type f \)); }
   [[ "$regex" == *:refs=* ]] && { refs=${regex##*:refs=}; regex=${regex%:refs=*}; }
   [[ "$depth" =~ ^[1-9]$ ]] || { mm_debug "$label: bad spec $spec"; return 0; }
   while IFS= read -r -d '' rel; do
@@ -206,7 +230,7 @@ _clean_revisions_row() {
     if [[ -z "${newest[$prod]+x}" || "$(printf '%s\n%s\n' "${newest[$prod]}" "$ver" | sort -V | tail -1)" == "$ver" ]]; then
       newest[$prod]=$ver
     fi
-  done < <(find "$dir" -mindepth "$depth" -maxdepth "$depth" -type d -printf '%P\0' 2>/dev/null)
+  done < <(find "$dir" -mindepth "$depth" -maxdepth "$depth" "${types[@]}" -printf '%P\0' 2>/dev/null)
   (( ${#rels[@]} )) || return 0
   if [[ "$refs" == playwright ]]; then
     while IFS= read -r rel; do keep[$rel]=1; done < <(_clean_playwright_refs "$dir")
@@ -333,33 +357,53 @@ _clean_dev() {
   command -v yarn >/dev/null && _clean_yarn
   command -v uv >/dev/null && _clean_uv
   command -v go >/dev/null && _clean_go_modcache
+  command -v mise >/dev/null && _clean_mise
+  command -v conda >/dev/null && _clean_conda
+  command -v brew >/dev/null && _clean_brew
+  command -v nix-collect-garbage >/dev/null && _clean_nix
   _clean_catalog_caches
+  _clean_browser_profiles
   _clean_cloud_logs
   _clean_cat_end
 }
 
 # Catalog "cache" rows (built-in and the user's): emptied directly, whether or not the tool is
 # still installed (then they are pure leftovers). A row with spec tool:CMD is left to CMD's own
-# clean above while CMD is installed.
+# clean above while CMD is installed; any other spec filters the entries. A folder named by
+# several rows ($VAR and its default) is handled once, so a dry run does not count it twice.
 _clean_catalog_caches() {
-  local r i
+  local r i real filter
+  local -A seen=()
   for r in "${MM_CAT_REJECTED[@]}"; do mm_warn "catalog row ignored: $r"; done
   for i in "${!MM_CAT_KIND[@]}"; do
     [[ "${MM_CAT_KIND[$i]}" == cache ]] || continue
-    [[ "${MM_CAT_SPEC[$i]}" == tool:?* ]] && command -v "${MM_CAT_SPEC[$i]#tool:}" >/dev/null && continue
-    _clean_cache_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}"
+    if [[ "${MM_CAT_SPEC[$i]}" == tool:?* ]]; then
+      command -v "${MM_CAT_SPEC[$i]#tool:}" >/dev/null && continue
+      filter=""
+    else
+      filter=${MM_CAT_SPEC[$i]}
+    fi
+    real=$(realpath -e -- "${MM_CAT_PATH[$i]}" 2>/dev/null) || continue
+    [[ -z "${seen[$real]+x}" ]] || continue
+    seen[$real]=1
+    _clean_cache_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}" "$filter"
   done
   return 0
 }
 
 # Old browser/test-runner builds and old coding-agent CLI versions (catalog revisions + versions).
 # Rows only print when they find something, so output is buffered and the section is shown only
-# when non-empty (no row here prompts).
+# when non-empty (no row here prompts). A folder named by several rows is handled once.
 _clean_builds() {
-  local i buf
+  local i buf real
+  local -A seen=()
   buf=$(mktemp -t marmot-clean.XXXXXX) || return 0
   _CLEAN_CAT_MARK="$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES)) $((MM_COUNT + _CLEAN_TOOL_ITEMS))"
   for i in "${!MM_CAT_KIND[@]}"; do
+    [[ "${MM_CAT_KIND[$i]}" == revisions || "${MM_CAT_KIND[$i]}" == versions ]] || continue
+    real=$(realpath -e -- "${MM_CAT_PATH[$i]}" 2>/dev/null) || continue
+    [[ -z "${seen[$real]+x}" ]] || continue
+    seen[$real]=1
     case ${MM_CAT_KIND[$i]} in
       revisions) _clean_revisions_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}" "${MM_CAT_SPEC[$i]}" ;;
       versions) _clean_versions_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_SPEC[$i]}" ;;
@@ -680,6 +724,165 @@ _clean_cloud_log_rm() {
     *) fail=$((fail + 1)) ;;
   esac
   return 0
+}
+
+# ---------------------------------------------------------------- mise, conda, Homebrew, nix
+
+# mise keeps downloads and version lists in its cache folder; installed tools live elsewhere
+# (~/.local/share/mise), so clearing it only costs re-downloads.
+_clean_mise() {
+  local dir="${MISE_CACHE_DIR:-$(mm_catalog_expand %CACHE%)/mise}"
+  _clean_tool "mise cache" mise "${dir%/}" mise cache clear
+}
+
+# conda: package tarballs, the index cache and log files of every package cache it can write.
+# Extracted packages, which environments hard-link to, stay. The dry-run figure counts exactly
+# those entries; a real run is measured on the package caches.
+_clean_conda() {
+  local label="conda package cache" busy d est before after freed
+  local -a dirs=() parts=()
+  while IFS= read -r d; do
+    [[ -d "$d" && -w "$d" ]] || continue
+    if mm_whitelisted "$d"; then mm_skip "$label" "whitelisted"; return; fi
+    dirs+=("$d")
+  done < <(env -C / timeout 30 conda config --show pkgs_dirs 2>/dev/null | awk '/^[[:space:]]*- / { sub(/^[[:space:]]*- /, ""); print }')
+  (( ${#dirs[@]} )) || return 0
+  if busy=$(_clean_busy "conda mamba micromamba"); then mm_skip "$label" "$busy busy"; return; fi
+  mapfile -d '' -t parts < <(find "${dirs[@]}" -mindepth 1 -maxdepth 1 \
+    \( -name '*.tar.bz2' -o -name '*.conda' -o -name cache -o -name .logs \) -print0 2>/dev/null)
+  est=$(mm_size "${parts[@]}")
+  if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$est"))"; return; fi
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") of tarballs, index cache and logs"; return
+  fi
+  before=$(mm_size "${dirs[@]}")
+  mm_run "$label" env -C / conda clean --yes --index-cache --tarballs --logfiles || return 0
+  after=$(mm_size "${dirs[@]}"); freed=$(( before > after ? before - after : 0 ))
+  _clean_track "$freed" 1
+  mm_ok "$label" "cleaned, $(mm_human "$freed")"
+}
+
+# Homebrew (on Linux, linuxbrew): old versions of installed formulae and downloads older than 30
+# days. The dry-run figure is brew's own (`brew cleanup -n`); a real run is measured on the Cellar
+# and the download cache.
+_clean_brew() {
+  local label="Homebrew cleanup" busy cache cellar size est before after freed
+  local -a brew=(env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 timeout 300 brew)
+  if busy=$(_clean_busy "brew f:Homebrew/brew\.(sh|rb)"); then mm_skip "$label" "$busy busy"; return; fi
+  cache=$("${brew[@]}" --cache 2>/dev/null) cellar=$("${brew[@]}" --cellar 2>/dev/null)
+  [[ "$cache" == /* && "$cellar" == /* ]] || { mm_skip "$label" "brew paths unknown"; return; }
+  if mm_whitelisted "$cache" || mm_whitelisted "$cellar"; then mm_skip "$label" "whitelisted"; return; fi
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    # "This operation would free approximately 1.2GB of disk space." (binary units)
+    size=$("${brew[@]}" cleanup --prune=30 -n 2>/dev/null | grep -oE 'free approximately [0-9.]+[KMGT]?B' | tail -1)
+    size=${size##* }
+    est=$(_clean_to_bytes "${size/B/iB}")
+    if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean"; return; fi
+    _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") (brew's estimate)"; return
+  fi
+  before=$(mm_size "$cache" "$cellar")
+  mm_run "$label" env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew cleanup --prune=30 || return 0
+  after=$(mm_size "$cache" "$cellar"); freed=$(( before > after ? before - after : 0 ))
+  _clean_track "$freed" 1
+  mm_ok "$label" "cleaned, $(mm_human "$freed")"
+}
+
+# nix is opt-in (nix_gc = on in $MM_CONFIG_FILE): deleting profile generations removes rollback
+# points, a choice only the user can make. With it on, generations older than 30 days go and the
+# store paths nothing refers to any more are collected; nix reports what that freed (a dry run
+# cannot know it).
+_clean_nix_enabled() {
+  local v
+  v=$(mm_config nix_gc) || return 1
+  [[ "${v,,}" == on || "${v,,}" == yes || "${v,,}" == true || "$v" == 1 ]]
+}
+
+_clean_nix() {
+  local label="nix store" busy log out freed
+  if ! _clean_nix_enabled; then mm_skip "$label" "opt-in: nix_gc = on in ${MM_CONFIG_FILE/#$HOME/\~}"; return; fi
+  if busy=$(_clean_busy "nix nix-build nix-shell nix-env nix-store nix-instantiate nix-collect-garbage"); then
+    mm_skip "$label" "$busy busy"; return
+  fi
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    mm_ok "$label" "would delete generations older than 30 days and collect garbage (size known after the run)"; return
+  fi
+  log=$(mktemp -t marmot-nix.XXXXXX) || return 0
+  if mm_run "nix-collect-garbage --delete-older-than 30d" env -C / bash -c \
+       'set -o pipefail; nix-collect-garbage --delete-older-than 30d 2>&1 | tee "$1"' _ "$log"; then
+    # "1234 store paths deleted, 567.89 MiB freed"
+    out=$(grep -oE '[0-9.]+ (bytes|KiB|MiB|GiB|TiB) freed' "$log" | tail -1)
+    freed=$(_clean_to_bytes "${out% freed}")
+    _clean_track "$freed" 1
+    mm_ok "$label" "collected, $(mm_human "$freed")"
+  fi
+  rm -f -- "$log" # SAFE: the mktemp copy of nix's output created above
+}
+
+# ---------------------------------------------------------------- agent browser profiles
+
+# Persistent Chromium profiles that browser tools for agents keep in the home folder grow their
+# HTTP, code and GPU caches without bound. Only those cache folders of the Default profile go;
+# logins, cookies and site storage stay, and a profile a browser has open is skipped.
+# chrome-devtools-mcp: <dir>/chrome-profile (stable) or chrome-profile-<channel>, in
+# ~/.cache/chrome-devtools-mcp (MCP server) and ~/.cache/chrome-devtools-mcp-cli (its CLI).
+# agent-browser keeps no profile here (temporary ones, or a path you choose with --profile), and
+# profiles inside agent state (such as Antigravity's under ~/.gemini) stay protected.
+_CLEAN_BROWSER_PROFILE_DIRS=("$HOME/.cache/chrome-devtools-mcp" "$HOME/.cache/chrome-devtools-mcp-cli")
+_CLEAN_CHROMIUM_CACHES=(Cache "Code Cache" GPUCache DawnCache DawnGraphiteCache GrShaderCache "Service Worker/CacheStorage")
+
+_clean_browser_profiles() {
+  local base profile
+  for base in "${_CLEAN_BROWSER_PROFILE_DIRS[@]}"; do
+    [[ -d "$base" ]] || continue
+    while IFS= read -r -d '' profile; do
+      _clean_browser_profile "$profile"
+    done < <(find "$base" -mindepth 1 -maxdepth 1 -type d \( -name chrome-profile -o -name 'chrome-profile-*' \) -print0 2>/dev/null)
+  done
+  return 0
+}
+
+# _clean_browser_profile PROFILE — permanently remove the cache folders of PROFILE/Default.
+_clean_browser_profile() {
+  local profile="$1" label leaf why n=0 b=0 kept=0 fail=0
+  label="Browser profile caches (${profile/#$HOME/\~})"
+  if why=$(_clean_profile_open "$profile"); then mm_skip "$label" "$why"; return 0; fi
+  for leaf in "${_CLEAN_CHROMIUM_CACHES[@]}"; do
+    [[ -d "$profile/Default/$leaf" && ! -L "$profile/Default/$leaf" ]] || continue
+    mm_rm "$profile/Default/$leaf" "$profile"
+    case $? in
+      0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      *) fail=$((fail + 1)) ;;
+    esac
+  done
+  (( n + kept + fail )) || return 0
+  mm_ok "$label" "$(_clean_detail "$n" "cache folders" "$b" "$kept" "$fail")"
+}
+
+# _clean_profile_open PROFILE — print why a browser has PROFILE open: a process uses a file in it,
+# a running process was started with it as --user-data-dir, or Chromium's SingletonLock
+# ("<host>-<pid>") names a live process here or another host. 1 when it is free.
+_clean_profile_open() {
+  local p="$1" lock me=""
+  if mm_in_use "$p"; then printf 'in use'; return 0; fi
+  if mm_proc_match "" "--user-data-dir[= ]$(_clean_ere_quote "$p")/?( |\$)"; then printf 'browser running'; return 0; fi
+  lock=$(readlink -- "$p/SingletonLock" 2>/dev/null) || return 1
+  { IFS= read -r me </proc/sys/kernel/hostname; } 2>/dev/null
+  if [[ "${lock%-*}" != "$me" || ! "${lock##*-}" =~ ^[0-9]+$ || -d "/proc/${lock##*-}" ]]; then
+    printf 'browser running'; return 0
+  fi
+  return 1
+}
+
+# _clean_ere_quote STRING — STRING with ERE special characters escaped.
+_clean_ere_quote() {
+  local s="$1" out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c=${s:i:1}
+    case $c in \[|\]|\\|.|\*|^|\$|+|\?|\(|\)|\{|\}|\|) out+=\\ ;; esac
+    out+=$c
+  done
+  printf '%s' "$out"
 }
 
 # ---------------------------------------------------------------- 3. system
@@ -1118,9 +1321,11 @@ _CLEAN_EDITOR_SERVERS=(
 )
 
 _clean_editors() {
-  local row name dir p any=0
+  local row name dir p any=0 jb
   local -a roots
+  jb="$(mm_catalog_expand %CACHE%)/JetBrains/RemoteDev/dist"
   for row in "${_CLEAN_EDITOR_SERVERS[@]}"; do [[ -d "${row#*|}" ]] && any=1; done
+  [[ -d "$jb" ]] && any=1
   (( any )) || return 0
   _clean_cat "Editor servers"
   for row in "${_CLEAN_EDITOR_SERVERS[@]}"; do
@@ -1129,7 +1334,9 @@ _clean_editors() {
     roots=("$dir/cli/servers" "$dir/bin")
     for p in "$dir/bin"/*/; do [[ -d "$p" ]] && roots+=("${p%/}"); done
     _clean_editor_builds "$name server builds" "${roots[@]}"
+    _clean_editor_leftovers "$name" "$dir"
   done
+  [[ -d "$jb" ]] && _clean_jetbrains_backends "JetBrains remote backends" "$jb"
   _clean_cat_end
 }
 
@@ -1157,6 +1364,64 @@ _clean_editor_builds() {
   (( total )) || return 0
   if (( n + kept + fail == 0 )); then mm_ok "$label" "only the current build installed"; return; fi
   mm_ok "$label" "$(_clean_detail "$n" "old builds" "$bytes" "$kept" "$fail"), newest kept"
+}
+
+# _clean_editor_leftovers NAME DIR — inside a VS Code-family server: extension folders it marked
+# obsolete (uninstalled, or replaced by an update; listed in extensions/.obsolete and removed by
+# the server only when it next starts), the VSIX packages it keeps after installing, and session
+# logs last written 7+ days ago. Obsolete extensions wait while the server runs: its extension
+# host may still load files from them.
+_clean_editor_leftovers() {
+  local name="$1" dir="$2" ext="$2/extensions" e label="$1 obsolete extensions" n=0 b=0 kept=0 fail=0
+  if [[ -f "$ext/.obsolete" && ! -L "$ext/.obsolete" ]]; then
+    if mm_in_use "$dir"; then
+      mm_skip "$label" "server running"
+    else
+      while IFS= read -r e; do
+        [[ "$e" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && -d "$ext/$e" && ! -L "$ext/$e" ]] || continue
+        mm_rm "$ext/$e" "$ext"
+        case $? in
+          0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
+          1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+          *) fail=$((fail + 1)) ;;
+        esac
+      done < <(_clean_obsolete_names "$ext/.obsolete")
+      (( n + kept + fail )) && mm_ok "$label" "$(_clean_detail "$n" extensions "$b" "$kept" "$fail")"
+    fi
+  fi
+  [[ -d "$dir/data/CachedExtensionVSIXs" ]] && _clean_contents "$name cached extension packages" "$dir/data/CachedExtensionVSIXs"
+  [[ -d "$dir/data/logs" ]] && _clean_cloud_log_dir "$name server logs" "$dir/data/logs"
+  return 0
+}
+
+# _clean_obsolete_names FILE — the folder names VS Code's .obsolete JSON map sets to true.
+_clean_obsolete_names() {
+  grep -oE '"[^"\\]+"[[:space:]]*:[[:space:]]*true' -- "$1" 2>/dev/null | sed -E 's/^"([^"]+)".*/\1/'
+}
+
+# _clean_jetbrains_backends LABEL ROOT — JetBrains Gateway unpacks one IDE backend per version into
+# ~/.cache/JetBrains/RemoteDev/dist (<hash>_<product>-<build>). Keep the newest (by mtime) of each
+# product and any backend in use; remove the rest.
+_clean_jetbrains_backends() {
+  local label="$1" root="$2" name prod total=0 n=0 b=0 kept=0 fail=0
+  local -A newest=()
+  local -a entries=()
+  mapfile -t entries < <(find "$root" -mindepth 1 -maxdepth 1 -type d ! -name '.*' -printf '%T@\t%f\n' 2>/dev/null |
+    sort -rn | cut -f2-)
+  for name in "${entries[@]}"; do
+    total=$((total + 1))
+    prod=${name#*_}; prod=${prod%%-[0-9]*}
+    if [[ -z "${newest[$prod]+x}" ]]; then newest[$prod]=$name; continue; fi
+    mm_rm "$root/$name" "$root"
+    case $? in
+      0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      *) fail=$((fail + 1)) ;;
+    esac
+  done
+  (( total )) || return 0
+  if (( n + kept + fail == 0 )); then mm_ok "$label" "only the current build of each IDE installed"; return; fi
+  mm_ok "$label" "$(_clean_detail "$n" "old backends" "$b" "$kept" "$fail"), newest of each IDE kept"
 }
 
 # ---------------------------------------------------------------- automation-browser temp files

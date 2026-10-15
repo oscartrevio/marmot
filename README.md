@@ -8,8 +8,8 @@ of git worktrees. Inspired by [Mole](https://github.com/tw93/Mole), which does t
 ```text
 mm clean       caches, old browser builds, old agent CLI versions, agent and gcloud/Azure CLI
                logs, apt/snap/journal, old kernels, rotated system logs and crash dumps (7+ days),
-               Docker leftovers, stale editor servers, automation-browser temp profiles in /tmp;
-               reports /tmp and how the OS ages it
+               Docker leftovers, stale editor servers and their leftovers, automation-browser
+               temp profiles in /tmp; reports /tmp and how the OS ages it
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
 mm status      live health dashboard, agent sessions first: CPU, memory, disk and inodes,
                network/VPN, your link's latency, lingering dev servers and ports, updates,
@@ -58,10 +58,12 @@ marmot deletes files, so it is built to refuse rather than guess:
   deletes `*.log` files (and their rotations) last written more than 7 days ago and not in use,
   only in the logs folder the agent documents (e.g. `~/.omp/logs`, `~/.copilot/logs`,
   `~/.local/state/goose/logs`), never inside session folders and never files named like
-  credentials. Besides that, a short list of log folders inside these
+  credentials. Besides that, a short list of log and cache folders inside these
   protections is open (`MM_CLEAN_CARVEOUTS` in `lib/core.sh`): `mm clean` deletes gcloud logs
   (`~/.config/gcloud/logs`, or `$CLOUDSDK_CONFIG/logs`) and Azure CLI logs (`~/.azure/logs`, or
-  `$AZURE_CONFIG_DIR/logs`) older than 7 days. Inside them your whitelist and the in-use checks
+  `$AZURE_CONFIG_DIR/logs`) older than 7 days, and empties kubectl's discovery and HTTP caches
+  (`~/.kube/cache/discovery`, `~/.kube/cache/http`; `~/.kube/config` and the token caches of auth
+  plugins next to them stay shut). Inside them your whitelist and the in-use checks
   still apply, a symlinked folder gets no opening, and names that look like credentials (one
   list for agent state and log folders: `*credential*`, `*token*`, `*secret*`, `*.pem`, `*.key`,
   `auth*.json`, `configurations`, ...) are kept anyway. The AWS CLI writes no log files, and its
@@ -107,6 +109,10 @@ Settings in `~/.config/marmot/config` (`$XDG_CONFIG_HOME` is honored):
 # their state) last written more than N days ago and not in use move to the Trash on every
 # `mm clean`, also without a terminal. `mm clean --sessions N` does the same for one run.
 sessions_keep_days = 30
+# nix garbage collection, off by default (old profile generations are your rollback points).
+# With it on, `mm clean` deletes nix profile generations older than 30 days and collects the
+# store paths nothing refers to any more.
+nix_gc = on
 ```
 
 Environment: `MM_STATUS_LINGER_AGE`, `MM_STATUS_VPN_IFACES`, `MM_OPTIMIZE_ORPHAN_AGE`,

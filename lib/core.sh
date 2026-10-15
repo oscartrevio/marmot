@@ -258,8 +258,11 @@ mm_whitelist_init() {
 # (mm_credential_like, checking every name from the carve-out down).
 # A carve-out that is not a canonical path (symlinks, trailing slash, dot segments) gets no
 # waiver, so a link cannot point it at other data.
-# gcloud and Azure CLI log folders (CLOUDSDK_CONFIG and AZURE_CONFIG_DIR move their config folder).
-MM_CLEAN_CARVEOUTS=("${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}/logs" "${AZURE_CONFIG_DIR:-$HOME/.azure}/logs")
+# gcloud and Azure CLI log folders (CLOUDSDK_CONFIG and AZURE_CONFIG_DIR move their config folder),
+# and kubectl's discovery and HTTP response caches (its --cache-dir default). Only those two:
+# other folders in ~/.kube/cache belong to auth plugins (kubelogin, oidc-login) and hold tokens.
+MM_CLEAN_CARVEOUTS=("${CLOUDSDK_CONFIG:-$HOME/.config/gcloud}/logs" "${AZURE_CONFIG_DIR:-$HOME/.azure}/logs"
+  "$HOME/.kube/cache/discovery" "$HOME/.kube/cache/http")
 
 # mm_carveout PATH — 0 if PATH lies strictly inside a carve-out and may skip the built-in patterns,
 # 1 if it lies in none, 2 if it does but looks like or holds credentials (keep it).
