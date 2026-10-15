@@ -571,3 +571,40 @@ log_bytes() { awk -F'\t' -v a="$1" '$3 == a { print $5 }' "$XDG_STATE_HOME/marmo
   [ "$(pnpm_calls | grep -c '^store prune$')" -eq 1 ]
   [ ! -e "$SB/store/pkg-file" ]
 }
+
+# ---------------------------------------------------------------- agents' worktree dirs
+
+# agent_wt NAME — linked worktree of $SB/repo (outside home) in T3 Code's worktree dir.
+agent_wt() { git -C "$SB/repo" worktree add -q "$HOME/.t3/worktrees/repo/$1" -b "$1"; }
+
+@test "discovery: a worktree in an agent's worktree dir is found though its repository is outside home; agent state stays" {
+  wt_repo; agent_wt w1
+  mkdir -p "$HOME/.t3/userdata"; echo state >"$HOME/.t3/userdata/state.sqlite"
+  mm_age "$SB" 15; mm_age "$HOME/.t3" 15
+  wt_interactive
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.t3/worktrees/repo/w1" ]
+  [ -f "$HOME/.t3/userdata/state.sqlite" ]
+  git -C "$SB/repo" show-ref --verify -q refs/heads/w1
+  [ -f "$SB/repo/a" ]
+}
+
+@test "discovery: --yes purges artifacts inside an agent's worktree, never the worktree, look-alikes or agent state" {
+  wt_repo; agent_wt w1
+  node_project "$HOME/.t3/worktrees/repo/w1"
+  # look-alikes: .git files that do not lead into a repository's worktrees dir
+  git -C "$SB" init -q other
+  node_project "$HOME/.t3/worktrees/other/clone"
+  printf 'gitdir: %s\n' "$SB/other/.git" >"$HOME/.t3/worktrees/other/clone/.git"
+  mkdir -p "$SB/fake/worktrees/x"
+  node_project "$HOME/.t3/worktrees/fake/x"
+  printf 'gitdir: %s\n' "$SB/fake/worktrees/x" >"$HOME/.t3/worktrees/fake/x/.git"
+  mm_age "$SB" 30; mm_age "$HOME/.t3" 30
+  run mm purge --yes
+  [ "$status" -eq 0 ]
+  [ ! -e "$HOME/.t3/worktrees/repo/w1/node_modules" ]
+  [ -f "$HOME/.t3/worktrees/repo/w1/package.json" ]
+  [ -d "$HOME/.t3/worktrees/other/clone/node_modules" ]
+  [ -d "$HOME/.t3/worktrees/fake/x/node_modules" ]
+  [ -z "$(mm_log_rows worktree)" ]
+}

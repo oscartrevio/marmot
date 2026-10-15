@@ -5,7 +5,8 @@
 # Where it looks: DIR arguments; else the roots listed in purge_paths; else discovery: $HOME
 # (dot-dirs, ~/snap, the Go module cache, conda installs and site-packages skipped) plus every
 # git worktree registered to a repository found there, wherever it lives (agents keep them in
-# ~/.cursor/worktrees, ~/.codex/worktrees, <repo>/.claude/worktrees, ...).
+# ~/.cursor/worktrees, ~/.codex/worktrees, <repo>/.claude/worktrees, ...), plus the worktrees in
+# the agents' worktree dirs (lib/agents.sh) and the other worktrees of their repositories.
 
 MM_PURGE_PATHS_FILE="${MM_PURGE_PATHS_FILE:-$MM_CONFIG_DIR/purge_paths}"
 
@@ -53,7 +54,8 @@ stay on disk, so after removing pnpm-installed node_modules or worktrees marmot 
 \`pnpm store prune\` (unless pnpm is running) and reports what that freed.
 
 Where it looks: the DIRs given; else the roots in $MM_PURGE_PATHS_FILE;
-else your home directory plus every git worktree registered to a repository found there.
+else your home directory plus every git worktree registered to a repository found there or
+found in a coding agent's worktree folder (~/.cursor/worktrees, ~/.t3/worktrees, ...).
 
 Options:
   --days N       Artifact idle threshold in days (default 14)
@@ -231,6 +233,29 @@ _purge_common_dir() {
     [[ "$c" == /* ]] || c="$gd/$c"
   fi
   realpath -e -- "$c" 2>/dev/null
+}
+
+# _purge_agent_worktrees — NUL-separated .git files of linked worktrees found in the agents'
+# worktree dirs (lib/agents.sh). The dirs only say where to look: a worktree is a directory whose
+# .git file points into a repository's worktrees dir (<repo>/.git/worktrees/<name>, or
+# <bare-repo>/worktrees/<name>) holding a commondir file.
+_purge_agent_worktrees() {
+  local d f gd
+  while IFS= read -r d; do
+    [[ -d "$d" && ! -L "$d" ]] || continue
+    while IFS= read -r -d '' f; do
+      gd=$(_purge_gitdir_of "${f%/.git}") || continue
+      [[ "$gd" == */worktrees/?* && -f "$gd/commondir" ]] && printf '%s\0' "$f"
+    done < <(timeout "$_PURGE_SCAN_TIMEOUT" find "$d" -xdev -mindepth 2 -maxdepth 6 \
+      \( -name node_modules -o -name .git -type d \) -prune -o -name .git -type f -print0 2>/dev/null)
+  done < <(mm_agent_worktree_dirs)
+}
+
+# _purge_in_agent_wtdir PATH — 0 if PATH lies inside one of the agents' worktree dirs.
+_purge_in_agent_wtdir() {
+  local d
+  while IFS= read -r d; do [[ "$1" == "$d"/* ]] && return 0; done < <(mm_agent_worktree_dirs)
+  return 1
 }
 
 # _purge_activity DIR [GITROOT] — epoch of the newest mtime among DIR, its top-level files, and
@@ -633,8 +658,17 @@ mm_cmd_main() {
   local -A commons=()
   local c i
   for rec in "${gitents[@]}"; do c=$(_purge_common_dir "$rec") && commons[$c]=1; done
+  # worktrees in the agents' worktree dirs, whose repositories may live outside the scan
+  if [[ "$where" == discover ]]; then
+    while IFS= read -r -d '' rec; do c=$(_purge_common_dir "$rec") && commons[$c]=1; done < <(_purge_agent_worktrees)
+  fi
   _WT_PATH=() _WT_COMMON=() _WT_MAIN=() _WT_IS_MAIN=() _WT_HEAD=() _WT_BRANCH=() _WT_LOCKED=()
   for c in "${!commons[@]}"; do _purge_wt_load "$c"; done
+  # linked worktrees inside an agent's worktree dir: their artifacts are work, not agent state
+  local -A agent_wt=()
+  for i in "${!_WT_PATH[@]}"; do
+    [[ "${_WT_IS_MAIN[$i]}" == 0 ]] && _purge_in_agent_wtdir "${_WT_PATH[$i]}" && agent_wt[${_WT_PATH[$i]}]=1
+  done
   if [[ "$where" == discover ]]; then
     # every worktree of every repository found, wherever it lives
     for i in "${!_WT_PATH[@]}"; do
@@ -842,6 +876,7 @@ mm_cmd_main() {
     while IFS= read -r p; do [[ -n "$p" ]] && busy[$p]=1; done < <(_purge_busy "${recheck[@]}")
   fi
   local -a how=()
+  local keep_state
   local -A done_proj=()
   for i in "${sel[@]}"; do
     art="${arts[$i]}" proj="${projs[$i]}" g="${gits[$i]}"
@@ -851,7 +886,8 @@ mm_cmd_main() {
       continue
     fi
     how=(); _purge_to_trash "$art" && how=(--trash)
-    rc=0; mm_rm "${how[@]}" "$art" "$proj" || rc=$?
+    keep_state=1; [[ -n "$g" && -n "${agent_wt[$g]:-}" ]] && keep_state=0
+    rc=0; MM_KEEP_AGENT_STATE=$keep_state mm_rm "${how[@]}" "$art" "$proj" || rc=$?
     case "$rc" in
       0) mm_ok "$(_purge_tilde "$art")" "$(mm_human "$MM_LAST_BYTES")${how:+ → Trash}"; done_proj[${g:-$proj}]=1
          (( pnpm_art[i] )) && _PURGE_PNPM_PATHS+=("$art")
