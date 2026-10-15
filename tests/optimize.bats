@@ -102,6 +102,23 @@ lacks() { ! grep -q -- "$1" "$2"; }
   grep -q "^confirm Send SIGTERM to $ORPHAN .*claude \[Claude Code\]" "$CALLS"
 }
 
+@test "an orphaned agent helper is offered as that agent's helper, not as a session" {
+  load_optimize
+  # `omp __omp_worker_lsp_mux`: a copy of bash named omp running that script, blocked on a FIFO.
+  mkdir -p "$SB/bin" "$SB/wt"
+  cp "$(command -v bash)" "$SB/bin/omp"
+  mkfifo "$SB/wt/fifo"
+  printf 'read -r _ <>fifo\n' >"$SB/wt/__omp_worker_lsp_mux"
+  mm_test_bg "$SB/wt" "$SB/bin/omp" __omp_worker_lsp_mux
+  ORPHAN=${MM_TEST_PIDS[-1]}
+  # The folder goes once the script holds the FIFO (bash has read it by then).
+  for _ in $(seq 50); do find "/proc/$ORPHAN/fd" -lname "$SB/wt/fifo" 2>/dev/null | grep -q . && break; sleep 0.1; done
+  rm -r -- "$SB/wt"
+  record_offers
+  MM_TTY=1 _optimize_orphan_task
+  grep -q "^confirm Send SIGTERM to $ORPHAN .*omp \[oh-my-pi helper\]" "$CALLS"
+}
+
 @test "without fzf every orphan gets its own confirmation" {
   load_optimize
   _optimize_have_fzf() { return 1; }
