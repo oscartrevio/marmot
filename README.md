@@ -313,6 +313,6 @@ before and after, and checks the minimum reclaim and that protected items surviv
 normal user with sudo, as root with `--root`, and without procps, psmisc, iproute2 and sudo with
 `--minimal`. The scenario itself is `tests/e2e/agent-vm.sh`.
 
-CI runs the suite on the Ubuntu 24.04 runner and, as a non-root user, in Debian 12 and Ubuntu
-22.04 containers, and the end-to-end scenario on Debian 12 and Ubuntu 22.04 as a user and as root,
-plus once on a minimal Debian 12.
+CI runs `tests/run.sh` once per pull request on the Ubuntu 24.04 runner (skipped for docs-only
+changes). Run the end-to-end scenario locally before changes to what gets deleted, and the suite
+in a `debian:12` or `ubuntu:22.04` container before changes that may depend on older mawk or jq.

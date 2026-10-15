@@ -9,6 +9,11 @@ All notable changes to marmot are recorded here. The format follows
 
 - GPL-3.0 license.
 
+### Changed
+
+- CI runs once per pull request, as one job running the suite one file at a time; docs-only
+  changes skip it.
+
 ## 0.2.0
 
 ### Added
