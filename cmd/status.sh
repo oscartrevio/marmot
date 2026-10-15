@@ -196,6 +196,7 @@ _status_init() {
     for k in "${procs[@]}"; do ST_AGENT_OF[$k]=${MM_AGENT_NAME[i]} ST_AGENT_COMM[${k:0:15}]=$k; done
   done
   ST_PF=0 ST_T=0 ST_SLOW_PID="" ST_SLOW_AT=0 ST_TOPN=5 ST_NCORE=4 ST_GAP=1 ST_IF=""
+  ST_SHOWN=() ST_REPAINT=1 ST_SIZE=""
   ST_CT=() ST_CI=() ST_CPU=() ST_CPUH=() ST_RXH=() ST_TXH=() ST_FAILED=() ST_ORPHANS=() ST_KPENDING=0
   declare -gA ST_SLOW=() ST_NRX=() ST_NTX=() ST_P_NRX=() ST_P_NTX=() ST_RBPS=() ST_TBPS=()
 }
@@ -1253,15 +1254,18 @@ _status_first() {
   _status_derive
 }
 
+# _status_draw — lay out a frame for the terminal's size and paint it. A size change (also
+# caught here when SIGWINCH was missed) forces a full repaint.
 _status_draw() {
-  local rows cols size buf line i n
+  local rows cols size n
   size=$(stty size </dev/tty 2>/dev/null)
   read -r rows cols <<<"$size"
   [[ "$rows" =~ ^[1-9][0-9]*$ ]] || rows=${LINES:-50}
   [[ "$cols" =~ ^[1-9][0-9]*$ ]] || cols=${COLUMNS:-80}
-  # Frame + blank + footer use at most rows-1 rows: every row, the footer included, ends with
-  # erase-to-end-of-line and a newline, so a capture (script, tmux pipe-pane) never glues the
-  # footer to the next frame, and the footer's newline never scrolls the screen.
+  [[ "$rows $cols" == "${ST_SIZE:-}" ]] || ST_REPAINT=1
+  ST_SIZE="$rows $cols"
+  # Frame + blank + footer use at most rows-1 rows: every painted row ends with a newline (see
+  # _status_paint) and the footer's must not scroll the screen.
   # Shrink until it fits: top lists, cores, panel gaps, then 1 each.
   ST_TOPN=5 ST_NCORE=4 ST_GAP=1
   while :; do
@@ -1274,12 +1278,28 @@ _status_draw() {
     else break; fi
   done
   ((ST_GAP)) && ST_FRAME+=("")
-  n=${#ST_FRAME[@]}
-  ((n > rows - 2)) && n=$((rows > 2 ? rows - 2 : 0))
-  buf=$'\e[H'
-  for ((i = 0; i < n; i++)); do buf+="${ST_FRAME[i]}"$'\e[K\n'; done
-  buf+="$C_DIM  q quit · refresh ${ST_INTERVAL}s · slow probes every $((ST_SLOW_EVERY / 60))m$C_RESET"$'\e[K\n\e[J'
-  printf '%s' "$buf"
+  n=$((rows > 2 ? rows - 2 : 0))
+  ((${#ST_FRAME[@]} > n)) && ST_FRAME=("${ST_FRAME[@]:0:n}")
+  ST_FRAME+=("$C_DIM  q quit · refresh ${ST_INTERVAL}s · slow probes every $((ST_SLOW_EVERY / 60))m$C_RESET")
+  _status_paint
+}
+
+# _status_paint — put ST_FRAME on the terminal, keeping what is there: only rows that differ
+# from the last painted frame (ST_SHOWN) are rewritten (cursor to the row, text, erase to end of
+# line), and rows the last frame used below this one are cleared. ST_REPAINT=1 (first frame,
+# resize, view switch) clears the screen and writes every row. Each written row ends with a
+# newline so a capture (script, tmux pipe-pane) keeps rows apart; the frame never reaches the
+# last screen row, so that newline never scrolls.
+_status_paint() {
+  local buf="" i n=${#ST_FRAME[@]}
+  if ((${ST_REPAINT:-1})); then buf=$'\e[H\e[2J' ST_SHOWN=() ST_REPAINT=0; fi
+  for ((i = 0; i < n; i++)); do
+    [[ "${ST_FRAME[i]}" == "${ST_SHOWN[i]-}" ]] && continue
+    buf+=$'\e['"$((i + 1))"$';1H'"${ST_FRAME[i]}"$'\e[K\n'
+  done
+  for ((i = n; i < ${#ST_SHOWN[@]}; i++)); do buf+=$'\e['"$((i + 1))"$';1H\e[K'; done
+  ST_SHOWN=("${ST_FRAME[@]}")
+  [[ -z "$buf" ]] || printf '%s' "$buf"
 }
 
 _status_live() {
@@ -1311,7 +1331,7 @@ _status_live() {
       ((next <= now)) && next=$((now + interval_us))
       continue
     fi
-    if [[ "${ST_RESIZED:-0}" == 1 ]]; then ST_RESIZED=0; _status_draw; continue; fi
+    if [[ "${ST_RESIZED:-0}" == 1 ]]; then ST_RESIZED=0 ST_REPAINT=1; _status_draw; continue; fi
     rem=$((next - now))
     printf -v t '%d.%06d' $((rem / 1000000)) $((rem % 1000000))
     key=""
