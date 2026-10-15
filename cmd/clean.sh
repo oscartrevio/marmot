@@ -897,8 +897,8 @@ _clean_browser_profile() {
 # a running process was started with it as --user-data-dir, or Chromium's SingletonLock
 # ("<host>-<pid>") names a live process here or another host. 1 when it is free.
 _clean_profile_open() {
-  local p="$1" lock me=""
-  if mm_in_use "$p"; then printf 'in use'; return 0; fi
+  local p="$1" lock me="" why
+  if why=$(mm_inuse_why "$p"); then printf '%s' "$why"; return 0; fi
   if mm_proc_match "" "--user-data-dir[= ]$(_clean_ere_quote "$p")/?( |\$)"; then printf 'browser running'; return 0; fi
   lock=$(readlink -- "$p/SingletonLock" 2>/dev/null) || return 1
   { IFS= read -r me </proc/sys/kernel/hostname; } 2>/dev/null
@@ -1451,10 +1451,10 @@ _clean_editor_builds() {
 # logs last written 7+ days ago. Obsolete extensions wait while the server runs: its extension
 # host may still load files from them.
 _clean_editor_leftovers() {
-  local name="$1" dir="$2" ext="$2/extensions" e label="$1 obsolete extensions" n=0 b=0 kept=0 fail=0
+  local name="$1" dir="$2" ext="$2/extensions" e label="$1 obsolete extensions" why n=0 b=0 kept=0 fail=0
   if [[ -f "$ext/.obsolete" && ! -L "$ext/.obsolete" ]]; then
-    if mm_in_use "$dir"; then
-      mm_skip "$label" "server running"
+    if why=$(mm_inuse_why "$dir"); then
+      mm_skip "$label" "$why"
     else
       while IFS= read -r e; do
         [[ "$e" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ && -d "$ext/$e" && ! -L "$ext/$e" ]] || continue
