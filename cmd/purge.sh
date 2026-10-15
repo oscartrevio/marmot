@@ -63,10 +63,10 @@ Usage: mm purge [DIR...] [options]
    bin/obj, bower_components, .nx/cache, .docusaurus, a project's .pnpm-store, and folders inside
    a project that tag themselves as caches with CACHEDIR.TAG). Projects idle longer
    than --days are selected by default. Never touched: projects with a running process inside
-   them, anything git tracks, anything whose git state or size can't be read, and artifacts
-   holding a nested git repository or a deploy keypair (*-keypair.json, e.g. Solana's
-   target/deploy/). Virtualenvs (venv, .venv) go to the Trash; everything else is deleted
-   permanently.
+   them or active since the scan (re-checked right before deleting), anything git tracks,
+   anything whose git state, activity or size can't be read, and artifacts holding a nested
+   git repository or a deploy keypair (*-keypair.json, e.g. Solana's target/deploy/). Virtualenvs
+   (venv, .venv) go to the Trash; everything else is deleted permanently.
 
 Sizes: FREES is what a delete really releases. Files hard-linked from elsewhere (pnpm's store)
 stay on disk, so after removing pnpm-installed node_modules or worktrees marmot runs
@@ -448,6 +448,31 @@ _purge_changed() {
           if (last == "\0010") { if (p in m) printf "%.0f\t%s\n", m[p], p }
           else printf "?\t%s\n", p
       }' <(for p; do if [[ "$p" == "$root" ]]; then echo .; else printf './%s\n' "${p#"$root"/}"; fi; done) -)
+}
+
+declare -A _PURGE_ACT=()
+
+# _purge_activity_load PROJ<TAB>GITROOT... — fill _PURGE_ACT with each PROJ's last activity
+# epoch: its own and top-level mtimes, its repository's index/HEAD (_purge_activity) and the files
+# git reports changed or new (deep edits not staged yet, _purge_changed). One probe per
+# repository. A PROJ whose activity is unknown is absent or empty.
+_purge_activity_load() {
+  local pair t p g cur
+  local -A changed=()
+  local -a list=()
+  _PURGE_ACT=()
+  for pair; do
+    g="${pair#*$'\t'}"; [[ -n "$g" ]] && changed[$g]+="${pair%%$'\t'*}"$'\n'
+  done
+  while IFS=$'\t' read -r t p; do _PURGE_ACT[$p]=$t; done < <(_purge_activity "$@")
+  for g in "${!changed[@]}"; do
+    mapfile -t list <<<"${changed[$g]%$'\n'}"
+    while IFS=$'\t' read -r t p; do
+      cur="${_PURGE_ACT[$p]:-}"
+      if [[ "$t" == "?" ]]; then _PURGE_ACT[$p]=""
+      elif [[ -n "$cur" && "$t" =~ ^[0-9]+$ ]] && (( t > cur )); then _PURGE_ACT[$p]=$t; fi
+    done < <(_purge_changed "$g" "${list[@]}")
+  done
 }
 
 # _purge_busy PATH... — the given paths that are in use (or have something in use below them),
@@ -1067,29 +1092,14 @@ _purge_run() {
   fi
 
   # ---- classify and sort by what deleting frees
-  # activity: a project's own and top-level mtimes, its repository's index/HEAD, and the files git
-  # reports changed or new (deep edits not staged yet): one probe per repository
-  local -A activity=() pair_of=() changed=()
-  local -a list=()
-  local t cur
-  for i in "${cand[@]}"; do
-    pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"
-    [[ -n "${gits[$i]}" ]] && changed[${gits[$i]}]+="${projs[$i]}"$'\n'
-  done
-  while IFS=$'\t' read -r t p; do activity[$p]=$t; done < <(_purge_activity "${pair_of[@]}")
-  for g in "${!changed[@]}"; do
-    mapfile -t list <<<"${changed[$g]%$'\n'}"
-    while IFS=$'\t' read -r t p; do
-      cur="${activity[$p]:-}"
-      if [[ "$t" == "?" ]]; then activity[$p]=""
-      elif [[ -n "$cur" && "$t" =~ ^[0-9]+$ ]] && (( t > cur )); then activity[$p]=$t; fi
-    done < <(_purge_changed "$g" "${list[@]}")
-  done
+  local -A pair_of=()
+  for i in "${cand[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+  _purge_activity_load "${pair_of[@]}"
   local now; now=$(date +%s)
   local -a order=() idle=() stale=() pnpm_art=()
   local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act shared=0
   for i in "${cand[@]}"; do
-    act="${activity[${projs[$i]}]:-}"
+    act="${_PURGE_ACT[${projs[$i]}]:-}"
     # unknown activity counts as recent: never selected by default
     if [[ -n "$act" ]]; then idle[i]=$(( (now - act) / 86400 )); else idle[i]=0; fi
     if (( idle[i] > days )); then
@@ -1173,7 +1183,9 @@ _purge_run() {
     return 0
   fi
 
-  # ---- delete (re-check in-use for real runs: a prompt may have taken a while)
+  # ---- delete (re-check in-use and activity for real runs: a prompt may have taken a while, and an
+  # agent may have edited a project meanwhile)
+  local why
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_section "Would remove"
   else
@@ -1183,7 +1195,11 @@ _purge_run() {
     local -a recheck=()
     for i in "${sel[@]}"; do recheck+=("${projs[$i]}"); [[ -n "${gits[$i]}" ]] && recheck+=("${gits[$i]}"); done
     while IFS= read -r p; do [[ -n "$p" ]] && busy[$p]=1; done < <(_purge_busy "${recheck[@]}")
+    pair_of=()
+    for i in "${sel[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+    _purge_activity_load "${pair_of[@]}"
   fi
+  local scan_now=$now; now=$(date +%s)
   local -a how=()
   local keep_state freed0=$MM_FREED
   local -A done_proj=()
@@ -1191,6 +1207,19 @@ _purge_run() {
     art="${arts[$i]}" proj="${projs[$i]}" g="${gits[$i]}"
     if [[ -n "${busy[$proj]:-}" || ( -n "$g" && -n "${busy[$g]:-}" ) ]]; then
       mm_tilde "$art"; mm_skip "$REPLY" "$(mm_inuse_why "${g:-$proj}" || echo "in use")"
+      MM_SKIPPED=$((MM_SKIPPED + 1))
+      continue
+    fi
+    # activity since the scan: touched after it, or a stale project no longer idle past the
+    # threshold. Unknown activity keeps the artifact.
+    why=""
+    if [[ "$MM_DRY_RUN" != 1 ]]; then
+      act="${_PURGE_ACT[$proj]:-}"
+      if [[ ! "$act" =~ ^[0-9]+$ ]]; then why="activity unknown"
+      elif (( act > scan_now || (stale[i] && (now - act) / 86400 <= days) )); then why="active since the scan"; fi
+    fi
+    if [[ -n "$why" ]]; then
+      mm_tilde "$art"; mm_skip "$REPLY" "$why"
       MM_SKIPPED=$((MM_SKIPPED + 1))
       continue
     fi

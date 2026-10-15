@@ -340,6 +340,31 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [ ! -e "$SB/b/node_modules" ]
 }
 
+@test "a project edited while the prompt waited is kept; an idle one is still removed" {
+  node_project "$SB/a"; mkdir -p "$SB/a/src"; echo v1 >"$SB/a/src/main.ts"
+  printf 'node_modules/\n' >"$SB/a/.gitignore"; git_repo "$SB/a"
+  node_project "$SB/b"; mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  _purge_ask() { echo v2 >"$SB/a/src/main.ts"; printf s; }   # an agent edits deep in src/
+  run mm_cmd_main "$SB"
+  [ -f "$SB/a/node_modules/blob" ]
+  [[ "$output" == *"active since the scan"* ]]
+  [ ! -e "$SB/b/node_modules" ]
+}
+
+@test "an activity probe that fails at the re-check keeps the artifact" {
+  node_project "$SB/a"; mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  eval "_real_activity() $(declare -f _purge_activity | tail -n +2)"
+  _purge_activity() { [[ -e "$BATS_TEST_TMPDIR/asked" ]] && return 1; _real_activity "$@"; }
+  MM_TTY=1
+  _purge_ask() { touch "$BATS_TEST_TMPDIR/asked"; printf s; }
+  run mm_cmd_main "$SB"
+  [ -f "$SB/a/node_modules/blob" ]
+  [[ "$output" == *"activity unknown"* ]]
+}
+
 # ---------------------------------------------------------------- discovery
 
 @test "discovery (no purge_paths, no DIR): finds a project under \$HOME and creates no purge_paths" {
