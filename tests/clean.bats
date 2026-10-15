@@ -41,21 +41,58 @@ trash_item() {
     "${3:-$(command date -d "$2 days ago" +%Y-%m-%dT%H:%M:%S)}" >"$t/info/$1.trashinfo"
 }
 
+# fake_docker — containers: c-old/c-never-old (stopped/created long ago), c-recent (postgres:16,
+# stopped an hour ago), c-never-new, and c-running (web:1, listed only without --filter). Images
+# no container uses: old/tool:1 (90 days), multi:a+multi:b (200 days, tag time unknown), base:12
+# (built 90 days ago, pulled 2 days ago), fresh:1 (3 days), and an untagged one. Removing the
+# two old ones drops the `system df` Images total by 2.1GB (estimate from unique sizes: 2.0GB).
+# FAKE_DOCKER_PS_FAIL=1 makes `docker ps` fail.
 fake_docker() {
   fake_rec docker '
 iso() { command date -u -d "$1" +%Y-%m-%dT%H:%M:%S.000000000Z; }
+row() { printf "%s\t%s\t%s\t%s\n" "$@"; }
+gone="$CALLS.gone"
+[[ -n "${FAKE_DOCKER_PS_FAIL:-}" && "$1" == ps ]] && exit 1
 case "$1 ${2:-}" in
-  "ps "*) printf "%s\n" c-old c-recent c-never-old c-never-new ;;
+  "ps "*) printf "%s\n" c-old c-recent c-never-old c-never-new
+    [[ "$*" == *--filter* ]] || echo c-running ;;
   "container inspect")
-    printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-      c-old /old-api exited "$(iso "10 days ago")" "$(iso "90 days ago")" app:1 1000 \
-      c-recent /long-lived-db exited "$(iso "1 hour ago")" "$(iso "100 days ago")" postgres:16 2000 \
-      c-never-old /never-ran created 0001-01-01T00:00:00Z "$(iso "20 days ago")" alpine 0 \
-      c-never-new /fresh created 0001-01-01T00:00:00Z "$(iso "1 day ago")" alpine 0 ;;
+    if [[ "$*" == *"{{.Image}}"* ]]; then
+      shift 4
+      for c; do
+        case $c in c-old) echo sha256:app ;; c-recent) echo sha256:postgres ;; c-running) echo sha256:web ;; *) echo sha256:alpine ;; esac
+      done
+    else
+      printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+        c-old /old-api exited "$(iso "10 days ago")" "$(iso "90 days ago")" app:1 1000 \
+        c-recent /long-lived-db exited "$(iso "1 hour ago")" "$(iso "100 days ago")" postgres:16 2000 \
+        c-never-old /never-ran created 0001-01-01T00:00:00Z "$(iso "20 days ago")" alpine 0 \
+        c-never-new /fresh created 0001-01-01T00:00:00Z "$(iso "1 day ago")" alpine 0
+    fi ;;
+  "image ls") printf "%s\n" sha256:old sha256:multi sha256:pulled sha256:fresh sha256:web sha256:postgres sha256:app \
+    sha256:alpine sha256:dangling sha256:multi ;;
+  "image inspect")
+    row sha256:old "old/tool:1" "$(iso "90 days ago")" "$(iso "90 days ago")"
+    row sha256:multi "multi:a multi:b" "$(iso "200 days ago")" 0001-01-01T00:00:00Z
+    row sha256:pulled "base:12" "$(iso "90 days ago")" "$(iso "2 days ago")"
+    row sha256:fresh "fresh:1" "$(iso "3 days ago")" "$(iso "3 days ago")"
+    for i in web:1 postgres:16 app:1 alpine:latest; do
+      row "sha256:${i%%:*}" "$i" "$(iso "200 days ago")" "$(iso "200 days ago")"
+    done
+    row sha256:dangling "" "$(iso "300 days ago")" 0001-01-01T00:00:00Z ;;
+  "image rm") echo "$*" >>"$gone" ;;
   "images "*) echo 12MB ;;
   "builder du") echo "Reclaimable: 1.5GB" ;;
   "volume ls") echo vol-db ;;
-  "system df") printf "vol-db\t1.8GB\n" ;;
+  "system df")
+    case "$*" in
+      *Volumes*) printf "vol-db\t1.8GB\n" ;;
+      *UniqueSize*) printf "%s\t%s\n" sha256:old 1.2GB sha256:multi 800MB sha256:pulled 50MB sha256:web 300MB ;;
+      *) mb=5000
+        grep -q "old/tool:1" "$gone" 2>/dev/null && mb=$((mb - 1200))
+        grep -q "multi:a multi:b" "$gone" 2>/dev/null && mb=$((mb - 900))
+        printf "Images\t%sMB\nContainers\t10MB\n" "$mb" ;;
+    esac ;;
 esac'
 }
 
@@ -232,6 +269,39 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   run _clean_docker
   none grep ' docker rm ' "$CALLS"
   [[ "$output" == *"old-api"* ]]   # still listed
+}
+
+@test "docker: unused images 30+ days old are removed by tag; used, recent and untagged ones kept" {
+  fake_docker
+  src
+  mm_confirm() { return 0; }
+  _clean_docker_images >"$BATS_TEST_TMPDIR/out"
+  grep -qE ' docker image rm old/tool:1$' "$CALLS"
+  grep -qE ' docker image rm multi:a multi:b$' "$CALLS"
+  [ "$(grep -c ' docker image rm ' "$CALLS")" -eq 2 ]           # not base:12, fresh:1, web:1, postgres:16, app:1, alpine
+  none grep -E ' docker (image rm|rmi) .*(-f|--force)' "$CALLS"
+  [ "$_CLEAN_TOOL_BYTES" -eq 2100000000 ]                         # measured by docker system df, not estimated
+}
+
+@test "docker: unused images are listed, not removed, without a terminal; dry-run estimates" {
+  fake_docker
+  src
+  run _clean_docker_images
+  none grep ' docker image rm ' "$CALLS"
+  [[ "$output" == *"old/tool:1"* ]]
+  MM_DRY_RUN=1 _clean_docker_images >/dev/null
+  none grep ' docker image rm ' "$CALLS"
+  [ "$_CLEAN_TOOL_BYTES" -eq 2000000000 ]                         # unique sizes of the two offered images
+}
+
+@test "docker: no image is offered when the container list cannot be read" {
+  fake_docker
+  export FAKE_DOCKER_PS_FAIL=1
+  src
+  mm_confirm() { return 0; }
+  run _clean_docker_images
+  none grep -E ' docker image (rm|inspect) ' "$CALLS"
+  [[ "$output" == *"Unused images · skipped"* ]]
 }
 
 # ---------------------------------------------------------------- editors
