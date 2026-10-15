@@ -46,7 +46,9 @@ Agents: one row per running AI coding agent session (lib/agents.sh catalog; matc
   name or by the script an interpreter runs): folder, age, busy/idle (>= 2% CPU), CPU and memory
   of the agent with everything it started; sub-agents count toward their parent. Memory is
   proportional (PSS + swapped PSS: pages shared inside the session count once; JSON keeps the
-  name rss_swap_bytes). An agent whose folder was deleted is flagged as an orphan.
+  name rss_swap_bytes). An agent whose folder was deleted is flagged as an orphan. An agent's
+  own helper processes (language-server hubs, daemons; the helpers field in lib/agents.sh) are
+  not sessions: they show on a "helpers" line with everything they started.
 Lingering: dev servers/toolchains (node, bun, deno, python, vite, next-server, esbuild, uvicorn,
   gunicorn, ...) of yours running longer than the linger age and not part of a live agent session.
 Ports: TCP ports your processes have listened on longer than the linger age.
@@ -221,11 +223,12 @@ _status_init() {
   ST_HAS_BOOT=0
   mountpoint -q /boot 2>/dev/null && ST_HAS_BOOT=1
   read -r -a ST_VPN_PATS <<<"$ST_VPN_GLOBS"
-  # Agent catalog (lib/agents.sh): process name → agent, and the 15-char comm the kernel shows.
-  declare -gA ST_AGENT_OF=() ST_AGENT_COMM=()
+  # Agent catalog (lib/agents.sh): process name → agent and → its row, and the 15-char comm the
+  # kernel shows.
+  declare -gA ST_AGENT_OF=() ST_AGENT_IDX=() ST_AGENT_COMM=()
   for i in "${!MM_AGENT_NAME[@]}"; do
     read -r -a procs <<<"${MM_AGENT_PROCS[i]}"
-    for k in "${procs[@]}"; do ST_AGENT_OF[$k]=${MM_AGENT_NAME[i]} ST_AGENT_COMM[${k:0:15}]=$k; done
+    for k in "${procs[@]}"; do ST_AGENT_OF[$k]=${MM_AGENT_NAME[i]} ST_AGENT_IDX[$k]=$i ST_AGENT_COMM[${k:0:15}]=$k; done
   done
   ST_PF=0 ST_T=0 ST_SLOW_PID="" ST_SLOW_AT=0 ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1 ST_IF=""
   ST_SHOWN=() ST_REPAINT=1 ST_SIZE=""
@@ -410,8 +413,11 @@ _status_cg_cpu() {
 #              (per mille of one core over the last interval) cover its whole process tree:
 #              helpers, servers, sub-agents; busy is 1 at >= 2% CPU. Sorted busy first, then by
 #              CPU, then oldest first;
+#   ST_HELPERS an agent's own helper processes (lib/agents.sh helpers field) at the top of their
+#              tree, "pid agent proc kb kind", kb covering everything they started (a language
+#              server hub's servers); they are not sessions. Largest first;
 #   ST_LINGER  dev servers/toolchains older than ST_LINGER_AGE that are not inside a live agent
-#              session or an editor, "pid name age kb orphan";
+#              session, an agent's helper or an editor, "pid name age kb orphan";
 #   ST_ORPHANS either kind whose working directory was deleted, "pid name age cwd kind".
 _status_procs() {
   local prev=$ST_TMP/procs.$((ST_PF ^ 1)) cur=$ST_TMP/procs.$ST_PF dt=$((ST_T - ST_P_T))
@@ -457,7 +463,9 @@ _status_procs() {
       total++; ppid[pid] = f[2]
       if (f[1] == "Z") zombies++
       if (dt > 0 && (pid in prev)) { pct = int((ticks - prev[pid]) * 1e9 / (hz * dt) + 0.5); if (pct > 0) { cpu[pid] = pct; cn[pid] = comm } }
-      if (comm in isagent) kind[pid] = "A"
+      # An agent by name; a process that retitled itself ("omp daemon brok") is checked on argv[0].
+      w = comm; sub(/ .*/, "", w)
+      if ((comm in isagent) || (w in isagent)) kind[pid] = "A"
       else if (comm ~ interp) kind[pid] = "I"
       else if (comm ~ devre && a >= minage) kind[pid] = "D"
       if (pid in kind) { cname[pid] = comm; age[pid] = a }
@@ -477,7 +485,7 @@ _status_procs() {
     }' "$prev" -)
 
   ST_TOPCPU=() ST_TOPMEM=()
-  local -A pp=() pcpu=() pkb=() agent_of=() aage=() root_of=() tcpu=() tkb=() wd=()
+  local -A pp=() pcpu=() pkb=() agent_of=() aage=() helper=() root_of=() tcpu=() tkb=() wd=()
   local -a cands=() devs=() roots=() walk=() members=()
   local r q dir busy
   while IFS=$'\t' read -r kind a b c d e; do
@@ -491,12 +499,17 @@ _status_procs() {
   done <<<"$out"
   _status_top_ctx
 
-  # Agents: by process name, or by the script an interpreter runs (node .../bin/gemini).
+  # Agents: by process name, or by the script an interpreter runs (node .../bin/gemini). An agent's
+  # own helper processes (lib/agents.sh) are marked: they head a helper tree, not a session.
   for e in "${cands[@]}"; do
     IFS=$'\t' read -r kind pid ppid kb comm age <<<"$e"
     proc=""
     if [[ "$kind" == A ]]; then
-      proc=${ST_AGENT_COMM[$comm]}
+      proc=${ST_AGENT_COMM[$comm]:-}
+      if [[ -z "$proc" ]]; then
+        _status_argv "$pid"
+        [[ -n "$ST_ARGV_BASE" && "$ST_ARGV_BASE" == "${ST_AGENT_COMM[${comm%% *}]:-}" ]] && proc=$ST_ARGV_BASE
+      fi
     elif [[ "$kind" == I ]]; then
       _status_argv "$pid"
       [[ -n "$ST_ARGV_SCRIPT" && -n "${ST_AGENT_OF[$ST_ARGV_SCRIPT]:-}" ]] && proc=$ST_ARGV_SCRIPT
@@ -504,19 +517,23 @@ _status_procs() {
     fi
     if [[ -n "$proc" ]]; then
       agent_of[$pid]=$proc aage[$pid]=$age
-    elif ((age >= ST_LINGER_AGE)); then
+      mm_agent_helper "${ST_AGENT_IDX[$proc]}" "$pid" && helper[$pid]=$REPLY
+    elif [[ "$kind" != A ]] && ((age >= ST_LINGER_AGE)); then
       devs+=("$e")
     fi
   done
 
   # Sessions: agent processes with no agent above them (a sub-agent belongs to its parent's
-  # session). Every process of this user is charged to the session root above it, if any; the
-  # walk up the parent chain is memoized in root_of ("" = in no session).
+  # session). Helpers head trees of their own wherever they run, also inside a session that
+  # started them, unless another helper is above them. Every process of this user is charged to
+  # the nearest root above it, if any; the walk up the parent chain is memoized in root_of
+  # ("" = in no session or helper tree).
   for pid in "${!agent_of[@]}"; do
     p=${pp[$pid]:-}
     for ((n = 0; n < 64; n++)); do
       [[ -n "$p" ]] || break
-      [[ -n "${agent_of[$p]:-}" ]] && continue 2
+      if [[ -n "${helper[$pid]+set}" ]]; then [[ -n "${helper[$p]+set}" ]] && continue 2
+      elif [[ -n "${agent_of[$p]:-}" ]]; then continue 2; fi
       p=${pp[$p]:-}
     done
     roots+=("$pid") root_of[$pid]=$pid tcpu[$pid]=0 tkb[$pid]=0
@@ -543,9 +560,14 @@ _status_procs() {
     while IFS=$'\t' read -r dir cwd; do wd[${dir#/proc/}]=$cwd; done < <(find "${walk[@]}" -maxdepth 0 -printf '%h\t%l\n' 2>/dev/null)
   fi
 
-  ST_AGENTS=() ST_AGENT_KB=0 ST_AGENT_MAXAGE=0 ST_ORPHANS=() ST_LINGER=() ST_LINGER_KB=0
+  ST_AGENTS=() ST_AGENT_KB=0 ST_AGENT_MAXAGE=0 ST_HELPERS=() ST_HELPER_KB=0 ST_ORPHANS=() ST_LINGER=() ST_LINGER_KB=0
   for pid in "${roots[@]}"; do
     proc=${agent_of[$pid]} age=${aage[$pid]} kb=${tkb[$pid]} cwd=${wd[$pid]:-} orphan=0 busy=0
+    if [[ -n "${helper[$pid]+set}" ]]; then
+      ST_HELPERS+=("$pid"$'\t'"${ST_AGENT_OF[$proc]}"$'\t'"$proc"$'\t'"$kb"$'\t'"${helper[$pid]:-?}")
+      ST_HELPER_KB=$((ST_HELPER_KB + kb))
+      continue
+    fi
     ST_AGENT_KB=$((ST_AGENT_KB + kb))
     ((age > ST_AGENT_MAXAGE)) && ST_AGENT_MAXAGE=$age
     if [[ "$cwd" == *" (deleted)" ]]; then
@@ -558,7 +580,7 @@ _status_procs() {
 
   for e in "${devs[@]}"; do
     IFS=$'\t' read -r kind pid ppid kb comm age <<<"$e"
-    # Started by a live agent: part of that session, not lingering.
+    # Started by a live agent or one of its helpers: part of that tree, not lingering.
     [[ -n "${root_of[$pid]:-}" ]] && continue
     _status_argv "$pid"
     [[ "$ST_ARGV_LINE" =~ $ST_LINGER_SKIP_RE ]] && continue
@@ -573,6 +595,7 @@ _status_procs() {
     ST_LINGER_KB=$((ST_LINGER_KB + kb))
   done
   ((${#ST_AGENTS[@]} > 1)) && mapfile -t ST_AGENTS < <(printf '%s\n' "${ST_AGENTS[@]}" | sort -t$'\t' -k8,8nr -k7,7nr -k4,4nr)
+  ((${#ST_HELPERS[@]} > 1)) && mapfile -t ST_HELPERS < <(printf '%s\n' "${ST_HELPERS[@]}" | sort -t$'\t' -k4,4nr)
   ((${#ST_LINGER[@]} > 1)) && mapfile -t ST_LINGER < <(printf '%s\n' "${ST_LINGER[@]}" | sort -t$'\t' -k3,3nr)
   return 0
 }
@@ -1303,7 +1326,35 @@ _status_agent_rows() {
   done
 }
 
-# _status_panel_agents WIDTH — one row per agent session, under a one-line summary.
+# _status_helper_groups — ST_HELPERS summed per process name into ST_HGROUPS, "proc n kb" in the
+# order of ST_HELPERS (largest first).
+_status_helper_groups() {
+  local e proc kb
+  local -A n=() k=()
+  local -a order=()
+  ST_HGROUPS=()
+  for e in "${ST_HELPERS[@]}"; do
+    IFS=$'\t' read -r _ _ proc kb _ <<<"$e"
+    [[ -n "${n[$proc]:-}" ]] || { order+=("$proc"); n[$proc]=0 k[$proc]=0; }
+    n[$proc]=$((n[$proc] + 1)) k[$proc]=$((k[$proc] + kb))
+  done
+  for proc in "${order[@]}"; do ST_HGROUPS+=("$proc"$'\t'"${n[$proc]}"$'\t'"${k[$proc]}"); done
+}
+
+# _status_helper_rows INDENT — append one dim "omp helpers · 3 · 5.7 GB" row per agent process
+# name to ST_PANEL: the agents' own helper trees, kept out of the session rows above.
+_status_helper_rows() {
+  local e proc n kb
+  _status_helper_groups
+  for e in "${ST_HGROUPS[@]}"; do
+    IFS=$'\t' read -r proc n kb <<<"$e"
+    _status_mem kb "$kb"
+    ST_PANEL+=("$1$C_DIM$proc helpers · $n · $kb$C_RESET")
+  done
+}
+
+# _status_panel_agents WIDTH — one row per agent session, under a one-line summary, then the
+# agents' helpers.
 _status_panel_agents() {
   local t d
   _status_title "◉ Agents"
@@ -1315,6 +1366,7 @@ _status_panel_agents() {
   else
     ST_PANEL[0]+="  ${C_DIM}none running$C_RESET"
   fi
+  _status_helper_rows ""
 }
 
 # _status_checks — system upkeep as ST_CHK_OK (checks that passed), ST_CHK_NOTE (neutral notes:
@@ -1520,14 +1572,16 @@ _status_frame_full() {
 
 # _status_frame_compact COLS [ROWS] — the default view into ST_FRAME: agent sessions first, the
 # link to you, one line per resource, checks, top memory; one column as wide as the terminal.
-# With ROWS > 0 the agent list gives way ("… N more") until the frame fits ROWS lines.
+# With ROWS > 0 the agent list gives way ("… N more") until the frame fits ROWS lines, then the
+# helpers lines.
 _status_frame_compact() {
   local cols=$1 rows=${2:-0} lim=${#ST_AGENTS[@]} over
   ((lim < 1)) && lim=1
   while :; do
     _status_compact "$cols" "$lim"
     over=$((${#ST_FRAME[@]} - rows))
-    ((rows <= 0 || over <= 0 || lim <= 1)) && break
+    ((rows <= 0 || over <= 0)) && break
+    ((lim <= 1)) && { _status_compact "$cols" 1 0; break; }
     lim=$((lim > over ? lim - over : 1))
   done
 }
@@ -1553,9 +1607,10 @@ _status_cline_spark() {
   ST_FRAME[-1]+="$pad$sp"
 }
 
-# _status_compact WIDTH LIMIT — build the compact view with at most LIMIT agent sessions listed.
+# _status_compact WIDTH LIMIT [HELPERS] — build the compact view with at most LIMIT agent sessions
+# listed, and the helpers lines unless HELPERS is 0.
 _status_compact() {
-  local w=$1 lim=$2 col left info len up t bar s r wr v m sz us av it iu e pid name ctx n older
+  local w=$1 lim=$2 helpers=${3:-1} col left info len up t bar s r wr v m sz us av it iu e pid name ctx n older
   local -a more=()
   ((w < 60)) && w=60
   ST_FRAME=()
@@ -1573,15 +1628,16 @@ _status_compact() {
   printf -v t '%*s' $((w - len - ${#info} > 0 ? w - len - ${#info} : 0)) ''
   ST_FRAME+=("$left${info:+$t$C_DIM$info$C_RESET}")
 
+  ST_PANEL=()
   if ((${#ST_AGENTS[@]})); then
     _status_mem t "$ST_AGENT_KB"
     _status_cline AGENTS "${#ST_AGENTS[@]} running · $t"
-    ST_PANEL=()
     _status_agent_rows "  " "$w" "$lim" 7
-    ST_FRAME+=("${ST_PANEL[@]}")
   else
     _status_cline AGENTS "${C_DIM}none running$C_RESET"
   fi
+  ((helpers)) && _status_helper_rows "  "
+  ST_FRAME+=("${ST_PANEL[@]}")
 
   if [[ -z "$ST_CL_ADDR" ]]; then
     _status_cline YOU "${C_DIM}no remote session detected$C_RESET"
@@ -1693,13 +1749,14 @@ _status_cols() {
 # ---------------------------------------------------------------- JSON
 
 _status_json() {
-  local tc tm ag li orph po df nets e ifc i core_list="" last=null
+  local tc tm ag he li orph po df nets e ifc i core_list="" last=null
   # The last scheduled run's summary as written (lib/schedule.sh), if it is valid JSON.
   # shellcheck disable=SC2031 # a lib/schedule.sh constant
   ((ST_LAST)) && { last=$(jq -c . "$MM_SCHEDULE_LAST" 2>/dev/null) || last=null; }
   tc=$(printf '%s\n' "${ST_TOPCPU[@]}")
   tm=$(printf '%s\n' "${ST_TOPMEM[@]}")
   ag=$(printf '%s\n' "${ST_AGENTS[@]}")
+  he=$(printf '%s\n' "${ST_HELPERS[@]}")
   li=$(printf '%s\n' "${ST_LINGER[@]}")
   orph=$(printf '%s\n' "${ST_ORPHANS[@]}")
   po=$(printf '%s\n' "${ST_PORTS[@]}")
@@ -1717,7 +1774,7 @@ _status_json() {
     --arg df "$df" --arg disk "$ST_DISK" --arg rd "$ST_RD_BPS" --arg wr "$ST_WR_BPS" --arg nets "$nets" \
     --arg tc "$tc" --arg tm "$tm" --arg zombies "${ST_ZOMBIES:-0}" --arg nproc "${ST_NPROC:-0}" \
     --arg up "$ST_UP" --arg reboot "$ST_REBOOT" --arg rpkgs "$ST_REBOOT_PKGS" \
-    --arg ag "$ag" --arg akb "$ST_AGENT_KB" --arg amax "$ST_AGENT_MAXAGE" \
+    --arg ag "$ag" --arg akb "$ST_AGENT_KB" --arg amax "$ST_AGENT_MAXAGE" --arg he "$he" --arg hkb "$ST_HELPER_KB" \
     --arg li "$li" --arg lkb "$ST_LINGER_KB" --arg linger "$ST_LINGER_AGE" \
     --arg orph "$orph" --arg po "$po" --arg nlisten "$ST_NLISTEN" \
     --argjson slow "$(for e in "${!ST_SLOW[@]}"; do printf '%s\t%s\n' "$e" "${ST_SLOW[$e]}"; done |
@@ -1799,7 +1856,11 @@ _status_json() {
           orphan_count: ($ag | lines | map(select(.[5] == "1")) | length),
           sessions: ($ag | lines | map({ pid: (.[0] | tonumber), agent: .[1], process: .[2],
             age_seconds: (.[3] | tonumber), rss_swap_bytes: ((.[4] | tonumber) * 1024), orphan: (.[5] == "1"),
-            cpu_percent: (.[6] | pct10), busy: (.[7] == "1"), cwd: (.[8] // "" | if . == "" then null else . end) }))
+            cpu_percent: (.[6] | pct10), busy: (.[7] == "1"), cwd: (.[8] // "" | if . == "" then null else . end) })),
+          helper_count: ($he | lines | length),
+          helper_rss_swap_bytes: (($hkb | tonumber) * 1024),
+          helpers: ($he | lines | map({ agent: .[1], process: .[2], pid: (.[0] | tonumber),
+            rss_swap_bytes: ((.[3] | tonumber) * 1024), kind: .[4] }))
         },
         lingering: {
           min_age_seconds: ($linger | tonumber), count: ($li | lines | length),
@@ -1899,6 +1960,14 @@ _status_agent_text() {
   else
     printf 'agents: none running\n'
   fi
+  t=""
+  _status_helper_groups
+  for e in "${ST_HGROUPS[@]}"; do
+    IFS=$'\t' read -r proc n kb <<<"$e"
+    _status_mem kb "$kb"
+    t+="${t:+, }$proc $n · $kb"
+  done
+  printf 'agent helpers: %s\n' "${t:-none}"
 
   if [[ -z "$ST_CL_ADDR" ]]; then
     printf 'client: none (no remote session detected)\n'
