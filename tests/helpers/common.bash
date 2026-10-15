@@ -9,12 +9,13 @@
 #     stub records `UNSTUBBED <cmd> <args>` and exits 97; teardown fails the test if any stub ran,
 #     so a forgotten mock is a red test, not a silent host-dependent pass. A test that needs one
 #     installs a double with mm_test_fake.
-#   - `sudo -n true` answers "no" quietly, so marmot runs its unprivileged paths.
+#   - `sudo -n true` answers "no" quietly, so marmot runs its unprivileged paths; so does
+#     `gh auth token` (logged out), so no test asks GitHub anything.
 
 MM_SRC="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 MM_TEST_STUBBED=(sudo apt apt-get apt-mark snap docker systemctl journalctl swapon swapoff mount umount
   resolvectl fstrim npm npx pnpm yarn bun pip pip3 pipx ncdu fzf pkill killall reboot shutdown
-  trash-put trash-empty gio tmux)
+  trash-put trash-empty gio tmux gh)
 
 mm_test_setup() {
   local sandbox
@@ -47,6 +48,7 @@ mm_test_install_stubs() {
 #!/usr/bin/env bash
 # fail-loud stub: tests must never run the real $c
 if [[ "$c" == sudo && ( "\$*" == "-n true" || "\$*" == "-k" ) ]]; then exit 1; fi
+if [[ "$c" == gh && "\$*" == "auth token" ]]; then exit 1; fi
 printf 'UNSTUBBED %s %s\n' "$c" "\$*" >>"\$MM_TEST_UNSTUBBED_LOG"
 echo "UNSTUBBED $c \$*" >&2
 exit 97
