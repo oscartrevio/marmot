@@ -491,7 +491,7 @@ _purge_busy() {
 # (Solana/Anchor program keypairs in target/deploy/: losing one loses the deploy authority).
 _purge_measure() {
   (
-    export -f mm_size_frees; export MM_SIZE_SUDO
+    export -f mm_size_frees; export MM_SIZE_TIMEOUT MM_SIZE_SUDO
     printf '%s\0' "$@" | xargs -0 -P4 -n1 bash -c '
       g=$(find "$1" -xdev -mindepth 1 \( -name .git -o -type f -name "*-keypair.json" \) -print -quit 2>/dev/null)
       h=""; case "${g##*/}" in .git) h=git ;; ?*) h=keypair ;; esac

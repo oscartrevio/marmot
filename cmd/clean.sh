@@ -85,6 +85,14 @@ EOF
 # _clean_track BYTES ITEMS — account a tool-driven clean.
 _clean_track() { _CLEAN_TOOL_BYTES=$((_CLEAN_TOOL_BYTES + $1)); _CLEAN_TOOL_ITEMS=$((_CLEAN_TOOL_ITEMS + $2)); }
 
+# _clean_tool_freed LABEL VERB BEFORE AFTER — account and report a tool-driven clean that freed
+# BEFORE - AFTER bytes. An empty AFTER (size unknown) counts the clean but no bytes.
+_clean_tool_freed() {
+  if [[ -z "$4" ]]; then _clean_track 0 1; mm_ok "$1" "$2, size freed unknown"; return; fi
+  local freed=$(( $3 > $4 ? $3 - $4 : 0 ))
+  _clean_track "$freed" 1; mm_ok "$1" "$2, $(mm_human "$freed")"
+}
+
 _clean_cat() {
   mm_section "$1"
   _CLEAN_CAT_MARK="$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES)) $((MM_COUNT + _CLEAN_TOOL_ITEMS))"
@@ -184,12 +192,13 @@ _clean_busy() {
 # preview, so dry-run claims no bytes. Callers only invoke it when the tool is installed.
 _clean_tool() {
   local prune=0; [[ "$1" == --prune ]] && { prune=1; shift; }
-  local label="$1" procs="$2" dir="$3" busy size before after freed; shift 3
+  local label="$1" procs="$2" dir="$3" busy size before verb=cleaned; shift 3
   _CLEAN_HANDLED+=("$dir")
   [[ -d "$dir" ]] || { mm_ok "$label" "nothing to clean"; return; }
   if mm_whitelisted "$dir"; then mm_skip "$label" "whitelisted"; return; fi
   if busy=$(_clean_busy "$procs"); then mm_skip "$label" "$busy busy"; return; fi
   read -r size before < <(mm_size_frees "$dir")
+  [[ -n "$before" ]] || { mm_skip "$label" "size unknown"; return; }
   if (( size < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$size"))"; return; fi
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_run "$label" env -C / "$@"
@@ -199,9 +208,8 @@ _clean_tool() {
     _clean_track "$before" 1; mm_ok "$label" "$(mm_human "$before")"; return
   fi
   mm_run "$label" env -C / "$@" || return 0
-  after=$(mm_frees "$dir"); freed=$(( before > after ? before - after : 0 ))
-  _clean_track "$freed" 1
-  if (( prune )); then mm_ok "$label" "pruned, $(mm_human "$freed")"; else mm_ok "$label" "cleaned, $(mm_human "$freed")"; fi
+  (( prune )) && verb=pruned
+  _clean_tool_freed "$label" "$verb" "$before" "$(mm_frees "$dir")"
 }
 
 # _clean_home_dir LABEL DIR — 0 if DIR is a non-empty directory that resolves strictly inside $HOME
@@ -360,17 +368,18 @@ _clean_trashinfo_epoch() {
 # count/size/largest, then asks (--yes: does not ask).
 _clean_trash() {
   local yes=0; [[ "$1" == --yes ]] && { yes=1; shift; }
-  local trash="$1" days="${2:-$_CLEAN_TRASH_DAYS}" now name t size b=0 recent=0 unrec=0 n=0 kept=0 fail=0 freed=0 top="" line note=""
+  local trash="$1" days="${2:-$_CLEAN_TRASH_DAYS}" now name t size b=0 recent=0 unrec=0 unsized=0 n=0 kept=0 fail=0 freed=0 top="" line note=""
   local -a pick=() sizes=()
   now=$(date +%s)
   while IFS= read -r -d '' name; do
     t=$(_clean_trashinfo_epoch "$trash/info/$name.trashinfo") || { unrec=$((unrec + 1)); continue; }
     (( now - t >= days * 86400 )) || { recent=$((recent + 1)); continue; }
-    size=$(mm_size "$trash/files/$name" "$trash/info/$name.trashinfo")
+    size=$(mm_size "$trash/files/$name" "$trash/info/$name.trashinfo") || { unsized=$((unsized + 1)); continue; }
     pick+=("$name") sizes+=("$size"$'\t'"$name") b=$((b + size))
   done < <(find "$trash/files" -mindepth 1 -maxdepth 1 -printf '%f\0' 2>/dev/null)
   (( recent )) && note+=", $recent recent kept"
   (( unrec )) && note+=", $unrec unrecognized left alone"
+  (( unsized )) && note+=", $unsized of unknown size left alone"
   if (( ${#pick[@]} == 0 )); then mm_ok "Trash" "nothing trashed ${days}+ days ago${note}"; return; fi
   while IFS= read -r line; do
     top+="${top:+, }${line#*$'\t'} ($(mm_human "${line%%$'\t'*}"))"
@@ -490,22 +499,20 @@ _clean_yarn() {
 # pnpm writes a probe file into its working directory before it answers anything, so it runs from
 # $HOME: from / every non-root user got EACCES and the store was never pruned.
 _clean_pnpm() {
-  local store before after freed
+  local store before
   store=$(env -C "$HOME" timeout 15 pnpm store path 2>/dev/null) || return 0
   [[ -d "$store" ]] || return 0
   _CLEAN_HANDLED+=("$store")
   if mm_whitelisted "$store"; then mm_skip "pnpm store" "whitelisted"; return; fi
   if mm_proc_running pnpm; then mm_skip "pnpm store" "pnpm busy"; return; fi
-  before=$(mm_size "$store")
+  before=$(mm_size "$store") || { mm_skip "pnpm store" "size unknown"; return; }
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_run "pnpm store prune" env -C "$HOME" pnpm store prune
     mm_ok "pnpm store" "$(mm_human "$before") store, would prune unreferenced packages (size unknown until run)"
     return
   fi
   mm_run "pnpm store prune" env -C "$HOME" pnpm store prune || return 0
-  after=$(mm_size "$store"); freed=$(( before > after ? before - after : 0 ))
-  _clean_track "$freed" 1
-  mm_ok "pnpm store" "pruned, $(mm_human "$freed")"
+  _clean_tool_freed "pnpm store" pruned "$before" "$(mm_size "$store")"
 }
 
 # ---------------------------------------------------------------- agent logs
@@ -740,7 +747,7 @@ _clean_cloud_log_dir() {
     fi
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
   if (( n + kept + fail + empty == 0 )); then
-    mm_ok "$label" "nothing older than $_CLEAN_LOG_DAYS days ($(mm_human "$(mm_size "$dir")") newer)"; return
+    mm_ok "$label" "nothing older than $_CLEAN_LOG_DAYS days (newer: $(mm_size_human "$dir"))"; return
   fi
   d="$(_clean_detail "$n" files "$b" "$kept" "$fail")"
   [[ -n "$oldest" ]] && d+=", oldest $(_clean_ago "$oldest")"
@@ -774,7 +781,7 @@ _clean_mise() {
 # Extracted packages, which environments hard-link to, stay. The dry-run figure counts exactly
 # those entries; a real run is measured on the package caches.
 _clean_conda() {
-  local label="conda package cache" busy d est before after freed
+  local label="conda package cache" busy d est before
   local -a dirs=() parts=()
   while IFS= read -r d; do
     [[ -d "$d" && -w "$d" ]] || continue
@@ -786,23 +793,21 @@ _clean_conda() {
   if busy=$(_clean_busy "conda mamba micromamba"); then mm_skip "$label" "$busy busy"; return; fi
   mapfile -d '' -t parts < <(find "${dirs[@]}" -mindepth 1 -maxdepth 1 \
     \( -name '*.tar.bz2' -o -name '*.conda' -o -name cache -o -name .logs \) -print0 2>/dev/null)
-  est=$(mm_size "${parts[@]}")
+  est=$(mm_size "${parts[@]}") || { mm_skip "$label" "size unknown"; return; }
   if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$est"))"; return; fi
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") of tarballs, index cache and logs"; return
   fi
-  before=$(mm_size "${dirs[@]}")
+  before=$(mm_size "${dirs[@]}") || { mm_skip "$label" "size unknown"; return; }
   mm_run "$label" env -C / conda clean --yes --index-cache --tarballs --logfiles || return 0
-  after=$(mm_size "${dirs[@]}"); freed=$(( before > after ? before - after : 0 ))
-  _clean_track "$freed" 1
-  mm_ok "$label" "cleaned, $(mm_human "$freed")"
+  _clean_tool_freed "$label" cleaned "$before" "$(mm_size "${dirs[@]}")"
 }
 
 # Homebrew (on Linux, linuxbrew): old versions of installed formulae and downloads older than 30
 # days. The dry-run figure is brew's own (`brew cleanup -n`); a real run is measured on the Cellar
 # and the download cache.
 _clean_brew() {
-  local label="Homebrew cleanup" busy cache cellar size est before after freed
+  local label="Homebrew cleanup" busy cache cellar size est before
   local -a brew=(env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 timeout 300 brew)
   if busy=$(_clean_busy "brew f:Homebrew/brew\.(sh|rb)"); then mm_skip "$label" "$busy busy"; return; fi
   cache=$("${brew[@]}" --cache 2>/dev/null) cellar=$("${brew[@]}" --cellar 2>/dev/null)
@@ -817,11 +822,9 @@ _clean_brew() {
     if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean"; return; fi
     _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") (brew's estimate)"; return
   fi
-  before=$(mm_size "$cache" "$cellar")
+  before=$(mm_size "$cache" "$cellar") || { mm_skip "$label" "size unknown"; return; }
   mm_run "$label" env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew cleanup --prune=30 || return 0
-  after=$(mm_size "$cache" "$cellar"); freed=$(( before > after ? before - after : 0 ))
-  _clean_track "$freed" 1
-  mm_ok "$label" "cleaned, $(mm_human "$freed")"
+  _clean_tool_freed "$label" cleaned "$before" "$(mm_size "$cache" "$cellar")"
 }
 
 # nix is opt-in (nix_gc = on in $MM_CONFIG_FILE): deleting profile generations removes rollback
@@ -1176,17 +1179,17 @@ _clean_root_files() {
 # _clean_user_crash_reports — the user's own apport reports (~/.local/share/apport): entries with
 # nothing written for 7+ days, removed permanently through mm_rm after a confirmation.
 _clean_user_crash_reports() {
-  local dir="${XDG_DATA_HOME:-$HOME/.local/share}/apport" min=$((_CLEAN_OLD_DAYS * 1440)) e b n=0 freed=0 kept=0 fail=0
+  local dir="${XDG_DATA_HOME:-$HOME/.local/share}/apport" min=$((_CLEAN_OLD_DAYS * 1440)) e size n=0 freed=0 kept=0 fail=0
   local -a old=()
   [[ -d "$dir" ]] || return 0
   while IFS= read -r -d '' e; do
     [[ -z "$(find "$e" -mmin "-$min" -print -quit 2>/dev/null)" ]] && old+=("$e")
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
   if (( ${#old[@]} == 0 )); then mm_ok "Your crash reports" "nothing older than $_CLEAN_OLD_DAYS days"; return 0; fi
-  b=$(mm_size "${old[@]}")
+  size=$(mm_size_human "${old[@]}")
   mm_tilde "$dir"
-  mm_act "Your crash reports: ${#old[@]} older than $_CLEAN_OLD_DAYS days, $(mm_human "$b") ($REPLY)"
-  _clean_ask "Your crash reports" "Permanently delete ${#old[@]} crash reports older than $_CLEAN_OLD_DAYS days ($(mm_human "$b"))?" || return 0
+  mm_act "Your crash reports: ${#old[@]} older than $_CLEAN_OLD_DAYS days, $size ($REPLY)"
+  _clean_ask "Your crash reports" "Permanently delete ${#old[@]} crash reports older than $_CLEAN_OLD_DAYS days ($size)?" || return 0
   for e in "${old[@]}"; do
     mm_rm "$e" "$dir"
     case $? in
@@ -1655,7 +1658,7 @@ _clean_review_catalog() {
     real=$(realpath -e -- "$dir" 2>/dev/null) || continue
     [[ -z "${seen[$real]+x}" ]] || continue
     seen[$real]=1
-    detail=$(mm_human "$(mm_size "$dir")")
+    detail=$(mm_size_human "$dir")
     if [[ "${MM_CAT_SPEC[$i]}" == count ]]; then
       n=$(find "$dir" -mindepth 1 -maxdepth 1 ! -name '.*' -printf x 2>/dev/null | wc -c)
       detail+=", $n installed"
@@ -1740,9 +1743,12 @@ _clean_review_tmp() {
   if (( EUID != 0 )) && command -v sudo >/dev/null && sudo -n true 2>/dev/null; then all=1; fi
   for dir in /tmp /var/tmp; do
     [[ -d "$dir" ]] || continue
-    size=$(MM_SIZE_SUDO=$all mm_size "$dir")
-    detail=$(mm_human "$size")
-    (( EUID != 0 && ! all )) && detail+=" (your files)"
+    if size=$(MM_SIZE_SUDO=$all mm_size "$dir"); then
+      detail=$(mm_human "$size")
+      (( EUID != 0 && ! all )) && detail+=" (your files)"
+    else
+      detail="size unknown"
+    fi
     fs=$(awk -v d="$dir" '$2 == d { t = $3 } END { print t }' /proc/self/mounts 2>/dev/null)
     [[ "$fs" == tmpfs ]] && detail+=", tmpfs (emptied at reboot)"
     age="" file="" hint=""

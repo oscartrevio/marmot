@@ -42,10 +42,13 @@ EOF
 
 # ---------------------------------------------------------------- small helpers
 
-_uninstall_add() { # SRC NAME BYTES EPOCH PATH NOTE HIDDEN
-  _UN_SRC+=("$1") _UN_NAME+=("$2") _UN_BYTES+=("${3:-0}") _UN_TIME+=("${4:-0}")
+_uninstall_add() { # SRC NAME BYTES EPOCH PATH NOTE HIDDEN (BYTES empty: size unknown)
+  _UN_SRC+=("$1") _UN_NAME+=("$2") _UN_BYTES+=("$3") _UN_TIME+=("${4:-0}")
   _UN_PATH+=("$5") _UN_NOTE+=("$6") _UN_HIDDEN+=("${7:-0}")
 }
+
+# _uninstall_human BYTES — mm_human, or "size unknown" for an empty BYTES.
+_uninstall_human() { if [[ -n "$1" ]]; then mm_human "$1"; else printf 'size unknown'; fi; }
 
 # _uninstall_generic NAME — 0 for names too generic to tie a ~/.config/NAME-style directory to one
 # package (after Mole's _mole_uninstall_is_common_app_name), plus home-layout names.
@@ -75,8 +78,9 @@ _uninstall_ago() {
 }
 
 _uninstall_row() { # IDX — one list/picker row: NAME SOURCE SIZE INSTALLED/LAST-USED [warning]
-  local i=$1
-  printf '%-34s %-6s %9s  %-8s %s\n' "${_UN_NAME[i]}" "${_UN_SRC[i]}" "$(mm_human "${_UN_BYTES[i]}")" \
+  local i=$1 size='?'
+  [[ -n "${_UN_BYTES[i]}" ]] && size=$(mm_human "${_UN_BYTES[i]}")
+  printf '%-34s %-6s %9s  %-8s %s\n' "${_UN_NAME[i]}" "${_UN_SRC[i]}" "$size" \
     "$(_uninstall_ago "${_UN_TIME[i]}")" "${_UN_NOTE[i]:+! ${_UN_NOTE[i]}}"
 }
 
@@ -544,9 +548,12 @@ mm_cmd_main() {
   mapfile -t visible < <(_uninstall_sorted "${visible[@]}")
 
   if (( list )) || { (( ${#names[@]} == 0 )) && { [[ "$MM_DRY_RUN" == 1 || "$MM_TTY" != 1 ]] || ! command -v fzf >/dev/null; }; }; then
-    local hidden=$(( ${#_UN_NAME[@]} - ${#visible[@]} )) total=0
-    for i in "${visible[@]}"; do total=$(( total + _UN_BYTES[i] )); done
-    mm_section "Removable packages (${#visible[@]}, $(mm_human "$total"))"
+    local hidden=$(( ${#_UN_NAME[@]} - ${#visible[@]} )) total=0 unknown=0 sz
+    for i in "${visible[@]}"; do
+      if [[ -n "${_UN_BYTES[i]}" ]]; then total=$(( total + _UN_BYTES[i] )); else unknown=$((unknown + 1)); fi
+    done
+    sz=$(mm_human "$total"); (( unknown )) && sz+=" + $unknown of unknown size"
+    mm_section "Removable packages (${#visible[@]}, $sz)"
     _uninstall_table "${visible[@]}"
     printf '\n'
     (( hidden )) && mm_info "${C_DIM}$hidden more hidden (shared libraries: --all; remote access/VPN: name them); NAMEs always match${C_RESET}"
@@ -587,7 +594,7 @@ _uninstall_apply() {
 
   # 1. running processes and high-impact packages
   for i in "$@"; do
-    mm_ok "${_UN_NAME[i]}" "${_UN_SRC[i]}, $(mm_human "${_UN_BYTES[i]}")"
+    mm_ok "${_UN_NAME[i]}" "${_UN_SRC[i]}, $(_uninstall_human "${_UN_BYTES[i]}")"
     if what=$(_uninstall_running "$i"); then
       if [[ "$dry" == 1 ]]; then
         mm_warn "${_UN_NAME[i]} is running ($what); a real run asks before removing it"
@@ -633,7 +640,7 @@ _uninstall_apply() {
   # 3. plan, Mole style
   printf '\n%sFiles to be removed:%s\n' "$C_BOLD" "$C_RESET"
   local -a lo=()
-  local shared reason lbytes item_bytes free_bytes=0 trash_bytes=0
+  local shared reason lbytes item_bytes item_unknown free_bytes=0 trash_bytes=0 unknown=0
   local -A drop=()
   _UN_GOING=()
   for i in "${keep[@]}"; do
@@ -649,8 +656,9 @@ _uninstall_apply() {
     if [[ -n "${drop[$i]:-}" ]]; then printf '\n'; mm_skip "${_UN_NAME[i]}" "${drop[$i]}"; continue; fi
     mapfile -t lo < <(_uninstall_leftovers "${_UN_NAME[i]}" "${_UN_SRC[i]}")
     shared=$(_uninstall_shared "$i" "${keep[@]}") || shared=""
-    item_bytes=${_UN_BYTES[i]}
-    if [[ "${_UN_SRC[i]}" == bin ]]; then trash_bytes=$(( trash_bytes + item_bytes )); else free_bytes=$(( free_bytes + item_bytes )); fi
+    item_bytes=${_UN_BYTES[i]:-0} item_unknown=0
+    if [[ -z "${_UN_BYTES[i]}" ]]; then item_unknown=1
+    elif [[ "${_UN_SRC[i]}" == bin ]]; then trash_bytes=$(( trash_bytes + item_bytes )); else free_bytes=$(( free_bytes + item_bytes )); fi
     local -a lines=()
     case "${_UN_SRC[i]}" in
       apt)  lines+=("$C_GREEN✓$C_RESET apt package ${_UN_NAME[i]} (purge + config files)") ;;
@@ -663,13 +671,20 @@ _uninstall_apply() {
       else reason=$(_uninstall_leftover_reason "$p"); fi
       mm_tilde "$p"
       if [[ -z "$reason" ]]; then
-        lbytes=$(mm_size "$p"); item_bytes=$(( item_bytes + lbytes )); trash_bytes=$(( trash_bytes + lbytes ))
-        lines+=("$C_GREEN✓$C_RESET $REPLY $C_DIM$(mm_human "$lbytes") to Trash$C_RESET")
+        if lbytes=$(mm_size "$p"); then
+          item_bytes=$(( item_bytes + lbytes )); trash_bytes=$(( trash_bytes + lbytes ))
+          lines+=("$C_GREEN✓$C_RESET $REPLY $C_DIM$(mm_human "$lbytes") to Trash$C_RESET")
+        else
+          item_unknown=1
+          lines+=("$C_GREEN✓$C_RESET $REPLY $C_DIM(size unknown) to Trash$C_RESET")
+        fi
       else
         lines+=("$C_DIM◎$C_RESET $REPLY $C_DIM· kept ($reason)$C_RESET")
       fi
     done
-    printf '\n%s✓%s %s, %s\n' "$C_GREEN" "$C_RESET" "${_UN_NAME[i]}" "$(mm_human "$item_bytes")"
+    unknown=$(( unknown + item_unknown ))
+    printf '\n%s✓%s %s, %s%s\n' "$C_GREEN" "$C_RESET" "${_UN_NAME[i]}" "$(mm_human "$item_bytes")" \
+      "$( (( item_unknown )) && printf ' + size unknown')"
     while IFS= read -r p; do
       [[ -n "$p" ]] && { mm_tilde "$p"; lines+=("$C_DIM◎$C_RESET $REPLY $C_DIM· kept ($MM_UN_AGENT_KEPT)$C_RESET"); }
     done < <(_uninstall_agent_extra "$i")
@@ -723,6 +738,7 @@ _uninstall_apply() {
   for i in "${todo[@]}"; do todo_names+=("${_UN_NAME[i]}"); done
   local sizes
   sizes="free $(mm_human "$free_bytes"), move $(mm_human "$trash_bytes") to Trash"
+  (( unknown )) && sizes+=", plus $unknown of unknown size"
   if [[ "$dry" == 1 ]]; then
     mm_banner "Uninstall preview$([[ "$MM_DRY_RUN" == 1 ]] && printf ' (dry run)')" \
       "Would remove ${#todo[@]} package$( (( ${#todo[@]} == 1 )) || printf s), $sizes: ${todo_names[*]}" \
@@ -738,7 +754,7 @@ _uninstall_apply() {
 
 # _uninstall_execute APT_STEPS APT_EXTRA_BYTES IDX... — APT_STEPS: 2 purge+autoremove, 1 purge only.
 _uninstall_execute() {
-  local apt_steps=$1 apt_extra_bytes=$2 i busy rc pkg_bytes=0 free_before ok found p
+  local apt_steps=$1 apt_extra_bytes=$2 i busy rc pkg_bytes=0 unknown=0 free_before ok found p
   shift 2
   local -a removed=() removed_idx=() apt_sel=() apt_idx=()
   free_before=$(mm_free_bytes /)
@@ -776,9 +792,11 @@ _uninstall_execute() {
         fi ;;
     esac
     if (( ! ok )); then mm_err "${_UN_NAME[i]}: removal failed; leftovers kept"; continue; fi
-    mm_ok "${_UN_NAME[i]}" "${_UN_SRC[i]}, $(mm_human "${_UN_BYTES[i]}")$([[ "${_UN_SRC[i]}" == bin ]] && printf ' to Trash')"
+    mm_ok "${_UN_NAME[i]}" "${_UN_SRC[i]}, $(_uninstall_human "${_UN_BYTES[i]}")$([[ "${_UN_SRC[i]}" == bin ]] && printf ' to Trash')"
     removed+=("${_UN_NAME[i]}"); removed_idx+=("$i")
-    [[ "${_UN_SRC[i]}" == bin ]] || pkg_bytes=$(( pkg_bytes + _UN_BYTES[i] ))
+    if [[ "${_UN_SRC[i]}" != bin ]]; then
+      if [[ -n "${_UN_BYTES[i]}" ]]; then pkg_bytes=$(( pkg_bytes + _UN_BYTES[i] )); else unknown=$((unknown + 1)); fi
+    fi
   done
 
   # Leftovers only after every package step: anything that failed or was skipped stays "in use"
@@ -805,7 +823,7 @@ _uninstall_execute() {
   free_after=$(mm_free_bytes /)
   mm_banner "Uninstall complete" \
     "Removed ${#removed[@]} package$( (( ${#removed[@]} == 1 )) || printf s)${removed[*]:+: ${removed[*]}}" \
-    "Space freed: $(mm_human "$freed") | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)" \
+    "Space freed: $(mm_human "$freed")$( (( unknown )) && printf ' + %d of unknown size' "$unknown") | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)" \
     "Free space: $(mm_human "$free_after") (+$(mm_human $(( free_after > free_before ? free_after - free_before : 0 ))))"
   return "$rc"
 }

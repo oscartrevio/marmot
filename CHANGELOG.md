@@ -42,6 +42,8 @@ All notable changes to marmot are recorded here. The format follows
 - `mm purge` keeps an artifact or worktree whose size can't be measured; it was counted as 0.
 - `mm purge` probes activity again right before deleting: a project touched since the scan, or
   whose activity can't be read, keeps its artifacts.
+- Sizes are measured with a time limit (`MM_SIZE_TIMEOUT`, 300 s). A size that times out or
+  can't be measured is shown as unknown and the item is kept; it was counted as 0 before.
 
 ## 0.2.0
 

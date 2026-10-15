@@ -313,6 +313,32 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   [ -d "$SB/root/big" ]
 }
 
+@test "a size walk that fails or outlasts MM_SIZE_TIMEOUT is unknown to the gate, and mm_rm keeps the path" {
+  mkdir -p "$SB/root/slow"; echo x >"$SB/root/slow/f"
+  mm_inuse_refresh
+  mm_test_fake du 'exec sleep 5'; mm_test_fake find 'exec sleep 5'; hash -r
+  MM_SIZE_TIMEOUT=0.2
+  run mm_size "$SB/root/slow"
+  [ "$status" -eq 124 ]; [ -z "$output" ]
+  run mm_frees "$SB/root/slow"
+  [ "$status" -eq 124 ]; [ -z "$output" ]
+  [ "$(mm_size_human "$SB/root/slow")" = "size unknown" ]
+  run try_rm "$SB/root/slow" "$SB/root"
+  [ "$output" = "1 size unknown (timed out)" ]
+  [ "$(mm_log_rows refused)" = "$SB/root/slow"$'\t'"size unknown (timed out)" ]
+  [ -f "$SB/root/slow/f" ]
+  # du could read part of the tree: reports show that much; the gate still refuses to guess.
+  mm_test_fake du 'echo "4096 total"; exit 1'; mm_test_fake find 'exit 1'
+  [ "$(mm_size "$SB/root/slow")" = 4096 ]
+  mm_test_fake du 'exit 1'
+  run mm_size "$SB/root/slow"
+  [ "$status" -eq 1 ]; [ -z "$output" ]
+  run try_rm "$SB/root/slow" "$SB/root"
+  [ "$output" = "1 size unreadable" ]
+  [ -f "$SB/root/slow/f" ]
+  [ "$(mm_size "$SB/root/missing")" = 0 ]
+}
+
 @test "root's own runs clean inside /root like any home; /root itself and its keys stay protected" {
   as_home() {
     HOME=$1 bash -c '. "$1/lib/core.sh"; shift

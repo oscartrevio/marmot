@@ -181,6 +181,7 @@ nix_gc = on               # nix generations older than 30 days, then garbage col
 | `MM_STATUS_VPN_IFACES` | VPN interface globs (`"tailscale* wg* tun* zt* nebula* netbird* wt*"`) |
 | `MM_OPTIMIZE_ORPHAN_AGE` | minimum age in seconds of orphaned processes and browsers (3600) |
 | `MM_ANALYZE_TIMEOUT` | seconds `mm analyze` spends sizing each location (20) |
+| `MM_SIZE_TIMEOUT` | seconds one size measurement may take (300); past it the size is unknown and the item is kept |
 | `MARMOT_PREFIX`, `MARMOT_BIN` | `install.sh`: install folder and launcher folder |
 
 ## Containers
