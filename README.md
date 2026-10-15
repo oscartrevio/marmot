@@ -1,326 +1,249 @@
 # marmot
 
-Keep an agentic coding machine clean, fast and up to date. `mm` is a terminal tool for
-Ubuntu/Debian machines where people run coding agents (Claude Code, Codex, Cursor Agent, Gemini
-CLI, Copilot CLI, opencode, Aider, ...): cloud VMs, devcontainers and Codespaces, WSL2, as root or
-as a normal user, with or without sudo and systemd. Inspired by
-[Mole](https://github.com/tw93/Mole), which does this for Macs.
+marmot (`mm`) cleans and monitors Debian and Ubuntu machines where coding agents run (Claude
+Code, Codex, Cursor Agent, Gemini CLI, Copilot CLI, opencode, Aider, ...): cloud VMs,
+devcontainers and Codespaces, WSL2, or your laptop, as root or as a normal user, with or without
+sudo and systemd. It never deletes what an agent or tool still uses, and it asks before it touches
+anything personal.
 
-```text
-mm clean       caches, old tool and agent builds, logs, Trash, apt/journal/snap, kernels, Docker
-mm purge       finished or abandoned git worktrees, then build artifacts of idle projects
-mm status      live health dashboard, agent sessions first (also --agent and --json snapshots)
-mm analyze     disk overview, then a read-only explorer; move what you pick to the Trash
-mm optimize    upgrades, swap reset, stranded processes, orphaned headless browsers, TRIM, DNS
-mm uninstall   apt/snap/npm/bun/pipx packages and ~/.local/bin tools, plus their leftovers
-mm schedule    a safe part of clean and purge on a daily or weekly timer, no prompts, no sudo
-mm history     everything marmot changed, refused or moved to the Trash
-mm update      update marmot from the git checkout it was installed from
-```
-
-Every command takes `--dry-run` (`-n`) and `--help`; `--debug` logs more. `mm` alone opens a
-command picker (with fzf on a terminal) or prints the usage. Start with `mm clean --dry-run`.
-
-## Install
+## Quick start
 
 ```sh
 git clone https://github.com/oscartrevio/marmot.git && cd marmot && ./install.sh
+mm clean --dry-run    # see what would go
+mm clean              # caches, old builds, logs; asks before anything that can't be regenerated
+mm status             # live health dashboard, agent sessions first
+mm purge              # finished git worktrees, build artifacts of idle projects
+mm schedule enable    # a safe part of clean and purge, daily, no prompts, no sudo
 ```
 
-No root needed. It copies marmot to `~/.local/share/marmot` (`MARMOT_PREFIX`), links `mm` and
-`marmot` into `~/.local/bin` (`MARMOT_BIN`), records the checkout and commit it came from (for
-`mm update`; `mm --version` shows the commit) and prints the lines that enable completion:
+`install.sh` needs no root. It copies marmot to `~/.local/share/marmot`, links `mm` and `marmot`
+into `~/.local/bin` and prints the lines that enable bash or zsh completion. It refuses to replace
+an `mm` that is not marmot's, or a git checkout at the install folder. Every command takes
+`--dry-run` (`-n`), `--help` and `--debug`. `mm` alone opens a command picker.
 
-```sh
-echo 'source ~/.local/share/marmot/completion/mm.bash' >> ~/.bashrc         # bash
-echo 'fpath=(~/.local/share/marmot/completion $fpath)' >> ~/.zshrc          # zsh, before compinit
-```
+## What it deletes, and what it never deletes
 
-`./install.sh --uninstall` removes the launchers and the installed copy; your config, history and
-the Trash stay.
-
-**Supported:** Debian 12+ and Ubuntu 22.04+ (including WSL2 and containers), bash 5.
-**Required:** git, coreutils, findutils, grep, sed, awk (mawk is fine).
-**Optional,** each feature degrades with a note when its tool is missing:
-
-| Tool | Used for |
+| | |
 |---|---|
-| sudo (or running as root) | apt, kernels, journal, snaps, system logs and crash dumps, root-owned sizes |
-| fzf | pickers in `purge`, `analyze`, `uninstall`, the `mm` menu |
-| ncdu | `mm analyze PATH` explorer (else the largest entries are listed) |
-| jq | `mm status --json`, `mm history --json` (jq 1.6 works) |
-| trash-cli | `trash-restore` to get Trash items back |
-| ss (iproute2) | ports and link latency panels in `mm status` |
-| systemd user instance, or crontab | `mm schedule` |
-| gh, logged in | `mm purge` asks whether a worktree's pull request is merged or closed |
-| docker, pnpm, uv, go, mise, conda, brew, nix, snap | cleaned with their own commands when installed |
+| **Without asking** | developer caches (npm, pnpm, yarn, bun, uv, pip, Go build, Cargo downloads, Gradle, Deno, Prisma, ... and your own rows), thumbnails, old browser builds (Playwright, Puppeteer, Cypress), old agent CLI versions, old editor server builds, agent and cloud CLI logs older than 7 days, automation-browser leftovers in `/tmp`; with sudo the apt cache, the journal above 500 MB and old snap revisions; Docker dangling images and old build cache |
+| **After asking on a terminal** | Trash items older than 7 days, crash reports and dumps, rotated system logs, autoremovable packages and old kernels, stopped Docker containers and unused images, git worktrees, build artifacts of idle projects, agent sessions (only if you opt in) |
+| **Only reported** | model stores (Hugging Face, Ollama, torch), dependency repositories (Maven, the Go module cache, ...), Node versions, Docker volumes, agent state, the biggest unknown folders in `~/.cache`, `/tmp` and `/var/tmp` |
+| **Never** | credentials (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker`, `~/.netrc`, keyrings, ...), `~/.config`, system folders, other users' homes (unless you name a folder in one, e.g. `mm purge /home/bob/src` as root), live or open logs, anything in use |
 
-procps, psmisc and iproute2 are not needed for safety: process, open-file and lock checks read
-`/proc`.
+Personal things (uninstall leftovers, virtualenvs, agent sessions, what you pick in `mm analyze`)
+go to `~/.local/share/Trash`; restore them with `trash-restore`. Regenerable caches, logs and build
+artifacts are deleted for good. Without a terminal (cron, pipes, agents) every step that asks is
+skipped.
 
-## What each command does
+How marmot decides something is still needed. It keeps a file, and every folder containing it,
+when:
 
-### mm clean
+- a running process has it open, runs in it or names it in its arguments (read from `/proc`);
+- a launcher in `~/.local/bin`, `~/bin` or a `$PATH` folder in your home points at it (symlink
+  targets, paths inside wrapper scripts);
+- an agent's config or any `*mcp*` JSON/TOML/YAML config names it, for any tool, listed or not
+  (`node ~/src/my-mcp/dist/index.js` keeps `~/src/my-mcp`);
+- a systemd user unit or your crontab names it;
+- it is a project file git tracks (purge never removes an artifact holding one), or a worktree
+  with uncommitted changes or commits on no branch or tag;
+- it is a cache entry used in the last 7 days (such as the packages `npx -y` installs for MCP
+  servers);
+- it is in your whitelist, or it looks like a credential (`*token*`, `*secret*`, `*.pem`,
+  `*.key`, `auth*.json`, ...).
 
-Deletes regenerable data. Rows whose path does not exist are ignored, so the lists below name
-every supported tool, not what a machine must have.
+A refusal names its reason (`used by ~/.cursor/mcp.json`). When a check fails, marmot keeps the
+thing. Every deletion goes through one gate and is logged, refusals included: see `mm history`.
 
-- **Developer caches** (deleted without asking, regenerated on next use): the cache rows of
-  `lib/catalog.sh` (npx, Corepack, TypeScript, pip, Cargo downloads, Gradle build cache and daemon
-  logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, RubyGems, Bundler, Composer, CPAN, Hex, opam,
-  Android, kubectl discovery/HTTP caches, Jupyter runtime files when no Jupyter runs, ...),
-  thumbnails, and the caches of npm, pnpm, yarn, bun, uv, mise, conda and Homebrew
-  through their own clean commands. A cache is skipped while a process that uses it runs. nix
-  garbage collection only with `nix_gc = on` (see Configuration).
-- **Old builds**: Playwright/Puppeteer/Cypress browser builds, Firebase emulators and
-  agent-browser Chrome builds (the newest per product, and anything in use, stay); old versions of
-  coding-agent CLIs that keep every version (the active one and one previous stay); editor server
-  builds in `~/.vscode-server`, `~/.vscode-server-insiders`, `~/.vscodium-server`,
-  `~/.cursor-server`, `~/.windsurf-server` (the newest stays) with their obsolete extensions,
-  cached VSIX packages and logs older than 7 days; JetBrains remote backends (the newest per IDE
-  stays); Chromium cache folders inside agent browser profiles while no browser has them open.
-- **Logs**: coding agents' own `*.log` files (and rotations) in the logs folder each agent
-  documents (`lib/agents.sh`), gcloud logs (`~/.config/gcloud/logs` or `$CLOUDSDK_CONFIG/logs`)
-  and Azure CLI logs (`~/.azure/logs` or `$AZURE_CONFIG_DIR/logs`): last written more than 7 days
-  ago and not in use.
-- **Automation-browser leftovers in /tmp**: `playwright_chromiumdev_profile-*`,
-  `puppeteer_dev_chrome_profile-*`, `playwright-artifacts-*`, `.org.chromium.Chromium.*`,
-  `.com.google.Chrome.*`; only your own, untouched for 2 hours and not in use.
-- **System and Docker, without asking**: with sudo, the apt package cache, the journal above
-  500 MB (vacuumed to 300 MB) and disabled snap revisions; Docker dangling images and build cache
-  older than 7 days (see Containers for whose daemon).
-- **After asking on a terminal**: Trash items deleted more than 7 days ago; your apport crash
-  reports older than 7 days; with sudo, autoremovable packages, residual configs, old kernels
-  (the running and the newest stay; not in containers), rotated system logs (`/var/log/**`
-  rotations, never live or open logs, never the journal) and crash dumps (`/var/crash`,
-  systemd-coredump) older than 7 days; Docker stopped containers and images no container uses
-  that were pulled or built 30+ days ago.
-- **Agent sessions**: kept unless you opt in (`--sessions N` for one run, or `sessions_keep_days`).
-  Then session files and rotated logs in agent state last written more than N days ago and not in
-  use move to the Trash; empty folders are removed afterwards.
-- **Reported only** under "Kept for you to review", with their size and the command that reclaims
-  them: model stores (Hugging Face, Ollama, torch), dependency repositories (`~/.m2`, `~/.ivy2`,
-  sbt, pub, NuGet, the Go module cache), Node versions, Docker volumes, W&B, the Terraform plugin cache, agent state,
-  and the biggest folders in `~/.cache` that no catalog row covers (add a row to clean one).
-- **Never swept**: `/tmp` and `/var/tmp` beyond the browser leftovers above. They hold other
-  programs' sockets and locks, and the OS ages them; marmot shows their size and the
-  systemd-tmpfiles age that applies (or the `tmpfiles.d` line to add when nothing ages them).
+## Commands
 
-`mm clean --whitelist` edits your protected paths. Without a terminal, every step that asks is
-skipped and reported; caches are still cleaned, and agent sessions move to the Trash only when
-`sessions_keep_days` is set.
+### mm clean [--sessions N] [--whitelist]
 
-### mm purge [DIR...]
+Removes what the table above lists. Caches are skipped while a process that uses them runs;
+npm, pnpm, yarn, bun, uv, mise, conda and Homebrew are cleaned with their own commands. For old
+builds, the newest (and anything in use) stays; for agent CLIs, the active version and one
+previous. `/tmp` and `/var/tmp` are not swept: marmot shows their size and how the OS ages them.
+Agent sessions are kept unless you opt in: `--sessions N` for one run (asks first) or
+`sessions_keep_days` in the config; then session files older than N days and not in use go to
+the Trash. `--whitelist` edits your protected paths.
 
-1. **Git worktrees.** A linked worktree is offered only when git reports it clean (untracked files
-   included), not locked, not in use by a process, and every commit is reachable from a branch or
-   tag. A **finished** one (its branch is merged into the default branch, also squash- or
-   rebase-merged; or its upstream branch was deleted; or its pull request is merged or closed, via
-   `gh`) is offered once idle 1 hour; an unmerged one after 30 idle days. Removed with
-   `git worktree remove` (never `--force`; the branch stays), only after you confirm on a terminal.
-2. **Build artifacts** of projects idle longer than `--days` (default 14): `node_modules`,
-   `.next`, `target`, `dist`, virtualenvs, SwiftPM `.build`, .NET `bin`/`obj`, `bower_components`,
-   `.nx/cache`, `.docusaurus`, a project's `.pnpm-store`, folders tagged with `CACHEDIR.TAG`, ...
-   Folders like `target`, `build`, `dist`, `vendor`, `bin`/`obj` count only next to the manifest
-   that rebuilds them. Never touched: anything git tracks, projects
-   whose git state can't be read, projects with a running process inside. Virtualenvs go to the
-   Trash, the rest is deleted permanently. `--all` also preselects recent projects (terminal
-   only).
+### mm purge [DIR...] [--days N] [--all] [--yes] [--paths]
 
-Where it looks: the DIRs given; else the roots in `~/.config/marmot/purge_paths` (`mm purge
---paths` edits it); else your home folder, your folders in `/workspaces` and `/workspace`, every
-worktree registered to a repository found there, and the worktree folders of known agents and
-orchestrators (`lib/agents.sh`).
+1. **Git worktrees.** A linked worktree is offered when git reports it clean (untracked files
+   included), it is not locked or in use, and every commit is on a branch or tag. Finished ones
+   (merged, also squash- or rebase-merged; upstream branch deleted; or pull request merged or
+   closed, via `gh`) after 1 idle hour, unmerged ones after 30 idle days. Removed with
+   `git worktree remove` (never `--force`; the branch stays) after you confirm.
+2. **Build artifacts** of projects idle longer than `--days` (14): `node_modules`, `.next`,
+   `target`, `dist`, virtualenvs, `.build`, .NET `bin`/`obj`, `.nx/cache`, folders tagged with
+   `CACHEDIR.TAG`, ... Folders like `target` or `vendor` count only next to the manifest that
+   rebuilds them. Virtualenvs go to the Trash.
 
-`mm purge --yes` (`-y`) is unattended: it removes the stale build artifacts only, never worktrees.
+It looks in the DIRs given, else in `~/.config/marmot/purge_paths` (`--paths` edits it), else in
+your home, your folders in `/workspaces` and `/workspace`, and agents' worktree folders. `--yes`
+runs unattended and removes stale build artifacts only, never worktrees. `--all` also preselects
+recent projects. Sizes count only what a delete really frees: files hard-linked from pnpm's store
+stay, and marmot runs `pnpm store prune` afterwards.
 
-**Sizes.** Every size marmot reports as freed counts only files whose every hard link is inside
-what is deleted, so a pnpm `node_modules` shows e.g. `1.4GB (frees 70MB; rest shared with the pnpm
-store)`. After removing pnpm-installed artifacts or worktrees, marmot runs `pnpm store prune`
-(unless pnpm is running) and reports what that freed. A dry run reports the same numbers a real
-run frees.
+### mm status [--once | --json | --agent] [--view compact|full] [--interval N]
 
-### mm status
+Read-only dashboard, live on a terminal (`v` switches compact and full view, `q` quits). It shows
+agent sessions (folder, age, busy or idle, CPU and memory including sub-processes, orphans whose
+folder is gone) and their helper processes on a separate line, then CPU, memory, disk, inodes,
+network and VPN, how you reach the machine (SSH, a relay, a local terminal) and your link's
+latency, lingering dev servers and ports, updates, failed units, pending reboot, the last
+scheduled run and a health score. `--agent` prints plain `key: value` text for coding agents,
+problems first with the command that fixes each; it is the default when stdout is not a terminal.
+`--json` needs jq.
 
-Read-only dashboard. Views:
+### mm analyze [PATH] [--json]
 
-- `mm status` on a terminal: live, refreshed every `--interval` seconds (default 2). The
-  **compact** view (default) shows agent sessions first, then one line per resource; `v` or
-  `--view full` switches to every panel; `q` quits.
-- `mm status --once`: one snapshot for people.
-- `mm status --agent`: plain `key: value` text for AI coding agents, problems first, each with the
-  command that addresses it. The default when stdout is not a terminal.
-- `mm status --json`: every number (needs jq).
+Overview of home, dev caches, agent state, user data, `/tmp`, containers, `/usr`, logs and old
+downloads, then a read-only ncdu explorer. For a folder of yours it offers to move picked items to
+the Trash.
 
-It shows agent sessions (folder, age, busy/idle, CPU and proportional memory including
-sub-processes; orphans whose folder was deleted) and, on a line of their own, the agents' helper
-processes (language-server hubs, daemons: the `helpers` field in `lib/agents.sh`), CPU, memory,
-disk and inodes, network/VPN, how you reach the machine (the program hosting your terminal: SSH,
-a direct connection, a relay such as a tunnel, or a local terminal; when you last typed; the
-latency of your link where it can be measured), lingering dev servers and ports, updates,
-failed units, pending reboot, the scheduled cleanup and its last run, and a health score.
+### mm optimize
 
-### mm analyze [PATH] · mm optimize · mm uninstall [NAME...] · mm history
+Diagnoses load, pressure, swap and the biggest processes, then, each after you confirm: apt
+upgrade (snap updates are only reported), swap reset when RAM allows, SIGTERM to processes
+stranded in deleted folders and to orphaned headless browsers older than 1 hour, `fstrim /`
+(unless run in the last 24 hours), DNS cache flush. It reports failed units and pending reboots
+and never reboots.
 
-- `mm analyze`: overview of home, dev caches, agent state, user data, `/tmp`, containers, `/usr`,
-  logs and old downloads (`--json` prints it), then a read-only ncdu explorer. For a folder of
-  yours it offers to move picked items to the Trash.
-- `mm optimize`: diagnosis, then, each after confirming on a terminal: apt upgrade, swap reset
-  when RAM allows, SIGTERM to processes stranded in deleted folders and to orphaned headless
-  browsers (Playwright, Puppeteer, agent Chromium whose script is gone; older than 1 hour),
-  `fstrim /` (unless trimmed in the last 24 h), DNS cache flush. Reports failed units and pending
-  reboots; never reboots.
-- `mm uninstall`: packages from apt, snap, `npm -g`, `bun -g`, pipx and `~/.local/bin`, plus
-  leftovers matched by exact name (`~/.config/NAME`, `~/.cache/NAME`, `~/.local/share/NAME`,
-  `~/.NAME`, `~/snap/NAME`) to the Trash. `-l`/`--list` lists, `-a`/`--all` adds manually
-  installed libraries. The base system and cloud guest agents are never offered;
-  remote-access/VPN software only when named, with a separate confirmation.
-- `mm history [-l N | --all] [--json]`: the operations log.
+### mm uninstall [NAME...] [--list] [--all]
+
+Removes packages from apt, snap, `npm -g`, `bun -g`, pipx and `~/.local/bin`, plus leftovers with
+the exact name (`~/.config/NAME`, `~/.cache/NAME`, `~/.local/share/NAME`, `~/.NAME`,
+`~/snap/NAME`) to the Trash. apt removals are simulated first. The base system and cloud guest
+agents are never offered; remote-access and VPN software only when you name it, with a separate
+confirmation.
 
 ### mm schedule [status | enable [--daily | --weekly] | disable | run]
 
-`mm schedule enable` runs `mm schedule run` daily (or `--weekly`, Sundays) at 03:00 plus a random
-delay of up to an hour. It writes a systemd user timer (`marmot-schedule.timer` in
-`~/.config/systemd/user`, catches up on runs missed while the machine was off) when
-`systemctl --user` answers, else a crontab line ending in `# marmot`, else explains why it can't.
-`mm schedule status` (the default) shows what is scheduled, the next and the last run, and warns
-when linger is off: a user timer then runs only while you are logged in, and
-`sudo loginctl enable-linger $USER` fixes that. `mm schedule disable` removes only what enable
-wrote.
+`enable` runs `mm schedule run` daily (or weekly) at 03:00 plus up to an hour of random delay,
+through a systemd user timer when `systemctl --user` works, else a crontab line tagged
+`# marmot`. `status` shows the next and last run and warns when linger is off (then
+`sudo loginctl enable-linger $USER`). `disable` removes only what `enable` wrote.
 
-A run asks nothing and never runs sudo. It cleans: Trash items deleted more than 30 days ago,
-thumbnails, regenerable caches (catalog rows and the tools' own cleans), old browser builds and
-agent CLI versions, agent and gcloud/Azure CLI logs older than 7 days, automation-browser
-leftovers in `/tmp`, old editor server builds and their leftovers, build artifacts of projects
-idle 14+ days (as `mm purge --yes`), and agent sessions only with `sessions_keep_days` set. It
-never touches anything that needs root, Docker, git worktrees, packages, processes or upgrades.
-Two runs never overlap; changes are logged under `schedule` in `mm history`; each run's totals,
-skips and errors go to `~/.local/state/marmot/last-run.json`, which `mm status` shows.
+A run never asks and never uses sudo. It cleans Trash items older than 30 days, caches, old
+browser builds and agent CLI versions, logs older than 7 days, `/tmp` browser leftovers, old
+editor server builds, build artifacts of projects idle 14+ days (as `mm purge --yes`), and agent
+sessions only with `sessions_keep_days` set. It never touches Docker, worktrees, packages,
+processes or anything that needs root. Results go to `~/.local/state/marmot/last-run.json`.
+
+### mm history [-l N | --all] [--json]
+
+What marmot removed, moved to the Trash, refused or failed.
 
 ### mm update [--check]
 
-Fetches the upstream of the checkout `install.sh` recorded, lists the new commits and, after you
-confirm on a terminal, runs `git pull --ff-only` there and re-runs its `install.sh`. A checkout
-with uncommitted changes or diverging local commits is refused with the reason. `--check` (also
-what `mm update` does without a terminal or with `--dry-run`) only reports: exit 0 up to date, 10
-update available, anything else an error or refusal. One update runs at a time (lock in
-`~/.local/state/marmot/`).
+Fetches the upstream of the checkout marmot was installed from, lists the new commits and, after
+you confirm, fast-forwards it and re-runs `install.sh`. Uncommitted changes or diverging commits
+are refused. `--check` (also the behavior without a terminal) only reports: exit 0 up to date, 10
+update available, anything else an error.
 
-## Safety
+## Extending
 
-marmot deletes files, so it refuses rather than guesses:
+Configuration lives in `~/.config/marmot/` (`$XDG_CONFIG_HOME/marmot`), state in
+`~/.local/state/marmot/`.
 
-- **One gate.** Every deletion goes through one function (or a tool's own documented clean
-  command). It refuses paths outside the folder a step cleans, system folders (`/usr`, `/etc`,
-  `/var/lib`, `/opt`, other disks, other users' homes), names with control characters, anything
-  protected, and anything a running process uses (open files, working directories, sockets,
-  mounts), and re-checks that the target did not change while it was measured. As root with
-  `HOME=/root`, `/root` follows the same rules as any home.
-- **Anything a tool still needs is kept**, for any tool, listed or not: a file named by a running
-  process's arguments, by a launcher in `~/.local/bin`, `~/bin` or a `$PATH` folder in your home
-  (symlink targets, paths inside wrapper scripts), by a coding agent's config or any `*mcp*`
-  JSON/TOML/YAML config in a dot-folder (MCP servers such as `node ~/src/my-mcp/dist/index.js`),
-  by a systemd user unit or by your crontab keeps itself and every folder containing it. Only
-  files count: a config that lists project folders does not freeze them. The refusal names the
-  source (`used by ~/.cursor/mcp.json`).
-- **Built-in protections** that cannot be edited away: `~/.ssh`, `~/.gnupg`, credentials
-  (`~/.aws`, `~/.azure`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.git-credentials`, keyrings,
-  ...), `~/.config`, and the state of every known coding agent and orchestrator (`lib/agents.sh`).
-  A few log and cache folders inside them are open (gcloud and Azure CLI logs, kubectl's
-  `~/.kube/cache/discovery` and `~/.kube/cache/http`; `MM_CLEAN_CARVEOUTS` in `lib/core.sh`), and
-  even there names that look like credentials (`*credential*`, `*token*`, `*secret*`, `*.pem`,
-  `*.key`, `auth*.json`, ...) are kept.
-- **Trash for anything personal.** Uninstall leftovers, virtualenvs, agent sessions and what you
-  pick in `mm analyze` go to `~/.local/share/Trash` (restore with `trash-restore`). If the Trash
-  is on another filesystem the item is kept, not deleted. Regenerable caches, logs and build
-  artifacts are deleted permanently.
-- **Confirmations need a terminal.** Without one (cron, pipes, agents) every step that asks is
-  skipped. There is no global `--yes`; `mm purge --yes` (stale build artifacts) and
-  `mm schedule run` (the fixed list above) are the only unattended runs of steps that otherwise
-  ask.
-- **When unsure, keep.** A git check that fails keeps the folder; an agent version that can't be
-  identified as active keeps all versions; a worktree with uncommitted or unreachable work is
-  never offered.
-- **Everything is logged** to `~/.local/state/marmot/operations.log`, refusals with their reason:
-  `mm history`.
+**Any agent or tool: `agents`.** One row per line in the format of `lib/agents.sh`:
 
-## Containers
-
-marmot detects a container from `/.dockerenv`, `/run/.containerenv`, `/run/systemd/container`,
-`$container`, cgroup hints or an overlay root; `MM_CONTAINER=1` or `0` overrides it. In a
-container:
-
-- `mm status` says so in the header and measures CPU and memory against the cgroup v2 limits
-  (`cpu.max`, `memory.max`) when set; load, uptime, reboot and kernel checks belong to the host.
-- `mm optimize` skips the swap reset, TRIM and reboot check; `mm clean` offers no old kernels.
-- Docker is cleaned only when the daemon is this machine's own: not when `DOCKER_HOST` or the
-  docker context points elsewhere, and not through a mounted `docker.sock` from inside a container
-  (that is the host's daemon) unless dockerd runs in the container. `MM_DOCKER_PRUNE=1` cleans
-  that daemon anyway.
-- `mm purge` also scans the folders you own in `/workspaces` and `/workspace` (devcontainers,
-  Codespaces, Gitpod, Coder).
-
-## Configuration
-
-All under `~/.config/marmot/` (`$XDG_CONFIG_HOME/marmot` when set); state under
-`~/.local/state/marmot/` (`$XDG_STATE_HOME`).
-
-| File | Purpose |
-|---|---|
-| `config` | settings, `key = value` per line, `#` comments |
-| `whitelist` | your protected paths or globs, one per line, `~` expands (`mm clean --whitelist`) |
-| `catalog` | extra cache folders inside your home for `mm clean`, one row per line: `cache\|My tool cache\|~/.cache/mytool\|mytool` (label, path, process names that mean busy; format in `lib/catalog.sh`) |
-| `purge_paths` | project roots for `mm purge` instead of discovery (`mm purge --paths`) |
-| state: `operations.log` | everything changed or refused (`mm history`) |
-| state: `last-run.json` | the last `mm schedule run` |
-
-Settings in `config`, both off by default:
-
-```ini
-# Agent session retention: on every `mm clean` (also without a terminal) and every scheduled
-# run, session files older than N days and not in use move to the Trash.
-sessions_keep_days = 30
-# nix: delete profile generations older than 30 days and collect unreferenced store paths.
-nix_gc = on
+```text
+name | process names | state | sessions | versions dir | active symlink | worktrees | logs | helpers
+My Tool|mytool mytool-cli|~/.mytool ~/.config/mytool|~/.mytool/sessions||||~/.mytool/logs
 ```
 
-Environment variables:
+That row makes `mm status` show `mytool` processes as agent sessions, protects `~/.mytool` and
+`~/.config/mytool`, lets `mm clean` remove its logs older than 7 days, and its sessions only if
+you opt in. A versions dir and active symlink let `mm clean` prune old versions; worktree dirs
+tell `mm purge` where to look. Paths must be inside your home. Bad rows are ignored with a
+reason; a row named like a built-in one replaces it.
+
+**Your caches: `catalog`.** `cache|My tool cache|~/.cache/mytool|mytool` (label, path inside your
+home, process names that mean busy; format in `lib/catalog.sh`).
+
+**`whitelist`**: protected paths or globs, one per line (`mm clean --whitelist`).
+**`purge_paths`**: project roots for `mm purge` (`mm purge --paths`).
+
+**`config`**, `key = value`, both off by default:
+
+```ini
+sessions_keep_days = 30   # agent session files older than N days, not in use, go to the Trash
+nix_gc = on               # nix generations older than 30 days, then garbage collection
+```
 
 | Variable | Effect |
 |---|---|
-| `MM_CONTAINER` | `1`/`0`: treat this machine as a container or not (default: detected) |
+| `MM_CONTAINER` | `1`/`0`: treat the machine as a container or not (default: detected) |
 | `MM_DOCKER_PRUNE` | `1`: let `mm clean` prune a Docker daemon that is not this machine's own |
 | `MM_STATUS_LINGER_AGE` | seconds before a dev process or listener counts as lingering (86400) |
-| `MM_STATUS_VPN_IFACES` | VPN interface globs for `mm status` (`"tailscale* wg* tun* zt* nebula* netbird* wt*"`) |
+| `MM_STATUS_VPN_IFACES` | VPN interface globs (`"tailscale* wg* tun* zt* nebula* netbird* wt*"`) |
 | `MM_OPTIMIZE_ORPHAN_AGE` | minimum age in seconds of orphaned processes and browsers (3600) |
 | `MM_ANALYZE_TIMEOUT` | seconds `mm analyze` spends sizing each location (20) |
 | `MARMOT_PREFIX`, `MARMOT_BIN` | `install.sh`: install folder and launcher folder |
 
-Known agents, orchestrators and cleanup targets live in `lib/agents.sh` and `lib/catalog.sh`:
-adding a tool is adding a row.
+## Containers
+
+marmot detects containers (`/.dockerenv`, `/run/.containerenv`, cgroup hints, ...);
+`MM_CONTAINER` overrides it. In a container `mm status` follows the cgroup v2 CPU and memory
+limits, `mm optimize` skips swap reset, TRIM and the reboot check, and `mm clean` offers no
+kernels. Docker is cleaned only when the daemon is this machine's own, not through `DOCKER_HOST`,
+another context or a mounted `docker.sock` (set `MM_DOCKER_PRUNE=1` to override). `mm purge`
+scans your folders in `/workspaces` and `/workspace`.
+
+## Network access
+
+marmot has no telemetry. It makes these outbound calls:
+
+- `mm update`: `git fetch` from the checkout's upstream.
+- `mm purge`: `gh pr view <branch>` for worktree branches, only when `gh` is installed and logged
+  in. This sends branch names to GitHub.
+- `mm optimize`: `apt-get update` (after you confirm, not in a dry run) and `snap refresh --list`.
+- `mm clean`: tools' own clean commands (npm, yarn through Corepack, Homebrew, ...) may contact
+  their registries.
+
+## Requirements
+
+Debian 12+ or Ubuntu 22.04+ (including WSL2 and containers), bash 5, git, coreutils, findutils,
+grep, sed and awk (mawk works). Optional tools; each feature says so when its tool is missing:
+
+| Tool | Used for |
+|---|---|
+| sudo (or root) | apt, kernels, journal, snaps, system logs, crash dumps |
+| fzf | pickers in `purge`, `analyze`, `uninstall` and the `mm` menu |
+| ncdu | the `mm analyze` explorer |
+| jq | `--json` output of `status` and `history` |
+| trash-cli | `trash-restore` |
+| ss (iproute2) | ports and latency in `mm status` |
+| systemd user instance or crontab | `mm schedule` |
+| gh, logged in | pull request state in `mm purge` |
+| docker, pnpm, uv, go, mise, conda, brew, nix, snap | cleaned with their own commands |
+
+Safety checks read `/proc` and do not need procps, psmisc or iproute2.
+
+## Uninstall
+
+```sh
+./install.sh --uninstall
+```
+
+It disables the schedule, removes the launchers and the installed copy (never a git checkout).
+Your config, history and Trash stay.
 
 ## Development
 
 ```sh
-sudo apt-get install bats shellcheck jq python3
-tests/run.sh                    # shellcheck + the whole bats suite
+tests/run.sh                    # shellcheck and the bats suite (bats-core 1.5+)
 tests/run.sh tests/purge.bats   # one file
+tests/e2e/run.sh [IMAGE] [--root] [--minimal]   # real run in a container; needs docker
 ```
 
-The suite needs bats-core 1.5 or newer; Ubuntu 22.04's package is older, and `tests/run.sh` says
-so and prints how to install a pinned release. Tests never touch the real machine: each gets a
-throwaway `HOME`, and commands that change the system (`sudo`, apt, docker, snap, kill, swap,
-mount, package managers) are stubs that fail the test if called for real. Every raw deletion
-outside the gate carries a `# SAFE: <reason>` comment (enforced by `tests/audit.bats`).
+Tests use a throwaway `HOME` and stub every command that changes the system. CI runs
+`tests/run.sh` once per pull request. Run the end-to-end scenario before changing what gets
+deleted.
 
-End to end: `tests/e2e/run.sh [IMAGE] [--root] [--minimal]` (needs docker and network access)
-builds a realistic agent machine in a container (default image `debian:12`): real npm and pnpm
-installs, git worktrees, caches, old Trash items, agent sessions, a whitelisted folder. It runs
-marmot for real, through a pty where a confirmation is needed, measures the home folder and disk
-before and after, and checks the minimum reclaim and that protected items survived. It runs as a
-normal user with sudo, as root with `--root`, and without procps, psmisc, iproute2 and sudo with
-`--minimal`. The scenario itself is `tests/e2e/agent-vm.sh`.
+## License
 
-CI runs `tests/run.sh` once per pull request on the Ubuntu 24.04 runner (skipped for docs-only
-changes). Run the end-to-end scenario locally before changes to what gets deleted, and the suite
-in a `debian:12` or `ubuntu:22.04` container before changes that may depend on older mawk or jq.
+GPL-3.0. marmot is inspired by [Mole](https://github.com/tw93/Mole) by tw93, which does this for
+Macs, and parts of it are ported from Mole.
