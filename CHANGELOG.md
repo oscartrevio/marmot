@@ -16,6 +16,7 @@ All notable changes to marmot are recorded here. The format follows
 - `mm clean` lists the biggest folders in `~/.cache` that no catalog row covers, never deleting
   them, with the catalog row that would.
 - `SECURITY.md`, `CONTRIBUTING.md` and `AGENTS.md`.
+- `mm purge` keeps build folders holding a `*-keypair.json` (Solana/Anchor deploy keys).
 
 ### Changed
 

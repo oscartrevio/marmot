@@ -63,8 +63,9 @@ Usage: mm purge [DIR...] [options]
    bin/obj, bower_components, .nx/cache, .docusaurus, a project's .pnpm-store, and folders inside
    a project that tag themselves as caches with CACHEDIR.TAG). Projects idle longer
    than --days are selected by default. Never touched: projects with a running process inside
-   them, anything git tracks, and anything whose git state can't be read. Virtualenvs (venv,
-   .venv) go to the Trash; everything else is deleted permanently.
+   them, anything git tracks, anything whose git state can't be read, and artifacts holding a
+   nested git repository or a deploy keypair (*-keypair.json, e.g. Solana's target/deploy/).
+   Virtualenvs (venv, .venv) go to the Trash; everything else is deleted permanently.
 
 Sizes: FREES is what a delete really releases. Files hard-linked from elsewhere (pnpm's store)
 stay on disk, so after removing pnpm-installed node_modules or worktrees marmot runs
@@ -457,16 +458,19 @@ _purge_busy() {
     - <(mm_inuse_paths) | sort -u
 }
 
-# _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>has_git<TAB>path" per artifact (see
-# mm_size_frees), 4 in parallel. has_git=1 when a .git entry exists anywhere inside (a nested
-# repository: never purged).
+# _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>holds<TAB>path" per artifact (see
+# mm_size_frees), 4 in parallel. holds is what makes the artifact never purged, from one find:
+# "git" when a .git entry exists anywhere inside (a nested repository), "keypair" when a
+# *-keypair.json file does (Solana/Anchor program keypairs in target/deploy/: losing one loses the
+# deploy authority).
 _purge_measure() {
   (
     export -f mm_size_frees
     printf '%s\0' "$@" | xargs -0 -P4 -n1 bash -c '
-      g=$(find "$1" -xdev -mindepth 1 -name .git -print -quit 2>/dev/null)
+      g=$(find "$1" -xdev -mindepth 1 \( -name .git -o -type f -name "*-keypair.json" \) -print -quit 2>/dev/null)
+      h=""; case "${g##*/}" in .git) h=git ;; ?*) h=keypair ;; esac
       read -r s f < <(mm_size_frees "$1")
-      printf "%s\t%s\t%s\t%s\0" "${s:-0}" "${f:-0}" "${g:+1}" "$1"' _
+      printf "%s\t%s\t%s\t%s\0" "${s:-0}" "${f:-0}" "$h" "$1"' _
   )
 }
 
@@ -1018,26 +1022,27 @@ _purge_run() {
     done < <(printf '%s\n' "${!skip_n[@]}" | sort)
   fi
 
-  # ---- sizes, frees and nested-repository check (parallel)
-  local -A size=() frees=() nested=()
-  local b fb hasgit n=0 total=${#cand[@]}
+  # ---- sizes, frees and what an artifact holds that must survive (parallel)
+  local -A size=() frees=() holds=()
+  local b fb h n=0 total=${#cand[@]}
   local -a cand_paths=() keep_cand=() freed_paths=()
   for i in "${cand[@]}"; do cand_paths+=("${arts[$i]}"); done
   if (( total )); then
     while IFS= read -r -d '' rec; do
       b="${rec%%$'\t'*}" rec="${rec#*$'\t'}" fb="${rec%%$'\t'*}" rec="${rec#*$'\t'}"
-      hasgit="${rec%%$'\t'*}" p="${rec#*$'\t'}"
-      size[$p]=$b frees[$p]=$fb; [[ "$hasgit" == 1 ]] && nested[$p]=1; n=$((n + 1))
+      h="${rec%%$'\t'*}" p="${rec#*$'\t'}"
+      size[$p]=$b frees[$p]=$fb holds[$p]=$h; n=$((n + 1))
       [[ -t 2 ]] && printf '\r  %sMeasuring %d/%d artifacts…%s' "$C_DIM" "$n" "$total" "$C_RESET" >&2
     done < <(_purge_measure "${cand_paths[@]}")
     [[ -t 2 ]] && printf '\r\e[K' >&2
   fi
   for i in "${cand[@]}"; do
-    if [[ -n "${nested[${arts[$i]}]:-}" ]]; then
-      kept_out+=("${arts[$i]}"$'\t'"contains a git repository")
-    else
-      keep_cand+=("$i")
-    fi
+    art="${arts[$i]}"
+    case "${holds[$art]:-}" in
+      git) kept_out+=("$art"$'\t'"contains a git repository"); continue ;;
+      keypair) kept_out+=("$art"$'\t'"holds a deploy keypair"); continue ;;
+    esac
+    keep_cand+=("$i")
   done
   cand=("${keep_cand[@]}")
 

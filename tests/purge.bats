@@ -133,6 +133,17 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [ -d "$SB/b/node_modules/.git" ]
 }
 
+@test "a target/ holding a deploy keypair is kept and says so; a sibling's target/ is removed" {
+  mkdir -p "$SB/prog/target/deploy" "$SB/plain/target/debug"
+  touch "$SB/prog/Cargo.toml" "$SB/plain/Cargo.toml" "$SB/plain/target/debug/bin"
+  echo '[1,2,3]' >"$SB/prog/target/deploy/prog-keypair.json"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ -f "$SB/prog/target/deploy/prog-keypair.json" ]
+  [[ "$output" == *"kept (holds a deploy keypair)"* ]]
+  [ ! -e "$SB/plain/target" ]
+}
+
 @test "symlinked artifact is skipped and its target untouched" {
   mkdir -p "$SB/elsewhere/real"; touch "$SB/elsewhere/real/precious"
   node_project "$SB/p"; rm -r "$SB/p/node_modules"
