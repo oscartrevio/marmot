@@ -24,6 +24,7 @@ mm_usage() {
 ${C_BOLD}marmot${C_RESET} (mm) $MM_VERSION: keep this machine clean, fast, and up to date
 
 Usage: mm [command] [options]
+Start with: mm clean --dry-run
 
 Commands:
 EOF

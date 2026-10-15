@@ -13,6 +13,13 @@ All notable changes to marmot are recorded here. The format follows
 
 - CI runs once per pull request, as one job running the suite one file at a time; docs-only
   changes skip it.
+- `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`
+  with a warning.
+- `install.sh --uninstall` disables the schedule first, so no timer or cron line calls a removed
+  launcher.
+- `install.sh` no longer needs git (only `mm update` does, and says so) and prints the exact
+  line that puts the launcher folder on PATH.
+- `mm history --help` and `mm update --help` list every option; `mm --help` says where to start.
 
 ## 0.2.0
 

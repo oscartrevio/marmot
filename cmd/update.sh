@@ -10,7 +10,7 @@ _UPDATE_SHOW=20        # new commits listed by subject
 
 _update_usage() {
   cat <<EOF
-Usage: mm update [--check]
+Usage: mm update [--check | --dry-run]
 
 Updates marmot from the git checkout it was installed from (install.sh records it): fetches
 the branch's upstream, lists the new commits, and after you confirm on a terminal
@@ -19,8 +19,10 @@ with local commits that diverge from upstream is refused, with the reason.
 
   --check   Only report (fetches, changes nothing else). Exit 0: up to date,
             $_UPDATE_AVAILABLE: update available, other: error or refused.
+  -n, --dry-run
+            Same as --check.
 
-Without a terminal, or with --dry-run, mm update behaves like --check.
+Without a terminal, mm update behaves like --check. It needs git.
 EOF
 }
 
@@ -114,6 +116,7 @@ mm_cmd_main() {
     esac
     shift
   done
+  command -v git >/dev/null || mm_die "git is not installed, and mm update needs it: sudo apt-get install git"
   [[ -z "$report" && "$MM_DRY_RUN" == 1 ]] && report="dry run"
   [[ -z "$report" && "$MM_TTY" != 1 ]] && report="no terminal"
   # Nobody can answer a credential prompt without a terminal: fail instead of hanging.

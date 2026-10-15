@@ -22,15 +22,53 @@ die()  { printf '✗ %s\n' "$*" >&2; exit 1; }
 # _is_marmot_tree DIR — DIR looks like a marmot install (guards every removal below).
 _is_marmot_tree() { [[ -f "$1/marmot" && -f "$1/lib/core.sh" && -d "$1/cmd" ]]; }
 
+# _is_checkout DIR — DIR holds git metadata: never removed, whoever asks.
+_is_checkout() { [[ -e "$1/.git" ]]; }
+
+# _foreign NAME — $bindir/NAME exists and is not a symlink to a marmot launcher.
+_foreign() {
+  local l="$bindir/$1"
+  [[ -e "$l" || -L "$l" ]] && ! { [[ -L "$l" ]] && _is_marmot_tree "$(dirname "$(readlink -f "$l")")"; }
+}
+
+# _link NAME — point $bindir/NAME at this install unless _foreign; 1 (with a warning naming the
+# file) when it was left alone.
+_link() {
+  local l="$bindir/$1"
+  if _foreign "$1"; then
+    warn "kept $l: it is not a marmot launcher (remove or rename it to use $1)"
+    return 1
+  fi
+  ln -sfn "$prefix/marmot" "$l" && say "linked $l"
+}
+
+# _path_hint — the line that puts $bindir on PATH, and the startup file it belongs in.
+_path_hint() {
+  local dir=$bindir rc=~/.profile
+  [[ "$dir" == "$HOME"/* ]] && dir="\$HOME/${dir#"$HOME"/}"
+  case "${SHELL:-}" in */zsh) rc=~/.zshrc ;; */bash) rc=~/.bashrc ;; esac
+  warn "$bindir is not on your PATH. Add this line to $rc, then open a new shell:"
+  printf '    export PATH="%s:$PATH"\n' "$dir" >&2
+}
+
+# _unschedule — remove the timer or crontab line `mm schedule enable` created, so nothing keeps
+# calling a launcher that is about to go away.
+_unschedule() {
+  [[ -f "$prefix/marmot" ]] || return 0
+  say "disabling marmot's schedule (mm schedule disable):"
+  bash "$prefix/marmot" schedule disable </dev/null || warn "could not disable the schedule: run mm schedule disable before uninstalling"
+}
+
 uninstall() {
   local l
+  _unschedule
   for l in "$bindir/mm" "$bindir/marmot"; do
     if [[ -L "$l" && "$(readlink -f "$l")" == "$prefix/marmot" ]]; then
       rm -f -- "$l" && say "removed $l"   # SAFE: our own launcher symlink, target verified
     fi
   done
   if _is_marmot_tree "$prefix"; then
-    if [[ -e "$prefix/.git" ]]; then
+    if _is_checkout "$prefix"; then
       say "kept $prefix (a git checkout; remove it yourself if you want)"
     else
       rm -rf -- "$prefix" && say "removed $prefix"   # SAFE: verified marmot install, not a git checkout
@@ -43,8 +81,9 @@ check() {
   [[ "$(uname -s)" == Linux ]] || die "marmot runs on Linux (Ubuntu/Debian)."
   (( BASH_VERSINFO[0] >= 5 )) || die "bash 5.0 or newer is required (found $BASH_VERSION)."
   local c missing=()
-  for c in find awk sed grep stat realpath du df git; do command -v "$c" >/dev/null || missing+=("$c"); done
+  for c in find awk sed grep stat realpath du df; do command -v "$c" >/dev/null || missing+=("$c"); done
   (( ${#missing[@]} == 0 )) || die "missing required tools: ${missing[*]}"
+  command -v git >/dev/null || say "git not found: everything works except mm update (install git and clone marmot to use it)."
   command -v apt-get >/dev/null || warn "no apt-get: system-package steps will be skipped (marmot targets Ubuntu/Debian)."
   local opt=()
   command -v fzf >/dev/null      || opt+=("fzf (pickers)")
@@ -59,7 +98,7 @@ check() {
 record_source() {
   local commit="" describe="" bin
   bin=$(cd "$bindir" && pwd)
-  if [[ "$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" == "$src" ]]; then
+  if command -v git >/dev/null && [[ "$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" == "$src" ]]; then
     commit=$(git -C "$src" rev-parse -q --verify HEAD 2>/dev/null) || commit=""
     if [[ -n "$commit" ]]; then describe=$(git -C "$src" describe --tags --always --dirty 2>/dev/null) || describe=""; fi
   fi
@@ -74,11 +113,13 @@ record_source() {
 
 install() {
   check
+  _foreign mm && die "$bindir/mm exists and is not a marmot launcher: move it away or set MARMOT_BIN, then run install.sh again"
   local copied=0
   if [[ "$(readlink -f "$prefix" 2>/dev/null)" != "$src" ]]; then
     if [[ -e "$prefix" ]]; then
       _is_marmot_tree "$prefix" || die "$prefix exists and is not a marmot install; set MARMOT_PREFIX."
-      rm -rf -- "$prefix"   # SAFE: verified marmot tree, replaced by this checkout
+      _is_checkout "$prefix" && die "$prefix is a git checkout; not replacing it. Set MARMOT_PREFIX to install elsewhere, or remove it yourself."
+      rm -rf -- "$prefix"   # SAFE: verified marmot tree and not a git checkout, replaced by this checkout
     fi
     mkdir -p "$prefix"
     # Only what runs: the launcher, libraries, commands, completion, and this installer (for
@@ -89,10 +130,9 @@ install() {
   fi
   mkdir -p "$bindir"
   if (( copied )); then record_source; fi
-  ln -sfn "$prefix/marmot" "$bindir/mm"
-  ln -sfn "$prefix/marmot" "$bindir/marmot"
-  say "linked $bindir/mm and $bindir/marmot"
-  case ":$PATH:" in *":$bindir:"*) ;; *) warn "$bindir is not on your PATH; add it to your shell profile." ;; esac
+  _link mm
+  _link marmot || true
+  case ":$PATH:" in *":$bindir:"*) ;; *) _path_hint ;; esac
   say ""
   say "Shell completion:"
   say "  bash: echo 'source $prefix/completion/mm.bash' >> ~/.bashrc"
