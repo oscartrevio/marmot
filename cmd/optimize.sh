@@ -445,7 +445,8 @@ _optimize_protected() {
 }
 
 # _optimize_agent_of PID COMM — the coding agent (lib/agents.sh) PID belongs to, if any: matched
-# on comm or on the program/script name in argv (agents often run as `node …/claude.js`).
+# on comm or on the program/script name in argv (agents often run as `node …/claude.js`). One of
+# the agent's own helper processes (its helpers field) is named "<agent> helper".
 _optimize_agent_of() {
   local names=("$2") a i proc
   local -a argv=()
@@ -453,7 +454,11 @@ _optimize_agent_of() {
   for a in "${argv[@]}"; do a=${a##*/}; names+=("${a%.*js}"); done
   for i in "${!MM_AGENT_NAME[@]}"; do
     for proc in ${MM_AGENT_PROCS[i]}; do
-      for a in "${names[@]}"; do [[ "$a" == "$proc" ]] && { echo "${MM_AGENT_NAME[i]}"; return 0; }; done
+      for a in "${names[@]}"; do
+        [[ "$a" == "$proc" ]] || continue
+        if mm_agent_helper "$i" "$1"; then echo "${MM_AGENT_NAME[i]} helper"; else echo "${MM_AGENT_NAME[i]}"; fi
+        return 0
+      done
     done
   done
   return 1

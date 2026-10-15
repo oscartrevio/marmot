@@ -82,16 +82,61 @@ agent() { local i; for i in "${!MM_AGENT_NAME[@]}"; do [[ "${MM_AGENT_NAME[i]}" 
   [ "${MM_AGENT_LOGS[o]}" = "$HOME/.omp/logs" ]
 }
 
-@test "a row without the worktree and logs columns still loads, with no logs dir" {
+@test "a row without the worktree, logs and helpers columns still loads, with none of them" {
   MM_AGENTS_TABLE='
 Tool|tool|~/.tool|~/.tool/sessions|~/.tool/versions|~/.local/bin/tool
 '
   MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
-  MM_AGENT_WORKTREES=() MM_AGENT_LOGS=()
+  MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=()
   _mm_agents_load
   [ "${#MM_AGENT_LOGS[@]}" -eq 1 ]
+  [ "${#MM_AGENT_HELPERS[@]}" -eq 1 ]
   [ "${MM_AGENT_ACTIVE[0]}" = "$HOME/.local/bin/tool" ]
   [ -z "${MM_AGENT_LOGS[0]}" ]
+  [ -z "${MM_AGENT_HELPERS[0]}" ]
+  run mm_agent_helper 0 $$
+  [ "$status" -ne 0 ]
+}
+
+# ---------------------------------------------------------------- helpers
+
+@test "the helpers column loads aligned and unexpanded (globs stay globs)" {
+  [ "${#MM_AGENT_HELPERS[@]}" -eq "${#MM_AGENT_NAME[@]}" ]
+  local o
+  o=$(agent oh-my-pi)
+  [ "${MM_AGENT_HELPERS[o]}" = '__omp_worker_* ~/.omp/run/daemons/' ]
+  [ -z "${MM_AGENT_HELPERS[$(agent "Claude Code")]}" ]
+}
+
+@test "mm_agent_helper: argv[1] globs and working-directory prefixes mark helpers, sessions are not" {
+  local o
+  o=$(agent oh-my-pi)
+  mkdir -p "$SB/bin" "$SB/proj" "$HOME/.omp/run/daemons/global/text-predict"
+  cp "$(command -v sleep)" "$SB/bin/omp"
+  # A helper: argv[1] is __omp_worker_lsp_mux (a copy of bash running that script, blocked on a
+  # FIFO).
+  cp "$(command -v bash)" "$SB/bin/omp-bash"
+  mkfifo "$SB/proj/fifo"
+  printf 'read -r _ <>fifo\n' >"$SB/proj/__omp_worker_lsp_mux"
+  mm_test_bg "$SB/proj" "$SB/bin/omp-bash" __omp_worker_lsp_mux
+  local mux=${MM_TEST_PIDS[-1]}
+  mm_test_bg "$HOME/.omp/run/daemons/global/text-predict" "$SB/bin/omp" 30
+  local daemon=${MM_TEST_PIDS[-1]}
+  mm_test_bg "$SB/proj" "$SB/bin/omp" 30
+  local session=${MM_TEST_PIDS[-1]}
+  # Run where a file matches the glob: the pattern must stay a glob, not become that file name.
+  mkdir -p "$SB/decoy"
+  : >"$SB/decoy/__omp_worker_decoy"
+  cd "$SB/decoy"
+  mm_agent_helper "$o" "$mux"
+  [ "$REPLY" = __omp_worker_lsp_mux ]
+  mm_agent_helper "$o" "$daemon"
+  [ "$REPLY" = text-predict ]
+  run mm_agent_helper "$o" "$session"
+  [ "$status" -ne 0 ]
+  # A row without helpers has none.
+  run mm_agent_helper "$(agent "Claude Code")" "$mux"
+  [ "$status" -ne 0 ]
 }
 
 @test "logs dirs are under HOME and never at, inside or above any session dir" {

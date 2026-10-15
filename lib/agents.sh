@@ -5,7 +5,8 @@
 #     except old session files when the user opts in to retention (`mm clean --sessions DAYS`);
 #   - their own diagnostic logs (*.log files in their logs dirs) older than 7 days are removed by
 #     `mm clean`: logs, not conversations;
-#   - their processes count as agent sessions in `mm status`;
+#   - their processes count as agent sessions in `mm status`, except the tool's own helper
+#     processes (see helpers below);
 #   - tools that keep every installed version get old versions pruned by `mm clean`
 #     (the active one, resolved through its launcher symlink, plus one previous are kept);
 #   - `mm purge` looks for git worktrees in their worktree dirs.
@@ -13,7 +14,18 @@
 #
 # Row fields, separated by '|':
 #   name | process names | state dirs/files | session dirs | versions dir | active-version symlink
-#   | worktree dirs | logs dirs
+#   | worktree dirs | logs dirs | helpers
+# Trailing fields may be left out: a shorter row loads with them empty.
+#
+# Helpers are processes a tool starts for itself under the same process name (language-server
+# hubs, daemon brokers, completion daemons): they are not sessions. A pattern starting with ~/ or
+# / is a working-directory prefix (the process runs in or below it); any other is a glob matched
+# against the process's first argument (argv[1]). `mm status` counts them on a separate helpers
+# line, with everything they started, and `mm optimize` labels them as helpers.
+#   oh-my-pi    `omp __omp_worker_lsp_mux` (language-server hub; parent of tsc and other servers),
+#               `omp __omp_worker_daemon_broker`, `omp __omp_worker_text_predict` (word completion,
+#               run in ~/.omp/run/daemons/global/text-predict)
+#
 # Worktree dirs are where a tool creates git worktrees by default (users can move them). They are
 # hints for discovery only: purge acts on a directory there only if its .git file points into a
 # repository's worktrees dir (<repo>/.git/worktrees/<name>) and that repository lists it. Tools
@@ -51,7 +63,7 @@ Goose|goose|~/.local/share/goose ~/.config/goose ~/.local/state/goose|~/.local/s
 Crush|crush|~/.local/share/crush ~/.config/crush||||
 Qwen Code|qwen|~/.qwen|~/.qwen/tmp ~/.qwen/projects|||
 Cline|cline|~/.cline|||||~/.cline/data/logs
-oh-my-pi|omp|~/.omp|~/.omp/agent/sessions||||~/.omp/logs
+oh-my-pi|omp|~/.omp|~/.omp/agent/sessions||||~/.omp/logs|__omp_worker_* ~/.omp/run/daemons/
 Paseo|paseo|~/.paseo|~/.paseo/agents|||~/.paseo/worktrees
 T3 Code|t3|~/.t3||||~/.t3/worktrees
 Claude Squad|cs claude-squad|~/.claude-squad||||~/.claude-squad/worktrees
@@ -61,7 +73,7 @@ uzi|uzi|~/.local/share/uzi||||~/.local/share/uzi/worktrees
 '
 
 MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
-MM_AGENT_WORKTREES=() MM_AGENT_LOGS=()
+MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=()
 
 # _mm_tilde_list WORDS — expand a leading ~ in each space-separated word.
 _mm_tilde_list() {
@@ -71,8 +83,8 @@ _mm_tilde_list() {
 }
 
 _mm_agents_load() {
-  local name procs state sessions versions active worktrees logs
-  while IFS='|' read -r name procs state sessions versions active worktrees logs; do
+  local name procs state sessions versions active worktrees logs helpers
+  while IFS='|' read -r name procs state sessions versions active worktrees logs helpers; do
     [[ -n "$name" ]] || continue
     MM_AGENT_NAME+=("$name")
     MM_AGENT_PROCS+=("$procs")
@@ -82,6 +94,7 @@ _mm_agents_load() {
     MM_AGENT_ACTIVE+=("$(_mm_tilde_list "$active")")
     MM_AGENT_WORKTREES+=("$(_mm_tilde_list "$worktrees")")
     MM_AGENT_LOGS+=("$(_mm_tilde_list "$logs")")
+    MM_AGENT_HELPERS+=("$helpers")
   done <<<"$MM_AGENTS_TABLE"
 }
 _mm_agents_load
@@ -91,6 +104,34 @@ mm_agent_procs() { printf '%s\n' "${MM_AGENT_PROCS[@]}" | tr ' ' '\n' | awk 'NF 
 
 # mm_agent_worktree_dirs — every agent worktree dir (~ expanded), one per line.
 mm_agent_worktree_dirs() { printf '%s\n' "${MM_AGENT_WORKTREES[@]}" | tr ' ' '\n' | awk 'NF && !seen[$0]++'; }
+
+# mm_agent_helper IDX PID — 0 if PID is a helper process of agent IDX (its helpers field): argv[1]
+# matches one of the globs, or its working directory lies in or below one of the ~/ or / prefixes.
+# Sets REPLY to the helper's kind: that argv[1], else the working directory's last component.
+mm_agent_helper() {
+  local p cwd="" arg
+  local -a pats=() argv=()
+  REPLY=""
+  read -r -a pats <<<"${MM_AGENT_HELPERS[$1]:-}"
+  ((${#pats[@]})) || return 1
+  mapfile -d '' -t -n 2 argv 2>/dev/null <"/proc/$2/cmdline" || return 1
+  arg=${argv[1]:-}
+  for p in "${pats[@]}"; do
+    case "$p" in
+      \~/* | /*)
+        [[ "$p" == \~/* ]] && p="$HOME${p:1}"
+        p=${p%/}
+        [[ -n "$cwd" ]] || cwd=$(readlink "/proc/$2/cwd" 2>/dev/null) || return 1
+        if [[ "$cwd" == "$p" || "$cwd" == "$p"/* ]]; then REPLY=${cwd##*/}; return 0; fi
+        ;;
+      *)
+        # shellcheck disable=SC2053 # the pattern is a glob on purpose
+        if [[ -n "$arg" && "$arg" == $p ]]; then REPLY=$arg; return 0; fi
+        ;;
+    esac
+  done
+  return 1
+}
 
 # mm_agent_state_paths — every agent state path (dirs and files), one per line, with ~ unexpanded
 # back to ~ so it reads well in the whitelist file.

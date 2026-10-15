@@ -285,6 +285,86 @@ EOF
     and (.system.listening_ports.ports | any(.pid == $c))' <<<"$JSON"
 }
 
+# fake_omp_helpers — oh-my-pi's helpers as lib/agents.sh describes them, beside a real session.
+# "omp" is a copy of bash (comm omp) running the script its argv[1] names:
+#   MUX     `omp __omp_worker_lsp_mux` with a child dev process (a copy of sleep named tsc, pid
+#           in TSC);
+#   DAEMON  a copy of sleep named omp working in ~/.omp/run/daemons/global/text-predict;
+#   SESSION `omp -c …` working in a project folder, which started INNER, its own
+#           `omp __omp_worker_daemon_broker` (blocked on a FIFO).
+fake_omp_helpers() {
+  mkdir -p "$SB/omp" "$SB/proj" "$SB/work" "$HOME/.omp/run/daemons/global/text-predict"
+  cp "$(command -v bash)" "$SB/omp/omp"
+  fake_agent omp
+  cp "$(command -v sleep)" "$SB/bin/tsc"
+  printf '%q 30 &\nwait\n' "$SB/bin/tsc" >"$SB/proj/__omp_worker_lsp_mux"
+  detached "$SB/proj" "$SB/omp/omp" __omp_worker_lsp_mux
+  MUX=$DETACHED
+  for _ in 1 2 3 4 5 6 7 8 9 10; do TSC=$(mm_test_pids --parent "$MUX" --comm tsc); [[ -n "$TSC" ]] && break; sleep 0.1; done
+  [ -n "$TSC" ]
+  detached "$HOME/.omp/run/daemons/global/text-predict" "$SB/bin/omp" 30
+  DAEMON=$DETACHED
+  mkfifo "$SB/work/fifo"
+  printf 'read -r _ <>fifo\n' >"$SB/work/__omp_worker_daemon_broker"
+  detached "$SB/work" "$SB/omp/omp" -c "$SB/omp/omp __omp_worker_daemon_broker & wait"
+  SESSION=$DETACHED
+  for _ in 1 2 3 4 5 6 7 8 9 10; do INNER=$(mm_test_pids --parent "$SESSION" --comm omp); [[ -n "$INNER" ]] && break; sleep 0.1; done
+  [ -n "$INNER" ]
+  [ "$(cat "/proc/$MUX/comm" "/proc/$DAEMON/comm" "/proc/$SESSION/comm" "/proc/$INNER/comm" | sort -u)" = omp ]
+}
+
+@test "an agent's own helpers are not sessions: a helpers line counts them and what they started" {
+  needs_jq
+  fake_omp_helpers
+  status_json MM_STATUS_LINGER_AGE=0
+  jq -e --argjson m "$MUX" --argjson d "$DAEMON" --argjson s "$SESSION" --argjson i "$INNER" --argjson t "$TSC" '
+    .system.agents as $a
+    | ($a.sessions | any(.pid == $s and .agent == "oh-my-pi" and .process == "omp"))
+    and ($a.sessions | all(.pid != $m and .pid != $d and .pid != $i and .pid != $t))
+    and ($a.count == ($a.sessions | length))
+    and ($a.helpers | any(.pid == $m and .agent == "oh-my-pi" and .process == "omp"
+      and .kind == "__omp_worker_lsp_mux" and .rss_swap_bytes > 0))
+    and ($a.helpers | any(.pid == $d and .kind == "text-predict"))
+    and ($a.helpers | any(.pid == $i and .kind == "__omp_worker_daemon_broker"))
+    and ($a.helper_count == ($a.helpers | length)) and $a.helper_count >= 3
+    and ($a.helper_rss_swap_bytes == ($a.helpers | map(.rss_swap_bytes) | add))
+    and (.system.lingering.processes | all(.pid != $t))' <<<"$JSON"
+  run env MM_STATUS_LINGER_AGE=0 mm status --agent
+  [ "$status" -eq 0 ]
+  grep -E "^  omp $SESSION " <<<"$output"
+  [ "$(grep -cE "^  omp ($MUX|$DAEMON|$INNER) " <<<"$output")" -eq 0 ]
+  grep -E '^agent helpers: omp [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+  [[ "$output" != *"(pid $TSC)"* ]]
+  run env MM_STATUS_LINGER_AGE=0 mm status --once
+  grep -E '^  omp helpers · [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+  [[ "$output" != *"tsc $TSC"* ]]
+  run env MM_STATUS_LINGER_AGE=0 COLUMNS=120 mm status --once --view full
+  grep -E '^omp helpers · [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+}
+
+@test "a helper that retitled itself (omp daemon brok) is known by argv[0] and heads its tree" {
+  needs_jq
+  needs_python
+  cp "$(command -v sleep)" "$SB/bin/tsc"
+  mkdir -p "$SB/brk"
+  cat >"$SB/brk/__omp_worker_daemon_broker" <<EOF
+import ctypes, subprocess, time
+ctypes.CDLL(None).prctl(15, b"omp daemon brok", 0, 0, 0)
+subprocess.Popen(["$SB/bin/tsc", "30"])
+time.sleep(30)
+EOF
+  detached "$SB/brk" bash -c 'exec -a omp python3 __omp_worker_daemon_broker'
+  local broker=$DETACHED tsc
+  for _ in 1 2 3 4 5 6 7 8 9 10; do tsc=$(mm_test_pids --parent "$broker" --comm tsc); [[ -n "$tsc" ]] && break; sleep 0.1; done
+  [ -n "$tsc" ]
+  [ "$(cat "/proc/$broker/comm")" = "omp daemon brok" ]
+  status_json MM_STATUS_LINGER_AGE=0
+  jq -e --argjson b "$broker" --argjson t "$tsc" '
+    (.system.agents.helpers | any(.pid == $b and .kind == "__omp_worker_daemon_broker"))
+    and (.system.agents.sessions | all(.pid != $b))
+    and (.system.lingering.processes | all(.pid != $t))' <<<"$JSON"
+}
+
 @test "no VPN rows when no VPN interface exists; an existing one gets a row" {
   needs_jq
   status_json MM_STATUS_VPN_IFACES='no-such-vpn*'
