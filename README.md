@@ -215,6 +215,13 @@ marmot deletes files, so it refuses rather than guesses:
   protected, and anything a running process uses (open files, working directories, sockets,
   mounts), and re-checks that the target did not change while it was measured. As root with
   `HOME=/root`, `/root` follows the same rules as any home.
+- **Anything a tool still needs is kept**, for any tool, listed or not: a file named by a running
+  process's arguments, by a launcher in `~/.local/bin`, `~/bin` or a `$PATH` folder in your home
+  (symlink targets, paths inside wrapper scripts), by a coding agent's config or any `*mcp*`
+  JSON/TOML/YAML config in a dot-folder (MCP servers such as `node ~/src/my-mcp/dist/index.js`),
+  by a systemd user unit or by your crontab keeps itself and every folder containing it. Only
+  files count: a config that lists project folders does not freeze them. The refusal names the
+  source (`used by ~/.cursor/mcp.json`).
 - **Built-in protections** that cannot be edited away: `~/.ssh`, `~/.gnupg`, credentials
   (`~/.aws`, `~/.azure`, `~/.kube`, `~/.docker`, `~/.netrc`, `~/.git-credentials`, keyrings,
   ...), `~/.config`, and the state of every known coding agent and orchestrator (`lib/agents.sh`).
