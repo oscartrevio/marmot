@@ -194,6 +194,22 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [ ! -e "$SB/p/node_modules" ]
 }
 
+@test "a project whose agent edits files deep in src/ without staging is not stale" {
+  local p
+  for p in edited added idle; do
+    node_project "$SB/$p"; mkdir -p "$SB/$p/src/lib"; echo v1 >"$SB/$p/src/lib/a.ts"
+    printf 'node_modules/\n' >"$SB/$p/.gitignore"; git_repo "$SB/$p"
+  done
+  mm_age "$SB" 30
+  echo v2 >"$SB/edited/src/lib/a.ts"   # modified, not staged
+  echo new >"$SB/added/src/lib/b.ts"   # untracked, not ignored
+  run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ -d "$SB/edited/node_modules" ]
+  [ -d "$SB/added/node_modules" ]
+  [ ! -e "$SB/idle/node_modules" ]
+}
+
 @test "--yes --all is rejected and deletes nothing" {
   node_project "$SB/old"; mm_age "$SB" 30
   run mm purge --yes --all "$SB"

@@ -422,6 +422,32 @@ _purge_activity() {
       } }' <(printf '%s\n' "${map[@]}") -
 }
 
+# _purge_changed GITROOT PROJ... — "EPOCH<TAB>PROJ" for each PROJ (GITROOT or a directory in it)
+# holding files git reports modified or untracked (not ignored), EPOCH the newest of their mtimes:
+# edits deep in src/ count as activity before they are staged. One git call for all PROJs;
+# "?<TAB>PROJ" for every PROJ when it fails or times out (activity unknown).
+_purge_changed() {
+  local root="$1" t rel p; shift
+  while IFS=$'\t' read -r t rel; do
+    printf '%s\t%s\n' "$t" "$root${rel#.}"
+  done < <({ _purge_git "$root" ls-files -m -o --exclude-standard -z |
+      (cd -- "$root" && xargs -0 -r stat -c '%Y %n' -- 2>/dev/null)
+    printf '\1%s\n' "${PIPESTATUS[0]}"; } |
+    awk 'NR == FNR { q[$0] = 1; next }
+      { last = $0 }
+      /^[0-9]+ / {
+        t = $1 + 0; p = "./" substr($0, index($0, " ") + 1)
+        while (1) {
+          if ((p in q) && t > m[p]) m[p] = t
+          if (!sub(/\/[^\/]*$/, "", p)) break
+        } }
+      END {
+        for (p in q)
+          if (last == "\0010") { if (p in m) printf "%.0f\t%s\n", m[p], p }
+          else printf "?\t%s\n", p
+      }' <(for p; do if [[ "$p" == "$root" ]]; then echo .; else printf './%s\n' "${p#"$root"/}"; fi; done) -)
+}
+
 # _purge_busy PATH... — the given paths that are in use (or have something in use below them),
 # per one pass over the in-use snapshot.
 _purge_busy() {
@@ -1025,11 +1051,24 @@ _purge_run() {
   fi
 
   # ---- classify and sort by what deleting frees
-  # activity: a project's own and top-level mtimes and its repository's index/HEAD, one probe for all
-  local -A activity=() pair_of=()
-  local t
-  for i in "${cand[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+  # activity: a project's own and top-level mtimes, its repository's index/HEAD, and the files git
+  # reports changed or new (deep edits not staged yet): one probe per repository
+  local -A activity=() pair_of=() changed=()
+  local -a list=()
+  local t cur
+  for i in "${cand[@]}"; do
+    pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"
+    [[ -n "${gits[$i]}" ]] && changed[${gits[$i]}]+="${projs[$i]}"$'\n'
+  done
   while IFS=$'\t' read -r t p; do activity[$p]=$t; done < <(_purge_activity "${pair_of[@]}")
+  for g in "${!changed[@]}"; do
+    mapfile -t list <<<"${changed[$g]%$'\n'}"
+    while IFS=$'\t' read -r t p; do
+      cur="${activity[$p]:-}"
+      if [[ "$t" == "?" ]]; then activity[$p]=""
+      elif [[ -n "$cur" && "$t" =~ ^[0-9]+$ ]] && (( t > cur )); then activity[$p]=$t; fi
+    done < <(_purge_changed "$g" "${list[@]}")
+  done
   local now; now=$(date +%s)
   local -a order=() idle=() stale=() pnpm_art=()
   local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act shared=0
