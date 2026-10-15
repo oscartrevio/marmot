@@ -1,8 +1,9 @@
 #!/usr/bin/env bats
 # mm status: read-only dashboard. JSON shape, agent sessions (by name and by interpreter argv),
 # orphans in deleted dirs, lingering dev processes and old listeners (age via
-# MM_STATUS_LINGER_AGE), VPN rows only for interfaces that exist, inode penalty, and no
-# terminal needed for a snapshot. Every external tool it calls must be a read-only query.
+# MM_STATUS_LINGER_AGE), VPN rows only for interfaces that exist, inode penalty, its own processes
+# kept out of the top lists, live-mode rendering in a pty, and no terminal needed for a snapshot.
+# Every external tool it calls must be a read-only query.
 
 setup() {
   load helpers/common
@@ -65,6 +66,24 @@ status_json() {
   run env "$@" mm status --json
   [ "$status" -eq 0 ]
   JSON=$output
+}
+
+# status_lib SNIPPET — run SNIPPET in a fresh bash with lib/core.sh and cmd/status.sh sourced.
+status_lib() { run bash -c '. "$1/lib/core.sh"; . "$1/cmd/status.sh"; eval "$2"' _ "$MM_SRC" "$1"; }
+
+# live KEYS [ARGS...] — run `mm status --interval 1 ARGS` in a 40x100 pty (script(1)); KEYS is a
+# shell snippet whose stdout is typed into it (e.g. 'sleep 4; printf q'). Exit status in
+# $LIVE_STATUS, raw output in $LIVE_OUT, the output with escape sequences stripped in $LIVE_TEXT.
+live() {
+  command -v script >/dev/null || skip "script(1) not installed"
+  local keys=$1 cmd=""
+  shift
+  (($#)) && printf -v cmd ' %q' "$@"
+  LIVE_OUT="$BATS_TEST_TMPDIR/live.out" LIVE_STATUS=0
+  { eval "$keys"; sleep 2; } |
+    timeout 40 script -qfec "stty rows 40 cols 100; env -u MM_TTY mm status --interval 1$cmd" /dev/null \
+      >"$LIVE_OUT" || LIVE_STATUS=$?
+  LIVE_TEXT=$(sed 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$LIVE_OUT" | tr -d '\r')
 }
 
 @test "--json is valid and carries agents, lingering, orphans, ports, inodes and network kinds" {
@@ -198,6 +217,45 @@ status_json() {
     and .health_score <= 80' <<<"$JSON"
   status_json MM_FAKE_IUSED=850
   jq -e '.health_reasons | all(test("inodes") | not)' <<<"$JSON"
+}
+
+@test "marmot's own processes never make the top CPU or memory lists" {
+  needs_jq
+  # The apt probe runs under mm status: make it the busiest process on the machine while sampled.
+  mm_test_fake apt "echo \$\$ >'$BATS_TEST_TMPDIR/apt.pid'
+end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
+  status_json
+  local pid
+  pid=$(<"$BATS_TEST_TMPDIR/apt.pid")
+  jq -e --argjson p "$pid" '[.processes.top_cpu[], .processes.top_memory[] | .pid] | all(. != $p)' <<<"$JSON"
+}
+
+@test "sparklines hold only the samples taken so far: no padding gap before them" {
+  status_lib '_status_init; _status_first 0; _status_sample; _status_derive; _status_frame 80
+    _status_cleanup; printf "%s\n" "${ST_FRAME[@]}"'
+  [ "$status" -eq 0 ]
+  local rows
+  rows=$(grep -E '^(Trend|Down|Up) ' <<<"$output")
+  grep -q '[▁▂▃▄▅▆▇█]' <<<"$rows"
+  [ "$(grep -cE ' {6,}[▁▂▃▄▅▆▇█]' <<<"$rows")" -eq 0 ]
+}
+
+@test "top processes working under HOME are named with their project folder" {
+  mkdir -p "$HOME/src/alpha/beta"
+  mm_test_bg "$HOME/src/alpha/beta" bash -c 'while :; do :; done'
+  local pid=${MM_TEST_PIDS[-1]}
+  run mm status --once
+  [ "$status" -eq 0 ]
+  grep -E "bash \(alpha/beta\) +$pid " <<<"$output"
+}
+
+@test "live mode: every frame ends with the footer on its own line, then q quits" {
+  live 'sleep 4; printf q'
+  # 124 would mean q did not quit before the timeout.
+  [ "$LIVE_STATUS" -eq 0 ]
+  [ "$(grep -c 'q quit' <<<"$LIVE_TEXT")" -ge 2 ]
+  # Stripped of escapes, a footer glued to the next frame reads "...5mmm status".
+  [ "$(grep -cE 'q quit.*mm status' <<<"$LIVE_TEXT")" -eq 0 ]
 }
 
 @test "without a terminal, plain 'mm status' prints one snapshot and exits" {
