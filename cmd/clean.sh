@@ -1582,10 +1582,38 @@ _clean_ago() {
   if (( d <= 0 )); then printf 'today'; else printf '%dd ago' "$d"; fi
 }
 
+# _clean_agent_usage STATE_LIST SESSION_LIST — "<state bytes> <session bytes> <newest session file
+# mtime, or ->" from one walk (lists are newline-separated paths; hard links count once, like du).
+_clean_agent_usage() {
+  local p s
+  local -a roots=() st=() ss=()
+  mapfile -t st <<<"$1"; mapfile -t ss <<<"$2"
+  roots=("${st[@]}")
+  for p in "${ss[@]}"; do   # sessions inside the state are walked once, with it
+    [[ -n "$p" ]] || continue
+    for s in "${st[@]}"; do [[ "$p" == "$s" || "$p" == "$s"/* ]] && continue 2; done
+    roots+=("$p")
+  done
+  timeout 30 find "${roots[@]}" -xdev -printf '%D:%i %b %y %T@ %p\n' 2>/dev/null |
+    MM_ST="$1" MM_SS="$2" awk '
+      function under(p, a, n,   k) {
+        for (k = 1; k <= n; k++) if (p == a[k] || index(p, a[k] "/") == 1) return 1
+        return 0
+      }
+      BEGIN { ns = split(ENVIRON["MM_ST"], st, "\n"); nq = split(ENVIRON["MM_SS"], ss, "\n") }
+      seen[$1]++ { next }
+      {
+        p = $0; for (k = 0; k < 4; k++) sub(/^[^ ]+ /, "", p)
+        if (under(p, st, ns)) s += $2 * 512
+        if (under(p, ss, nq)) { q += $2 * 512; if ($3 == "f" && $4 + 0 > m + 0) m = $4 }
+      }
+      END { printf "%.0f %.0f %s\n", s, q, (m == "" ? "-" : m) }'
+}
+
 # Coding-agent state (settings, credentials, session transcripts) is never cleaned: report its size
 # and when its sessions were last written.
 _clean_review_agents() {
-  local i p size newest detail added=0 last
+  local i p size ssize newest detail added=0 last
   local -a state sess
   for i in "${!MM_AGENT_NAME[@]}"; do
     state=() sess=()
@@ -1593,12 +1621,12 @@ _clean_review_agents() {
     (( ${#state[@]} )) || continue
     # shellcheck disable=SC2153 # set by lib/agents.sh
     for p in ${MM_AGENT_SESSIONS[$i]}; do [[ -d "$p" ]] && sess+=("$p"); done
-    size=$(mm_size "${state[@]}")
-    detail="$(mm_human "$size")"
+    read -r size ssize newest < <(_clean_agent_usage "$(printf '%s\n' "${state[@]}")" \
+      "$( (( ${#sess[@]} )) && printf '%s\n' "${sess[@]}")")
+    detail="$(mm_human "${size:-0}")"
     if (( ${#sess[@]} )); then
-      newest=$(timeout 30 find "${sess[@]}" -xdev -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
-      detail+=", sessions $(mm_human "$(mm_size "${sess[@]}")")"
-      [[ -n "$newest" ]] && detail+=", last active $(_clean_ago "$newest")"
+      detail+=", sessions $(mm_human "${ssize:-0}")"
+      [[ "${newest:--}" != - ]] && detail+=", last active $(_clean_ago "$newest")"
     fi
     _clean_review "${MM_AGENT_NAME[$i]} state" "$detail · ${state[*]/#$HOME/\~}"
     added=1
