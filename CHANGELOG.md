@@ -22,6 +22,8 @@ All notable changes to marmot are recorded here. The format follows
 - `install.sh` no longer needs git (only `mm update` does, and says so) and prints the exact
   line that puts the launcher folder on PATH.
 - `mm history --help` and `mm update --help` list every option; `mm --help` says where to start.
+- In-use detection reads `/proc` in a few batch passes instead of one `readlink` per open file:
+  about 10x faster (4.7 s to 0.44 s on a machine with 240 processes).
 
 ## 0.2.0
 
