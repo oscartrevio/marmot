@@ -9,6 +9,7 @@ _mo() {
     'optimize:Updates, trim, swap reset, orphaned processes'
     'purge:Remove build artifacts from idle projects'
     'uninstall:Remove packages plus their leftovers'
+    'schedule:Run a safe cleanup on a timer'
     'history:Show what marmot has changed'
   )
   global=('(-n --dry-run)'{-n,--dry-run}'[preview only]' '--debug[verbose logs]')
@@ -25,6 +26,14 @@ _mo() {
     purge)     _arguments $global '(-y --yes)'{-y,--yes}'[unattended: remove stale artifacts only]' '--all[include recent projects (interactive)]' '--paths[edit project roots]' '--days[idle days]:days' '*:directory:_files -/' ;;
     uninstall) _arguments $global '*:package:' ;;
     history)   _arguments '--json[JSON output]' '--all[full log]' '(-l --limit)'{-l,--limit}'[entries]:count' ;;
+    schedule)
+      if (( CURRENT == 3 )); then
+        local -a subs=('status:what is scheduled, the next and the last run' 'enable:turn the timer on'
+          'disable:remove what enable created' 'run:run the scheduled cleanup now')
+        _describe 'subcommand' subs
+      else
+        _arguments $global '(--daily --weekly)--daily[enable: run every day]' '(--daily --weekly)--weekly[enable: run every week]'
+      fi ;;
   esac
 }
 

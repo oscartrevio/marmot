@@ -295,9 +295,12 @@ _clean_versions_row() {
 
 # ---------------------------------------------------------------- 1. user essentials
 
+# _clean_user [--yes] TRASH_DAYS — Trash items deleted TRASH_DAYS+ days ago, and thumbnails.
+# --yes deletes those Trash items without asking (the scheduled profile); mm clean asks.
 _clean_user() {
+  local yes=""; [[ "$1" == --yes ]] && { yes=--yes; shift; }
   _clean_cat "User essentials"
-  [[ -d "$MM_TRASH_DIR/files" ]] && _clean_trash "$MM_TRASH_DIR"
+  [[ -d "$MM_TRASH_DIR/files" ]] && _clean_trash ${yes:+"$yes"} "$MM_TRASH_DIR" "$1"
   _clean_contents "Thumbnails" "$(mm_catalog_expand %CACHE%/thumbnails)"
   _clean_cat_end
 }
@@ -320,27 +323,29 @@ _clean_trashinfo_epoch() {
   date -d "$when" +%s 2>/dev/null
 }
 
-# _clean_trash DIR — retention sweep: permanently remove items whose .trashinfo says they were
-# trashed 7+ days ago (file and .trashinfo together). Recent items and entries without a valid
-# .trashinfo are never touched. Lists count/size/largest, then asks.
+# _clean_trash [--yes] DIR [DAYS] — retention sweep: permanently remove items whose .trashinfo says
+# they were trashed DAYS (default _CLEAN_TRASH_DAYS) or more days ago, file and .trashinfo
+# together. Recent items and entries without a valid .trashinfo are never touched. Lists
+# count/size/largest, then asks (--yes: does not ask).
 _clean_trash() {
-  local trash="$1" now name t size b=0 recent=0 unrec=0 n=0 kept=0 fail=0 freed=0 top="" line note=""
+  local yes=0; [[ "$1" == --yes ]] && { yes=1; shift; }
+  local trash="$1" days="${2:-$_CLEAN_TRASH_DAYS}" now name t size b=0 recent=0 unrec=0 n=0 kept=0 fail=0 freed=0 top="" line note=""
   local -a pick=() sizes=()
   now=$(date +%s)
   while IFS= read -r -d '' name; do
     t=$(_clean_trashinfo_epoch "$trash/info/$name.trashinfo") || { unrec=$((unrec + 1)); continue; }
-    (( now - t >= _CLEAN_TRASH_DAYS * 86400 )) || { recent=$((recent + 1)); continue; }
+    (( now - t >= days * 86400 )) || { recent=$((recent + 1)); continue; }
     size=$(mm_size "$trash/files/$name" "$trash/info/$name.trashinfo")
     pick+=("$name") sizes+=("$size"$'\t'"$name") b=$((b + size))
   done < <(find "$trash/files" -mindepth 1 -maxdepth 1 -printf '%f\0' 2>/dev/null)
   (( recent )) && note+=", $recent recent kept"
   (( unrec )) && note+=", $unrec unrecognized left alone"
-  if (( ${#pick[@]} == 0 )); then mm_ok "Trash" "nothing trashed ${_CLEAN_TRASH_DAYS}+ days ago${note}"; return; fi
+  if (( ${#pick[@]} == 0 )); then mm_ok "Trash" "nothing trashed ${days}+ days ago${note}"; return; fi
   while IFS= read -r line; do
     top+="${top:+, }${line#*$'\t'} ($(mm_human "${line%%$'\t'*}"))"
   done < <(printf '%s\n' "${sizes[@]}" | sort -rn | head -5)
-  mm_act "Trash: ${#pick[@]} items trashed ${_CLEAN_TRASH_DAYS}+ days ago, $(mm_human "$b"); largest: $top"
-  _clean_ask "Trash" "Permanently delete ${#pick[@]} Trash items older than $_CLEAN_TRASH_DAYS days ($(mm_human "$b"))?" || return 0
+  mm_act "Trash: ${#pick[@]} items trashed ${days}+ days ago, $(mm_human "$b"); largest: $top"
+  (( yes )) || _clean_ask "Trash" "Permanently delete ${#pick[@]} Trash items older than $days days ($(mm_human "$b"))?" || return 0
   for name in "${pick[@]}"; do
     mm_rm "$trash/files/$name" "$trash"
     case $? in
@@ -351,7 +356,7 @@ _clean_trash() {
     # The .trashinfo goes with its item; it is metadata, not a counted item.
     mm_rm "$trash/info/$name.trashinfo" "$trash" && { MM_COUNT=$((MM_COUNT - 1)); freed=$((freed + MM_LAST_BYTES)); }
   done
-  mm_ok "Trash" "$(_clean_detail "$n" items "$freed" "$kept" "$fail") trashed ${_CLEAN_TRASH_DAYS}+ days ago${note}"
+  mm_ok "Trash" "$(_clean_detail "$n" items "$freed" "$kept" "$fail") trashed ${days}+ days ago${note}"
 }
 
 # ---------------------------------------------------------------- 2. developer caches
@@ -1684,8 +1689,20 @@ _clean_review_print() {
 
 # ---------------------------------------------------------------- main
 
+# _clean_config_sessions — 0 with _CLEAN_KEEP_DAYS set when the config file turns session retention
+# on (sessions_keep_days=N, N >= 1); 1 when it is unset or off (a value that is not a number of
+# days is ignored with a warning).
+_clean_config_sessions() {
+  local v
+  _CLEAN_KEEP_DAYS=""
+  v=$(mm_config sessions_keep_days) || return 1
+  if [[ "$v" =~ ^[0-9]+$ ]] && (( 10#$v >= 1 )); then _CLEAN_KEEP_DAYS=$((10#$v)); return 0; fi
+  [[ -n "$v" && "$v" != 0 && "$v" != off ]] && mm_warn "ignoring sessions_keep_days=$v in $MM_CONFIG_FILE: not a number of days"
+  return 1
+}
+
 mm_cmd_main() {
-  local sessions="" from="" v
+  local sessions="" from=""
   while (( $# )); do
     case "$1" in
       --whitelist) mm_whitelist_edit; return ;;
@@ -1699,11 +1716,8 @@ mm_cmd_main() {
   if [[ -n "$from" ]]; then
     if ! [[ "$sessions" =~ ^[0-9]+$ ]] || (( 10#$sessions < 1 )); then mm_die "--sessions needs a number of days (1 or more)"; fi
     sessions=$((10#$sessions))
-  elif v=$(mm_config sessions_keep_days); then
-    if [[ "$v" =~ ^[0-9]+$ ]] && (( 10#$v >= 1 )); then sessions=$((10#$v)) from=config
-    elif [[ -n "$v" && "$v" != 0 && "$v" != off ]]; then
-      mm_warn "ignoring sessions_keep_days=$v in $MM_CONFIG_FILE: not a number of days"
-    fi
+  elif _clean_config_sessions; then
+    sessions=$_CLEAN_KEEP_DAYS from=config
   fi
 
   mm_header "Clean Your System"
@@ -1712,7 +1726,7 @@ mm_cmd_main() {
   local free0 free1 total items delta sign=+
   free0=$(mm_free_bytes /)
 
-  _clean_user
+  _clean_user "$_CLEAN_TRASH_DAYS"
   _clean_dev
   _clean_builds
   _clean_agent_logs

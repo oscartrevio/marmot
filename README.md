@@ -13,11 +13,12 @@ mm clean       caches, old browser builds, old agent CLI versions, agent and gcl
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
 mm status      live health dashboard, agent sessions first: CPU, memory, disk and inodes,
                network/VPN, your link's latency, lingering dev servers and ports, updates,
-               pending reboot (`v` switches to the full panel view)
+               pending reboot, the last scheduled cleanup (`v` switches to the full panel view)
 mm analyze     disk overview, then a read-only explorer; move what you pick to the Trash
 mm optimize    upgrades, swap reset, stranded processes, orphaned headless browsers, SSD trim,
                DNS flush, reboot check
 mm uninstall   apt/snap/npm/bun/pipx packages and ~/.local/bin tools, plus their leftovers
+mm schedule    a safe part of clean and purge on a daily or weekly timer, no prompts, no sudo
 mm history     everything marmot changed, refused or moved to the Trash
 ```
 
@@ -85,7 +86,8 @@ marmot deletes files, so it is built to refuse rather than guess:
   1 hour) for SIGTERM.
 - **Confirmations need a terminal.** Run without one (cron, pipes) and every step that asks is
   skipped. There is no global `--yes`; the only unattended deletions are `mm purge --yes`, which
-  removes build artifacts of stale projects only, and a session retention you configured.
+  removes build artifacts of stale projects only, a session retention you configured, and
+  `mm schedule run`, a fixed list of safe steps (below).
 - **When unsure, keep.** A git check that fails keeps the folder; an agent version that can't be
   identified as active keeps all versions; a worktree with uncommitted or unreachable work is
   never offered; base-system packages, cloud guest agents and remote-access/VPN software are
@@ -120,6 +122,24 @@ Environment: `MM_STATUS_LINGER_AGE`, `MM_STATUS_VPN_IFACES`, `MM_OPTIMIZE_ORPHAN
 (`1`: let `mm clean` prune a Docker daemon that is not this machine's own, such as the host's
 from inside a container) (see each command's `--help`). Known agents and cleanup targets live in
 `lib/agents.sh` and `lib/catalog.sh`: adding a tool is adding a row.
+
+## Scheduled cleanup
+
+`mm schedule enable` (or `--weekly`) runs `mm schedule run` every day at 03:00 plus a random
+delay of up to an hour: a systemd user timer in `~/.config/systemd/user` that catches up on
+missed runs at boot, or, where `systemctl --user` does not answer, a crontab line ending in
+`# marmot`. `mm schedule status` shows the timer, the next and the last run, and warns when
+linger is off (a user timer then runs only while you are logged in; `sudo loginctl
+enable-linger $USER` fixes that). `mm schedule disable` removes only what enable created.
+
+A run asks nothing and never runs sudo. It removes Trash items deleted more than 30 days ago,
+regenerable caches (catalog rows and the tools' own cleans), old browser builds and old agent CLI
+versions, agent and gcloud/Azure CLI logs older than 7 days, automation-browser leftovers in
+`/tmp`, old editor server builds and their leftovers, and the build artifacts of projects idle
+14+ days (what `mm purge --yes` removes); agent sessions only with `sessions_keep_days` set. It
+never touches anything that needs root (apt, kernels, journal, snaps, system logs, crash dumps),
+Docker, git worktrees or packages. Runs never overlap, changes are logged under `schedule` in
+`mm history`, and each run's totals, skips and errors go to `~/.local/state/marmot/last-run.json`.
 
 ## Development
 
