@@ -6,7 +6,8 @@
 # Row fields, separated by '|' (blank lines and lines starting with # are ignored):
 #   kind | label | path | busy | spec | hint
 #
-#   kind   cache      regenerable cache dir: its contents are removed permanently (the dir stays).
+#   kind   cache      regenerable cache dir: its contents are removed permanently (the dir stays),
+#                     except entries used in the last 7 days (see cmd/clean.sh _clean_contents).
 #                     Skipped while any busy process runs. spec (optional) is either
 #                     tool:CMD (while CMD is installed the row is skipped and cmd/clean.sh runs
 #                     CMD's own clean instead) or space-separated name globs for the entries

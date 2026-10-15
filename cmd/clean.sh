@@ -17,6 +17,7 @@ _CLEAN_CAT_MARK=""       # "bytes items" snapshot at category start
 _CLEAN_MIN_TOOL=1048576  # below this a tool cache is not worth running the tool for
 _CLEAN_TRASH_DAYS=7      # Trash retention: items trashed longer ago than this are removed for good
 _CLEAN_IMAGE_DAYS=30     # unused Docker images built and pulled longer ago than this are offered
+_CLEAN_RECENT_DAYS=7     # catalog cache entries used more recently than this are kept
 
 _clean_usage() {
   cat <<EOF
@@ -43,10 +44,11 @@ size and the OS policy are reported. The one exception: temp profiles and files 
 automation browsers leave in /tmp when their script dies (playwright_chromiumdev_profile-*,
 puppeteer_dev_chrome_profile-*, playwright-artifacts-*, [.]org.chromium.Chromium.*,
 [.]com.google.Chrome.*), only your own, untouched for 2 hours and not in use, are deleted.
-Model stores, dependency repositories (Maven, the Go module cache, ...), Node versions, Docker
-volumes and agent state are never touched: they are listed with their size under "Kept for you
-to review". Steps that cannot be undone (Trash sweep, packages, logs, crash dumps, containers,
-images) ask first and are skipped without a terminal.
+Entries of the lib/catalog.sh caches used in the last 7 days stay (such as the packages
+\`npx -y\` installs for MCP servers). Model stores, dependency repositories (Maven, the Go module
+cache, ...), Node versions, Docker volumes and agent state are never touched: they are listed
+with their size under "Kept for you to review". Steps that cannot be undone (Trash sweep,
+packages, logs, crash dumps, containers, images) ask first and are skipped without a terminal.
 
 Docker is cleaned only when its daemon is this machine's own: not when DOCKER_HOST or the
 current docker context points at another machine, and not from inside a container (a mounted
@@ -109,27 +111,49 @@ _clean_detail() {
   printf '%s' "$d"
 }
 
-# _clean_contents LABEL DIR [FILTER] — permanently empty a regenerable cache DIR via mm_rm
-# (ALLOWED_ROOT=DIR). FILTER: name globs for the entries (catalog cache spec; !GLOB = leave alone).
+# _clean_contents [--keep-recent] LABEL DIR [FILTER] — permanently empty a regenerable cache DIR
+# via mm_rm (ALLOWED_ROOT=DIR). FILTER: name globs for the entries (catalog cache spec; !GLOB =
+# leave alone). --keep-recent keeps entries used in the last _CLEAN_RECENT_DAYS days: anything
+# inside the entry, at any depth, modified, or a file inside it read, since then. A tool may only
+# read nested files (a cached package's node_modules/x/index.js), so the entry's own times are not
+# enough. Folder access times do not count: listing a folder, as this scan does, sets them.
 _clean_contents() {
-  local label="$1" dir="$2" e w n=0 b=0 kept=0 fail=0
-  local -a toks=() sel=() inc=()
+  local keep=0; [[ "$1" == --keep-recent ]] && { keep=1; shift; }
+  local label="$1" dir="$2" w rec since n=0 b=0 kept=0 fail=0 recent=0 note=""
+  local -a toks=() sel=() inc=() pick=() young=(-false) depth=(-maxdepth 1)
+  local -A used=()
   read -r -a toks <<<"${3:-}"
   for w in "${toks[@]}"; do
     if [[ "$w" == '!'?* ]]; then sel+=(! -name "${w#!}"); else inc+=(-o -name "$w"); fi
   done
   (( ${#inc[@]} )) && sel+=(\( "${inc[@]:1}" \))
   [[ -d "$dir" ]] || return 0
-  while IFS= read -r -d '' e; do
-    mm_rm "$e" "$dir"
+  if (( keep )); then
+    since=$(( $(date +%s) - _CLEAN_RECENT_DAYS * 86400 ))
+    young=(-newermt "@$since" -o ! -type d -newerat "@$since")
+    depth=()
+  fi
+  # One pass: E<name> for each candidate entry, R<entry>[/<child>] for whatever was used recently.
+  while IFS= read -r -d '' rec; do
+    case $rec in
+      E*) pick+=("${rec#E}") ;;
+      R*) rec=${rec#R}; used[${rec%%/*}]=1 ;;
+    esac
+  done < <(find "$dir" -mindepth 1 "${depth[@]}" \
+    \( -path "$(_clean_find_literal "$dir")/*/*" -o \( "${sel[@]}" -printf 'E%P\0' \) -o -true \) \
+    \( "${young[@]}" \) -printf 'R%P\0' 2>/dev/null)
+  for w in "${pick[@]}"; do
+    if [[ -n "${used[$w]+x}" ]]; then recent=$((recent + 1)); continue; fi
+    mm_rm "$dir/$w" "$dir"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
       1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
       *) fail=$((fail + 1)) ;;
     esac
-  done < <(find "$dir" -mindepth 1 -maxdepth 1 "${sel[@]}" -print0 2>/dev/null)
-  if (( n + kept + fail == 0 )); then mm_ok "$label" "nothing to clean"; return; fi
-  mm_ok "$label" "$(_clean_detail "$n" items "$b" "$kept" "$fail")"
+  done
+  (( recent )) && note=", $recent used in the last $_CLEAN_RECENT_DAYS days kept"
+  if (( n + kept + fail == 0 )); then mm_ok "$label" "nothing to clean${note}"; return; fi
+  mm_ok "$label" "$(_clean_detail "$n" items "$b" "$kept" "$fail")${note}"
 }
 
 # _clean_busy "PROC..." — print the first listed process that is running (f:REGEX tokens match
@@ -196,12 +220,13 @@ _clean_carveout_dir() {
 }
 
 # _clean_cache_row LABEL DIR BUSY [FILTER] — catalog "cache" row: empty DIR (kept) unless a busy
-# process runs. FILTER is the row's spec (see _clean_contents).
+# process runs; entries used in the last _CLEAN_RECENT_DAYS days stay. FILTER is the row's spec
+# (see _clean_contents).
 _clean_cache_row() {
   local label="$1" dir="$2" busy
   _clean_home_dir "$label" "$dir" || return 0
   if busy=$(_clean_busy "$3"); then mm_skip "$label" "$busy busy"; return 0; fi
-  _clean_contents "$label" "$dir" "${4:-}"
+  _clean_contents --keep-recent "$label" "$dir" "${4:-}"
 }
 
 # _clean_playwright_refs DIR — "<dir-name>-<revision>" for every browser an installed playwright-core
@@ -379,9 +404,10 @@ _clean_dev() {
 }
 
 # Catalog "cache" rows (built-in and the user's): emptied directly, whether or not the tool is
-# still installed (then they are pure leftovers). A row with spec tool:CMD is left to CMD's own
-# clean above while CMD is installed; any other spec filters the entries. A folder named by
-# several rows ($VAR and its default) is handled once, so a dry run does not count it twice.
+# still installed (then they are pure leftovers), except entries used in the last
+# _CLEAN_RECENT_DAYS days. A row with spec tool:CMD is left to CMD's own clean above while CMD is
+# installed; any other spec filters the entries. A folder named by several rows ($VAR and its
+# default) is handled once, so a dry run does not count it twice.
 _clean_catalog_caches() {
   local r i real filter
   local -A seen=()
@@ -427,6 +453,8 @@ _clean_builds() {
 }
 
 # npm's own cache (wherever `npm config get cache` points; asked from / so no project .npmrc applies).
+# npm has no prune by age or use (`npm cache verify` only drops content no index entry names), so
+# _cacache is cleared whole; packages npx installed live in _npx (a catalog row, recent ones kept).
 _clean_npm() {
   local dir
   dir=$(env -C / timeout 15 npm config get cache 2>/dev/null | tail -1)

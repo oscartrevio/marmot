@@ -394,12 +394,30 @@ busy_proc() {
 @test "a catalog cache is emptied permanently but its folder is kept" {
   mkdir -p "$HOME/.cache/pip/http-v2/a" "$HOME/.cache/pip/wheels"
   echo x >"$HOME/.cache/pip/http-v2/a/body"; echo y >"$HOME/.cache/pip/wheels/w.whl"
+  mm_age "$HOME/.cache/pip" 30
   catalog
   run _clean_catalog_caches
   [ -d "$HOME/.cache/pip" ]
   [ -z "$(ls -A "$HOME/.cache/pip")" ]
   [ ! -e "$XDG_DATA_HOME/Trash/files/wheels" ]          # regenerable: removed, not trashed
   [ "$(mm_log_rows remove | grep -c "^$HOME/.cache/pip/")" -eq 2 ]
+}
+
+@test "catalog cache entries used in the last 7 days stay (an MCP server npx runs); older ones go" {
+  local x="$HOME/.npm/_npx"
+  mkdir -p "$x/old/node_modules/a" "$x/read/node_modules/b" "$x/written/node_modules/c" "$x/nested/node_modules/d/dist"
+  echo '{}' >"$x/old/package.json"; echo '{}' >"$x/read/package.json"; echo '{}' >"$x/written/package.json"
+  echo '{}' >"$x/nested/package.json"; echo 'run()' >"$x/nested/node_modules/d/dist/index.js"
+  mm_age "$x" 30
+  touch -a "$x/read/package.json"           # npx -y read it: only its access time moves
+  echo '{"v":2}' >"$x/written/package.json"  # reinstalled today
+  touch -a "$x/nested/node_modules/d/dist/index.js"  # a server loaded only a nested file
+  catalog
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  gone "$x/old"
+  exist "$x/read/node_modules/b" "$x/written/node_modules/c" "$x/nested/node_modules/d/dist/index.js"
+  [[ "$output" == *"npx package cache"*"1 item"*"3 used in the last 7 days kept"* ]]
 }
 
 @test "a catalog cache is skipped while its tool runs" {
@@ -521,7 +539,7 @@ claude_versions() {
 
 @test "user catalog rows outside the home folder, of other kinds, or the home folder itself are rejected" {
   mkdir -p "$SB/data" "$HOME/mine/stuff" "$XDG_CONFIG_HOME/marmot"
-  echo keep >"$SB/data/f"; echo x >"$HOME/mine/stuff/f"; echo keep >"$HOME/top"
+  echo keep >"$SB/data/f"; echo x >"$HOME/mine/stuff/f"; echo keep >"$HOME/top"; mm_age "$HOME/mine" 30
   ln -sfn "$SB/data" "$HOME/out"
   cat >"$XDG_CONFIG_HOME/marmot/catalog" <<EOF
 cache|outside|$SB/data|
@@ -721,7 +739,7 @@ hide_tool() {
 }
 
 @test "uv not installed: its leftover cache folder is emptied from the catalog" {
-  mkdir -p "$HOME/.cache/uv/wheels-v5"; echo w >"$HOME/.cache/uv/wheels-v5/w"
+  mkdir -p "$HOME/.cache/uv/wheels-v5"; echo w >"$HOME/.cache/uv/wheels-v5/w"; mm_age "$HOME/.cache/uv" 30
   hide_tool uv
   none command -v uv
   catalog
@@ -1116,6 +1134,7 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   echo z >"$h/.oh-my-zsh/cache/completions/_docker"; echo b >"$h/.android/build-cache/x/b"
   echo '{}' >"$h/.local/share/jupyter/runtime/kernel-1.json"; echo t >"$h/.hex/packages/hexpm/jason-1.4.1.tar"
   echo o >"$h/.opam/download-cache/sha256/ab"
+  mm_age "$h" 30
   catalog
   _clean_busy() { return 1; }   # isolate from tools running on the host
   run _clean_catalog_caches
@@ -1144,6 +1163,7 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
 @test "more caches: a Jupyter connection file held open is kept, stale ones go" {
   local r="$HOME/.local/share/jupyter/runtime"
   mkdir -p "$r"; echo '{}' >"$r/kernel-live.json"; echo '{}' >"$r/kernel-dead.json"; echo '{}' >"$r/jpserver-9.json"
+  mm_age "$r" 30
   mm_test_bg "$SB" bash -c 'exec 7<"$1"; sleep 30' _ "$r/kernel-live.json"
   catalog
   _clean_busy() { return 1; }   # no Jupyter process: only the per-file in-use check is left
@@ -1157,7 +1177,7 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   local k="$HOME/.kube"
   mkdir -p "$k/cache/discovery/api.example.com_443/apps/v1" "$k/cache/http" "$k/cache/oidc-login"
   echo 'apiVersion: v1' >"$k/config"; echo '{}' >"$k/cache/discovery/api.example.com_443/apps/v1/serverresources.json"
-  echo r >"$k/cache/http/0a1b2c"; echo t >"$k/cache/oidc-login/abc"
+  echo r >"$k/cache/http/0a1b2c"; echo t >"$k/cache/oidc-login/abc"; mm_age "$k" 30
   catalog
   _clean_busy() { return 1; }
   run _clean_catalog_caches
@@ -1172,6 +1192,7 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   mkdir -p "$PYENV_ROOT/cache" "$HOME/.npm/_prebuilds"
   head -c 300000 /dev/urandom >"$PYENV_ROOT/cache/Python-3.12.1.tar.xz"
   head -c 200000 /dev/urandom >"$HOME/.npm/_prebuilds/sharp-linux-x64.tar.gz"
+  mm_age "$HOME" 30
   catalog
   _clean_busy() { return 1; }
   local before after est

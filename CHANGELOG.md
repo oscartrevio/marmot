@@ -31,6 +31,8 @@ All notable changes to marmot are recorded here. The format follows
   one pass: about a third faster.
 - `mm purge` counts unstaged edits and new files anywhere in a project as activity.
 - `mm clean` reports the Go module cache instead of wiping it with `go clean -modcache`.
+- `mm clean` keeps catalog cache entries used in the last 7 days: an MCP server launched with
+  `npx -y` is no longer downloaded again after every run.
 
 ## 0.2.0
 
