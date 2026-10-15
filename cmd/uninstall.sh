@@ -61,7 +61,7 @@ _uninstall_generic() {
   return 1
 }
 
-# _uninstall_re TEXT — TEXT escaped for an extended regex (pgrep patterns).
+# _uninstall_re TEXT — TEXT escaped for an extended regex (process-name patterns).
 _uninstall_re() { printf '%s' "$1" | sed 's/[][\.*^$+?(){}|]/\\&/g'; }
 
 # _uninstall_ago EPOCH — "today", "3d ago", "2w ago", "4mo ago", "1y ago".
@@ -444,14 +444,14 @@ _uninstall_running() {
   mapfile -t comms < <(_uninstall_commands "$i")
   for c in "${comms[@]}"; do
     [[ -n "$c" && "$c" != */* ]] || continue
-    pgrep -x -- "$(_uninstall_re "${c:0:15}")" >/dev/null 2>&1 && { printf '%s' "$c"; return 0; }
+    mm_proc_match "$(_uninstall_re "${c:0:15}")" && { printf '%s' "$c"; return 0; }
     # Node CLIs run as `node <bin>`: match the package's bin names as an argv path component.
     if [[ ("$src" == npm || "$src" == bun) && "$c" != "$name" ]]; then
-      pgrep -f -- "(^|/)$(_uninstall_re "$c")( |$)" >/dev/null 2>&1 && { printf '%s' "$c"; return 0; }
+      mm_proc_match "" "(^|/)$(_uninstall_re "$c")( |$)" && { printf '%s' "$c"; return 0; }
     fi
   done
   if [[ -n "$path" && "$src" != apt ]]; then
-    pgrep -f -- "$(_uninstall_re "$path")(/| |$)" >/dev/null 2>&1 && { printf '%s' "${path##*/}"; return 0; }
+    mm_proc_match "" "$(_uninstall_re "$path")(/| |$)" && { printf '%s' "${path##*/}"; return 0; }
   fi
   return 1
 }
@@ -473,13 +473,6 @@ _uninstall_apt_sim() {
 _uninstall_apt_bytes() { # PKG... — summed Installed-Size in bytes
   (( $# )) || { echo 0; return; }
   dpkg-query -W -f='${Installed-Size}\n' "$@" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f\n", s * 1024 }'
-}
-
-_uninstall_apt_busy() {
-  local p; for p in apt apt-get dpkg aptitude unattended-upgr packagekitd; do
-    mm_proc_running "$p" && { printf '%s' "$p"; return 0; }
-  done
-  return 1
 }
 
 # ---------------------------------------------------------------- selection
@@ -755,8 +748,8 @@ _uninstall_execute() {
 
   for i in "$@"; do [[ "${_UN_SRC[i]}" == apt ]] && { apt_idx+=("$i"); apt_sel+=("${_UN_NAME[i]}"); }; done
   if (( ${#apt_sel[@]} )); then
-    if busy=$(_uninstall_apt_busy); then
-      for i in "${apt_idx[@]}"; do mm_skip "${_UN_NAME[i]}" "apt busy ($busy)"; done; apt_idx=()
+    if busy=$(mm_apt_busy); then
+      for i in "${apt_idx[@]}"; do mm_skip "${_UN_NAME[i]}" "$busy"; done; apt_idx=()
     elif ! mm_can_sudo; then
       for i in "${apt_idx[@]}"; do mm_skip "${_UN_NAME[i]}" "needs sudo"; done; apt_idx=()
     else

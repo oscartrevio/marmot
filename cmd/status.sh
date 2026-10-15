@@ -1056,7 +1056,8 @@ _status_panel_net() {
 _status_link() {
   local t r b sp
   if [[ -z "$ST_CL_RTT" ]]; then
-    REPLY="${C_DIM}connection not visible to the kernel's TCP table$C_RESET"
+    if [[ -n "$ST_SS" ]]; then REPLY="${C_DIM}connection not visible to the kernel's TCP table$C_RESET"
+    else REPLY="${C_DIM}link quality needs ss (iproute2)$C_RESET"; fi
     return 0
   fi
   _status_ms r "$ST_CL_RTT"

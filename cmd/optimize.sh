@@ -114,15 +114,6 @@ _optimize_diagnose() {
 
 # ---------------------------------------------------------------- updates
 
-# _optimize_apt_busy — 0 if another apt/dpkg holds the package locks.
-_optimize_apt_busy() {
-  local locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock)
-  if (( EUID == 0 )) || sudo -n true 2>/dev/null; then
-    mm_sudo fuser "${locks[@]}" >/dev/null 2>&1 && return 0
-  fi
-  pgrep -x 'apt|apt-get|aptitude|dpkg' >/dev/null 2>&1
-}
-
 # _optimize_apt_plan — "u|p|k<TAB>package" from a simulated upgrade (upgrade/phased/kept back).
 _optimize_apt_plan() {
   LC_ALL=C apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | awk '
@@ -243,10 +234,11 @@ _optimize_apt_upgrade_subset() {
 
 _optimize_updates() {
   mm_section "System Updates"
+  local busy
   if ! command -v apt-get >/dev/null; then
     _optimize_skipped "Packages" "apt not available"
-  elif _optimize_apt_busy; then
-    _optimize_skipped "Packages" "apt busy"
+  elif busy=$(mm_apt_busy); then
+    _optimize_skipped "Packages" "$busy"
   else
     # Without a terminal nothing can be confirmed, so apt-get update would be the only change.
     local refreshed=1
@@ -420,7 +412,7 @@ _optimize_protected() {
   esac
   _optimize_on_terminal "$1" && { echo "attached to a live terminal"; return 0; }
   local child cwd
-  for child in $(pgrep -P "$1" 2>/dev/null); do
+  for child in $(mm_proc_children "$1"); do
     [[ -d "/proc/$child" ]] || continue
     cwd=$(readlink "/proc/$child/cwd" 2>/dev/null) || { echo "hosts other sessions"; return 0; }
     if [[ "$cwd" != *" (deleted)" ]] || _optimize_on_terminal "$child"; then

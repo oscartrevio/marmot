@@ -299,3 +299,63 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   [ "$output" = "/root/.cache/pip protected
 $HOME/.cache/pip removable" ]
 }
+
+@test "process checks read /proc and work without procps or psmisc" {
+  local c
+  for c in pgrep pidof ps fuser uptime; do mm_test_fake "$c" "echo \"$c \$*\" >>'$BATS_TEST_TMPDIR/procps'; exit 97"; done
+  mkdir -p "$SB/bin"
+  printf 'sleep 30\n' >"$SB/bin/fake-tool.cjs"
+  mm_test_bg "$SB" sleep 30
+  mm_test_bg "$SB" bash "$SB/bin/fake-tool.cjs"
+  mm_test_bg "$SB" bash -c 'sleep 31 & wait'
+  local parent=${MM_TEST_PIDS[-1]} kids="" i
+  mm_proc_running sleep
+  mm_proc_running fake-tool
+  run mm_proc_running no-such-tool
+  [ "$status" -eq 1 ]
+  for i in $(seq 50); do kids=$(mm_proc_children "$parent"); [[ -n "$kids" ]] && break; sleep 0.1; done
+  [ "$(tr '\0' ' ' <"/proc/$kids/cmdline")" = "sleep 31 " ]
+  [[ "$(mm_sysline)" =~ \|\ Up\ ([0-9]+d\ )?([0-9]+h\ )?[0-9]+m$ ]]
+  [ ! -e "$BATS_TEST_TMPDIR/procps" ]
+}
+
+@test "apt is busy during an unattended-upgrade run, not because its shutdown helper waits" {
+  mkdir -p "$SB/u"
+  printf '#!/bin/bash\nsleep 60\n:\n' >"$SB/u/unattended-upgrade-shutdown"
+  printf '#!/bin/bash\nsleep 60\n:\n' >"$SB/u/unattended-upgrade"
+  chmod +x "$SB/u/"*
+  # passwordless sudo that runs as this user: the lock check sees no holder
+  mm_test_fake sudo '[[ "$1" == -n ]] && shift; [[ "$*" == true ]] && exit 0; exec "$@"'
+  if mm_proc_match 'apt|apt-get|aptitude|dpkg' '/unattended-upgrade( |$)'; then
+    skip "apt is really running on this host"
+  fi
+  mm_test_bg "$SB" "$SB/u/unattended-upgrade-shutdown" --wait-for-signal
+  run mm_apt_busy
+  [ "$status" -eq 1 ]
+  mm_test_bg "$SB" "$SB/u/unattended-upgrade"
+  run mm_apt_busy
+  [ "$status" -eq 0 ]
+  [ "$output" = "apt is running" ]
+}
+
+@test "apt locks that cannot be read count as busy only when an apt step could run" {
+  # The host's own apt can start at any moment (apt-daily on a freshly booted CI runner): this test
+  # is about lock files nobody can read, so no apt process is running here.
+  mm_proc_match() { return 1; }
+  # sudo is installed but needs a password, and the password is refused
+  mm_test_fake sudo '[[ "$1" == -n ]] && exit 1; echo "sudo $*" >>"$BATS_TEST_TMPDIR/sudo"; exit 1'
+  MM_TTY=1 run mm_apt_busy
+  [ "$status" -eq 0 ]
+  [ "$output" = "apt locks not visible without sudo" ]
+  MM_TTY=1 MM_DRY_RUN=1 run mm_apt_busy
+  [ "$status" -eq 1 ]
+  MM_TTY=0 run mm_apt_busy
+  [ "$status" -eq 1 ]
+}
+
+@test "without a sudo binary only root counts as able to sudo" {
+  (( EUID != 0 )) || skip "root can always sudo"
+  command() { if [[ "$*" == "-v sudo" ]]; then return 1; fi; builtin command "$@"; }   # sudo not installed
+  MM_TTY=1 run mm_can_sudo
+  [ "$status" -eq 1 ]
+}

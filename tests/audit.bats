@@ -21,3 +21,9 @@ _sinks() {
   run bash -c "$(declare -f _sinks); MM_SRC='$MM_SRC'; _sinks"
   [[ "$output" == *"lib/core.sh"*"rm -rf --one-file-system"* ]]
 }
+
+@test "process checks read /proc, not procps or psmisc (missing from minimal images)" {
+  run bash -c "grep -nE '(^|[^-[:alnum:]_./])(pgrep|pkill|pidof|fuser|killall|uptime)([^-[:alnum:]_.]|\$)' \
+    '$MM_SRC/marmot' '$MM_SRC/install.sh' '$MM_SRC'/lib/*.sh '$MM_SRC'/cmd/*.sh | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#'"
+  [ -z "$output" ] || { echo "procps/psmisc calls:"; echo "$output"; false; }
+}
