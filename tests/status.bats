@@ -22,6 +22,9 @@ exit 0"
 exit 1"
   mkdir -p "$SB/bin"
   DETACHED_PIDS=()
+  # The terminal bats runs in (if any) is the developer's: tests see "no terminal" unless they
+  # run mm in a pty of their own (script) and unset this.
+  export MM_TEST_NO_TTY=1
 }
 
 teardown() {
@@ -68,23 +71,30 @@ status_json() {
   JSON=$output
 }
 
-# fake_ss LISTENERS CONNS [CONNS_LATER] — an `ss` double: listener queries (-l) print LISTENERS;
-# `state established` queries print CONNS the first time and CONNS_LATER (default CONNS) after,
-# so counters can grow between the two samples a snapshot takes. Lines as `ss -H` prints them.
+# fake_ss LISTENERS CONNS [CONNS_LATER [UDP]] — an `ss` double: listener queries (-l) print
+# LISTENERS; `state established` queries print CONNS the first time and CONNS_LATER (default
+# CONNS) after, so counters can grow between the two samples a snapshot takes; UDP queries (-u)
+# print UDP. Lines as `ss -H` prints them.
 fake_ss() {
   local d=$BATS_TEST_TMPDIR
   printf '%s\n' "$1" >"$d/ss.listen"
   printf '%s\n' "$2" >"$d/ss.est1"
   printf '%s\n' "${3:-$2}" >"$d/ss.est2"
+  printf '%s\n' "${4:-}" >"$d/ss.udp"
   mm_test_fake ss "case \"\$*\" in
   *established*) if [[ -e '$d/ss.seen' ]]; then cat '$d/ss.est2'; else : >'$d/ss.seen'; cat '$d/ss.est1'; fi ;;
+  -Hu*) cat '$d/ss.udp' ;;
   *l*) cat '$d/ss.listen' ;;
 esac"
   rm -f "$d/ss.seen"
 }
 
-# conn LOCAL PEER INFO — one established connection as `ss -Htin` prints it (info on its own line).
-conn() { printf '0      0      %s   %s\n\t cubic wscale:7,7 rto:204 %s mss:1448 lastsnd:10 lastack:20\n' "$1" "$2" "$3"; }
+# conn LOCAL PEER INFO [INODE] — one established connection as `ss -Htine` prints it (info on its
+# own line); the socket's inode when given.
+conn() {
+  printf '0      0      %s   %s%s\n\t cubic wscale:7,7 rto:204 %s mss:1448 lastsnd:10 lastack:20\n' \
+    "$1" "$2" "${4:+ uid:1000 ino:$4 sk:1}" "$3"
+}
 
 NO_SSH=(-u SSH_CONNECTION -u SSH_CLIENT)
 LISTEN_SSH='LISTEN 0      4096         0.0.0.0:22        0.0.0.0:*
@@ -464,7 +474,8 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   fake_ss "$LISTEN_SSH" "$conns"
   status_json "${NO_SSH[@]}"
   jq -e '.client == { address: "203.0.113.7", name: null, path: null, rtt_ms: 23.5, min_rtt_ms: 21.2,
-    rttvar_ms: 4.1, retrans_delta: 0, laggy: false }' <<<"$JSON"
+    rttvar_ms: 4.1, retrans_delta: 0, laggy: false, via: null, transport: "direct", tty: null,
+    last_input_seconds: null }' <<<"$JSON"
   fake_ss "$LISTEN_SSH" "$conns"
   run env "${NO_SSH[@]}" mm status --once
   [[ "$output" == *"203.0.113.7"*"rtt 24 ms (best 21)"* && "$output" != *laggy* ]]
@@ -498,14 +509,14 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:20/2 lastrcv:5 minrtt:18'
     conn 10.0.0.5:22 198.51.100.4:60000 'rtt:80/5 lastrcv:900 minrtt:70')"
   status_json SSH_CONNECTION='198.51.100.4 60000 10.0.0.5 22'
-  jq -e '.client.address == "198.51.100.4" and .client.rtt_ms == 80' <<<"$JSON"
+  jq -e '.client.address == "198.51.100.4" and .client.rtt_ms == 80 and .client.transport == "ssh"' <<<"$JSON"
   status_json -u SSH_CONNECTION SSH_CLIENT='198.51.100.4 60000 22'
   jq -e '.client.address == "198.51.100.4"' <<<"$JSON"
   status_json SSH_CONNECTION='192.0.2.1 1234 10.0.0.5 22'
   jq -e '.client.address == "192.0.2.1" and .client.rtt_ms == null and (.client.laggy | not)' <<<"$JSON"
 }
 
-@test "client: a Tailscale peer is named, with its path; no inbound connection means null" {
+@test "client: a Tailscale peer is named, with its path; no terminal and no inbound peer is none" {
   needs_jq
   mm_test_fake tailscale 'printf "%s\n" "{\"Peer\": {\"n1\": {\"HostName\": \"laptop\",
     \"TailscaleIPs\": [\"100.101.102.103\", \"fd7a:115c:a1e0::1\"], \"CurAddr\": \"\", \"Relay\": \"fra\"}}}"'
@@ -514,10 +525,104 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   jq -e '.client | .name == "laptop" and .path == "Tailscale relay fra"' <<<"$JSON"
   fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:40001 203.0.113.9:443 'rtt:9/1 lastrcv:3 minrtt:9')"
   status_json "${NO_SSH[@]}"
-  jq -e '.client == null' <<<"$JSON"
+  jq -e '.client | .transport == "none" and .address == null and .via == null and .tty == null
+    and .last_input_seconds == null and (.laggy | not)' <<<"$JSON"
   fake_ss "$LISTEN_SSH" ""
   run env "${NO_SSH[@]}" mm status --once
-  [[ "$output" == *"no remote session detected"* ]]
+  grep -E '^YOU +no terminal \(run from a script\)$' <<<"$output"
+  [[ "$output" != *"no remote session"* ]]
+  run env "${NO_SSH[@]}" mm status --agent
+  grep -xF 'client: none (no terminal: run from a script)' <<<"$output"
+}
+
+@test "client: inside a terminal of its own (script), the link is a local terminal via script" {
+  needs_jq
+  command -v script >/dev/null || skip "script(1) not installed"
+  local out
+  # jq colors its output on a terminal: strip that.
+  out=$(script -qfec "env -u MM_TEST_NO_TTY mm status --json" /dev/null | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g')
+  jq -e '.client | .transport == "local" and .via == "script" and (.tty | test("^/dev/pts/[0-9]+$"))
+    and (.last_input_seconds | type == "number" and . >= 0) and .address == null and .rtt_ms == null
+    and (.laggy | not)' <<<"$out"
+  out=$(script -qfec "env -u MM_TEST_NO_TTY COLUMNS=100 mm status --once" /dev/null | tr -d '\r')
+  grep -E '^YOU +local terminal \(script\)$' <<<"$out"
+  out=$(script -qfec "env -u MM_TEST_NO_TTY mm status --agent" /dev/null | tr -d '\r')
+  grep -E '^client: local terminal \(script\) · last input (<10s|[0-9]+s)$' <<<"$out"
+}
+
+@test "client: the terminal host's own sockets decide direct, relay, udp or local; sshd and mosh name the peer" {
+  local conns udp
+  conns=$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:23.5/4.1 lastrcv:5 minrtt:21.2' 101
+    conn 10.0.0.5:40001 203.0.113.9:443 'rtt:9/1 lastrcv:3 minrtt:9' 202
+    conn 10.0.0.5:40002 10.0.0.5:8080 'rtt:1/1 lastrcv:3 minrtt:1' 303
+    conn 10.0.0.5:40003 127.0.0.1:5432 'rtt:1/1 lastrcv:3 minrtt:1' 404
+    conn 10.0.0.5:22 198.51.100.4:60000 'rtt:80/5 lastrcv:900 minrtt:70' 707)
+  udp='UNCONN 0      0            0.0.0.0:60001      0.0.0.0:* uid:1000 ino:505 sk:2
+UNCONN 0      0          127.0.0.1:60002      0.0.0.0:* uid:1000 ino:606 sk:3'
+  fake_ss "$LISTEN_SSH" "$conns" "$conns" "$udp"
+  status_lib 'ST_SS=1
+    declare -A ST_CL_PREV=()
+    c() {
+      ST_CL_ADDR="" ST_CL_RTT=""
+      _status_classify "$@"
+      echo "$2: $ST_CL_TRANSPORT ${ST_CL_ADDR:--} ${ST_CL_RTT:--}"
+    }
+    c host ttyd "" 202 101
+    c host tern "" 202 606
+    c host app "" 303 404
+    c host app "" 505
+    c host app "" 606
+    c host app ""
+    c host sshd "198.51.100.4 60000 10.0.0.5 22"
+    c host sshd-session "203.0.113.7 51234 10.0.0.5 22" 101
+    c host mosh-server "198.51.100.4 60000 10.0.0.5 22"
+    c any "" ""'
+  [ "$status" -eq 0 ]
+  [ "$output" = "ttyd: direct 203.0.113.7 23.5
+tern: relay - -
+app: local - -
+app: udp - -
+app: local - -
+app: local - -
+sshd: ssh 198.51.100.4 80
+sshd-session: ssh 203.0.113.7 23.5
+mosh-server: udp 198.51.100.4 -
+: direct 203.0.113.7 23.5" ]
+}
+
+@test "client: a tmux pane is followed to the server's most recently active client" {
+  mm_test_fake tmux "printf '%s\n' \"\$*\" >'$BATS_TEST_TMPDIR/tmux.args'
+printf '101 /dev/pts/7 1700000300\n102 /dev/pts/8 1700000900\n103 /dev/pts/9 1700000100\n'"
+  # The pane's shell names the server's socket in TMUX.
+  TMUX="$SB/tmux-sock,4242,0"
+  export TMUX
+  mm_test_bg "$SB" sleep 30
+  unset TMUX
+  local pane=${MM_TEST_PIDS[-1]}
+  status_lib "_status_tmux_client $pane && echo \"\$REPLY\""
+  [ "$status" -eq 0 ]
+  [ "$output" = "102 /dev/pts/8" ]
+  [[ "$(<"$BATS_TEST_TMPDIR/tmux.args")" == "-S $SB/tmux-sock list-clients -F "* ]]
+}
+
+@test "client: who and how, in one line through a relay, with the round trip when measured" {
+  status_lib 'ST_SS=1 ST_RTTH=()
+    show() { _status_you_lines 100; printf "%s\n" "${ST_YOU[@]}"; }
+    ST_CL_TRANSPORT=relay ST_CL_VIA=tern ST_CL_ADDR="" ST_CL_RTT="" ST_CL_IDLE=3 ST_CL_TTY=/dev/pts/2
+    show
+    ST_CL_IDLE=42; show
+    ST_CL_TRANSPORT=ssh ST_CL_VIA=SSH ST_CL_ADDR=203.0.113.7 ST_CL_NAME=laptop ST_CL_PATH="Tailscale direct"
+    ST_CL_RTT=23.5 ST_CL_MIN=21.2 ST_CL_VAR=4 ST_CL_RETR=0 ST_CL_LAGGY=0 ST_CL_IDLE=2
+    show
+    ST_CL_TRANSPORT=local ST_CL_VIA=script; show
+    ST_CL_VIA=console; show'
+  [ "$status" -eq 0 ]
+  [ "$output" = "via tern · relay · last input <10 s ago · round trip not measurable through a relay
+via tern · relay · last input 42 s ago · round trip not measurable through a relay
+via SSH · 203.0.113.7 laptop · Tailscale direct
+rtt 24 ms (best 21) · last input <10 s ago
+local terminal (script)
+local console" ]
 }
 
 @test "checks: all fine is one line of ✓ items, pending updates a note there, not a problem" {

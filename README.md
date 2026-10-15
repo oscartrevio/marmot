@@ -154,7 +154,9 @@ Read-only dashboard. Views:
 It shows agent sessions (folder, age, busy/idle, CPU and proportional memory including
 sub-processes; orphans whose folder was deleted) and, on a line of their own, the agents' helper
 processes (language-server hubs, daemons: the `helpers` field in `lib/agents.sh`), CPU, memory,
-disk and inodes, network/VPN, the latency of your link, lingering dev servers and ports, updates,
+disk and inodes, network/VPN, how you reach the machine (the program hosting your terminal: SSH,
+a direct connection, a relay such as a tunnel, or a local terminal; when you last typed; the
+latency of your link where it can be measured), lingering dev servers and ports, updates,
 failed units, pending reboot, the scheduled cleanup and its last run, and a health score.
 
 ### mm analyze [PATH] · mm optimize · mm uninstall [NAME...] · mm history
