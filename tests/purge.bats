@@ -133,6 +133,29 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [ -d "$SB/b/node_modules/.git" ]
 }
 
+@test "a target/ holding a deploy keypair is kept and says so; a sibling's target/ is removed" {
+  mkdir -p "$SB/prog/target/deploy" "$SB/plain/target/debug"
+  touch "$SB/prog/Cargo.toml" "$SB/plain/Cargo.toml" "$SB/plain/target/debug/bin"
+  echo '[1,2,3]' >"$SB/prog/target/deploy/prog-keypair.json"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ -f "$SB/prog/target/deploy/prog-keypair.json" ]
+  [[ "$output" == *"kept (holds a deploy keypair)"* ]]
+  [ ! -e "$SB/plain/target" ]
+}
+
+@test "an artifact whose size can't be measured is kept, never counted as 0" {
+  node_project "$SB/a"; node_project "$SB/b"; mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  eval "_real_size_frees() $(declare -f mm_size_frees | tail -n +2)"
+  export -f _real_size_frees
+  mm_size_frees() { [[ "$1" == */a/node_modules ]] && return 124; _real_size_frees "$@"; }
+  run mm_cmd_main --yes "$SB"
+  [ -f "$SB/a/node_modules/blob" ]
+  [[ "$output" == *"kept (size unknown)"* ]]
+  [ ! -e "$SB/b/node_modules" ]
+}
+
 @test "symlinked artifact is skipped and its target untouched" {
   mkdir -p "$SB/elsewhere/real"; touch "$SB/elsewhere/real/precious"
   node_project "$SB/p"; rm -r "$SB/p/node_modules"
@@ -315,6 +338,31 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   run mm_cmd_main "$SB"
   [ -d "$SB/a/node_modules" ]
   [ ! -e "$SB/b/node_modules" ]
+}
+
+@test "a project edited while the prompt waited is kept; an idle one is still removed" {
+  node_project "$SB/a"; mkdir -p "$SB/a/src"; echo v1 >"$SB/a/src/main.ts"
+  printf 'node_modules/\n' >"$SB/a/.gitignore"; git_repo "$SB/a"
+  node_project "$SB/b"; mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  _purge_ask() { echo v2 >"$SB/a/src/main.ts"; printf s; }   # an agent edits deep in src/
+  run mm_cmd_main "$SB"
+  [ -f "$SB/a/node_modules/blob" ]
+  [[ "$output" == *"active since the scan"* ]]
+  [ ! -e "$SB/b/node_modules" ]
+}
+
+@test "an activity probe that fails at the re-check keeps the artifact" {
+  node_project "$SB/a"; mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  eval "_real_activity() $(declare -f _purge_activity | tail -n +2)"
+  _purge_activity() { [[ -e "$BATS_TEST_TMPDIR/asked" ]] && return 1; _real_activity "$@"; }
+  MM_TTY=1
+  _purge_ask() { touch "$BATS_TEST_TMPDIR/asked"; printf s; }
+  run mm_cmd_main "$SB"
+  [ -f "$SB/a/node_modules/blob" ]
+  [[ "$output" == *"activity unknown"* ]]
 }
 
 # ---------------------------------------------------------------- discovery

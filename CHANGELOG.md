@@ -16,6 +16,7 @@ All notable changes to marmot are recorded here. The format follows
 - `mm clean` lists the biggest folders in `~/.cache` that no catalog row covers, never deleting
   them, with the catalog row that would.
 - `SECURITY.md`, `CONTRIBUTING.md` and `AGENTS.md`.
+- `mm purge` keeps build folders holding a `*-keypair.json` (Solana/Anchor deploy keys).
 
 ### Changed
 
@@ -38,6 +39,9 @@ All notable changes to marmot are recorded here. The format follows
   `npx -y` is no longer downloaded again after every run.
 - `mm clean` runs `mise cache prune` (files not read for 30 days) instead of `mise cache clear`.
 - `mm clean --help` lists every option, `--sessions N` included.
+- `mm purge` keeps an artifact or worktree whose size can't be measured; it was counted as 0.
+- `mm purge` probes activity again right before deleting: a project touched since the scan, or
+  whose activity can't be read, keeps its artifacts.
 
 ## 0.2.0
 

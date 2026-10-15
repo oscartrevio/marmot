@@ -63,8 +63,10 @@ Usage: mm purge [DIR...] [options]
    bin/obj, bower_components, .nx/cache, .docusaurus, a project's .pnpm-store, and folders inside
    a project that tag themselves as caches with CACHEDIR.TAG). Projects idle longer
    than --days are selected by default. Never touched: projects with a running process inside
-   them, anything git tracks, and anything whose git state can't be read. Virtualenvs (venv,
-   .venv) go to the Trash; everything else is deleted permanently.
+   them or active since the scan (re-checked right before deleting), anything git tracks,
+   anything whose git state, activity or size can't be read, and artifacts holding a nested
+   git repository or a deploy keypair (*-keypair.json, e.g. Solana's target/deploy/). Virtualenvs
+   (venv, .venv) go to the Trash; everything else is deleted permanently.
 
 Sizes: FREES is what a delete really releases. Files hard-linked from elsewhere (pnpm's store)
 stay on disk, so after removing pnpm-installed node_modules or worktrees marmot runs
@@ -448,6 +450,31 @@ _purge_changed() {
       }' <(for p; do if [[ "$p" == "$root" ]]; then echo .; else printf './%s\n' "${p#"$root"/}"; fi; done) -)
 }
 
+declare -A _PURGE_ACT=()
+
+# _purge_activity_load PROJ<TAB>GITROOT... — fill _PURGE_ACT with each PROJ's last activity
+# epoch: its own and top-level mtimes, its repository's index/HEAD (_purge_activity) and the files
+# git reports changed or new (deep edits not staged yet, _purge_changed). One probe per
+# repository. A PROJ whose activity is unknown is absent or empty.
+_purge_activity_load() {
+  local pair t p g cur
+  local -A changed=()
+  local -a list=()
+  _PURGE_ACT=()
+  for pair; do
+    g="${pair#*$'\t'}"; [[ -n "$g" ]] && changed[$g]+="${pair%%$'\t'*}"$'\n'
+  done
+  while IFS=$'\t' read -r t p; do _PURGE_ACT[$p]=$t; done < <(_purge_activity "$@")
+  for g in "${!changed[@]}"; do
+    mapfile -t list <<<"${changed[$g]%$'\n'}"
+    while IFS=$'\t' read -r t p; do
+      cur="${_PURGE_ACT[$p]:-}"
+      if [[ "$t" == "?" ]]; then _PURGE_ACT[$p]=""
+      elif [[ -n "$cur" && "$t" =~ ^[0-9]+$ ]] && (( t > cur )); then _PURGE_ACT[$p]=$t; fi
+    done < <(_purge_changed "$g" "${list[@]}")
+  done
+}
+
 # _purge_busy PATH... — the given paths that are in use (or have something in use below them),
 # per one pass over the in-use snapshot.
 _purge_busy() {
@@ -457,16 +484,19 @@ _purge_busy() {
     - <(mm_inuse_paths) | sort -u
 }
 
-# _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>has_git<TAB>path" per artifact (see
-# mm_size_frees), 4 in parallel. has_git=1 when a .git entry exists anywhere inside (a nested
-# repository: never purged).
+# _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>holds<TAB>path" per artifact (see
+# mm_size_frees), 4 in parallel. size and frees are "?" when sizing failed or timed out (size
+# unknown). holds is what makes the artifact never purged, from one find: "git" when a .git entry
+# exists anywhere inside (a nested repository), "keypair" when a *-keypair.json file does
+# (Solana/Anchor program keypairs in target/deploy/: losing one loses the deploy authority).
 _purge_measure() {
   (
-    export -f mm_size_frees
+    export -f mm_size_frees; export MM_SIZE_SUDO
     printf '%s\0' "$@" | xargs -0 -P4 -n1 bash -c '
-      g=$(find "$1" -xdev -mindepth 1 -name .git -print -quit 2>/dev/null)
-      read -r s f < <(mm_size_frees "$1")
-      printf "%s\t%s\t%s\t%s\0" "${s:-0}" "${f:-0}" "${g:+1}" "$1"' _
+      g=$(find "$1" -xdev -mindepth 1 \( -name .git -o -type f -name "*-keypair.json" \) -print -quit 2>/dev/null)
+      h=""; case "${g##*/}" in .git) h=git ;; ?*) h=keypair ;; esac
+      if r=$(mm_size_frees "$1") && [[ "$r" =~ ^[0-9]+\ [0-9]+$ ]]; then s=${r% *} f=${r#* }; else s="?" f="?"; fi
+      printf "%s\t%s\t%s\t%s\0" "$s" "$f" "$h" "$1"' _
   )
 }
 
@@ -775,11 +805,14 @@ _purge_worktrees() {
       active) active=$((active + 1)) ;;
       keep) mm_tilde "${_WT_PATH[$i]}"; _purge_kept "$REPLY · $desc" "$_WT_WHY" ;;
       offer)
-        read -r sz fr < <(mm_size_frees "${_WT_PATH[$i]}")
-        size[$i]=${fr:-0} pn=0
+        if ! { sz=$(mm_size_frees "${_WT_PATH[$i]}") && [[ "$sz" =~ ^[0-9]+\ [0-9]+$ ]]; }; then
+          mm_tilde "${_WT_PATH[$i]}"; _purge_kept "$REPLY · $desc" "size unknown"; continue
+        fi
+        fr=${sz#* } sz=${sz% *}
+        size[$i]=$fr pn=0
         _purge_pnpm_managed "${_WT_PATH[$i]}" && { pn=1 pnpm[$i]=1; _PURGE_WT_PNPM+=("${_WT_PATH[$i]}"); }
         mm_tilde "${_WT_PATH[$i]}"
-        label[$i]="$REPLY · $desc · idle $(_purge_idle_label "$_WT_IDLE") · $(_purge_size_label "${sz:-0}" "${size[$i]}" "$pn")"
+        label[$i]="$REPLY · $desc · idle $(_purge_idle_label "$_WT_IDLE") · $(_purge_size_label "$sz" "${size[$i]}" "$pn")"
         printf '  %s●%s %s\n' "$C_YELLOW" "$C_RESET" "${label[$i]}"
         offer+=("$i")
         _PURGE_WT_OFFERED=$((_PURGE_WT_OFFERED + 1)) _PURGE_WT_OFFER_BYTES=$((_PURGE_WT_OFFER_BYTES + size[$i]))
@@ -1018,26 +1051,31 @@ _purge_run() {
     done < <(printf '%s\n' "${!skip_n[@]}" | sort)
   fi
 
-  # ---- sizes, frees and nested-repository check (parallel)
-  local -A size=() frees=() nested=()
-  local b fb hasgit n=0 total=${#cand[@]}
+  # ---- sizes, frees and what an artifact holds that must survive (parallel)
+  local -A size=() frees=() holds=()
+  local b fb h n=0 total=${#cand[@]}
   local -a cand_paths=() keep_cand=() freed_paths=()
   for i in "${cand[@]}"; do cand_paths+=("${arts[$i]}"); done
   if (( total )); then
     while IFS= read -r -d '' rec; do
       b="${rec%%$'\t'*}" rec="${rec#*$'\t'}" fb="${rec%%$'\t'*}" rec="${rec#*$'\t'}"
-      hasgit="${rec%%$'\t'*}" p="${rec#*$'\t'}"
-      size[$p]=$b frees[$p]=$fb; [[ "$hasgit" == 1 ]] && nested[$p]=1; n=$((n + 1))
+      h="${rec%%$'\t'*}" p="${rec#*$'\t'}"
+      size[$p]=$b frees[$p]=$fb holds[$p]=$h; n=$((n + 1))
       [[ -t 2 ]] && printf '\r  %sMeasuring %d/%d artifacts…%s' "$C_DIM" "$n" "$total" "$C_RESET" >&2
     done < <(_purge_measure "${cand_paths[@]}")
     [[ -t 2 ]] && printf '\r\e[K' >&2
   fi
   for i in "${cand[@]}"; do
-    if [[ -n "${nested[${arts[$i]}]:-}" ]]; then
-      kept_out+=("${arts[$i]}"$'\t'"contains a git repository")
-    else
-      keep_cand+=("$i")
+    art="${arts[$i]}"
+    case "${holds[$art]:-}" in
+      git) kept_out+=("$art"$'\t'"contains a git repository"); continue ;;
+      keypair) kept_out+=("$art"$'\t'"holds a deploy keypair"); continue ;;
+    esac
+    # unknown size (sizing failed or timed out, or no record) is never counted as 0
+    if [[ "${size[$art]:-?}" == "?" || "${frees[$art]:-?}" == "?" ]]; then
+      kept_out+=("$art"$'\t'"size unknown"); continue
     fi
+    keep_cand+=("$i")
   done
   cand=("${keep_cand[@]}")
 
@@ -1054,29 +1092,14 @@ _purge_run() {
   fi
 
   # ---- classify and sort by what deleting frees
-  # activity: a project's own and top-level mtimes, its repository's index/HEAD, and the files git
-  # reports changed or new (deep edits not staged yet): one probe per repository
-  local -A activity=() pair_of=() changed=()
-  local -a list=()
-  local t cur
-  for i in "${cand[@]}"; do
-    pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"
-    [[ -n "${gits[$i]}" ]] && changed[${gits[$i]}]+="${projs[$i]}"$'\n'
-  done
-  while IFS=$'\t' read -r t p; do activity[$p]=$t; done < <(_purge_activity "${pair_of[@]}")
-  for g in "${!changed[@]}"; do
-    mapfile -t list <<<"${changed[$g]%$'\n'}"
-    while IFS=$'\t' read -r t p; do
-      cur="${activity[$p]:-}"
-      if [[ "$t" == "?" ]]; then activity[$p]=""
-      elif [[ -n "$cur" && "$t" =~ ^[0-9]+$ ]] && (( t > cur )); then activity[$p]=$t; fi
-    done < <(_purge_changed "$g" "${list[@]}")
-  done
+  local -A pair_of=()
+  for i in "${cand[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+  _purge_activity_load "${pair_of[@]}"
   local now; now=$(date +%s)
   local -a order=() idle=() stale=() pnpm_art=()
   local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act shared=0
   for i in "${cand[@]}"; do
-    act="${activity[${projs[$i]}]:-}"
+    act="${_PURGE_ACT[${projs[$i]}]:-}"
     # unknown activity counts as recent: never selected by default
     if [[ -n "$act" ]]; then idle[i]=$(( (now - act) / 86400 )); else idle[i]=0; fi
     if (( idle[i] > days )); then
@@ -1160,7 +1183,9 @@ _purge_run() {
     return 0
   fi
 
-  # ---- delete (re-check in-use for real runs: a prompt may have taken a while)
+  # ---- delete (re-check in-use and activity for real runs: a prompt may have taken a while, and an
+  # agent may have edited a project meanwhile)
+  local why
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_section "Would remove"
   else
@@ -1170,7 +1195,11 @@ _purge_run() {
     local -a recheck=()
     for i in "${sel[@]}"; do recheck+=("${projs[$i]}"); [[ -n "${gits[$i]}" ]] && recheck+=("${gits[$i]}"); done
     while IFS= read -r p; do [[ -n "$p" ]] && busy[$p]=1; done < <(_purge_busy "${recheck[@]}")
+    pair_of=()
+    for i in "${sel[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+    _purge_activity_load "${pair_of[@]}"
   fi
+  local scan_now=$now; now=$(date +%s)
   local -a how=()
   local keep_state freed0=$MM_FREED
   local -A done_proj=()
@@ -1178,6 +1207,19 @@ _purge_run() {
     art="${arts[$i]}" proj="${projs[$i]}" g="${gits[$i]}"
     if [[ -n "${busy[$proj]:-}" || ( -n "$g" && -n "${busy[$g]:-}" ) ]]; then
       mm_tilde "$art"; mm_skip "$REPLY" "$(mm_inuse_why "${g:-$proj}" || echo "in use")"
+      MM_SKIPPED=$((MM_SKIPPED + 1))
+      continue
+    fi
+    # activity since the scan: touched after it, or a stale project no longer idle past the
+    # threshold. Unknown activity keeps the artifact.
+    why=""
+    if [[ "$MM_DRY_RUN" != 1 ]]; then
+      act="${_PURGE_ACT[$proj]:-}"
+      if [[ ! "$act" =~ ^[0-9]+$ ]]; then why="activity unknown"
+      elif (( act > scan_now || (stale[i] && (now - act) / 86400 <= days) )); then why="active since the scan"; fi
+    fi
+    if [[ -n "$why" ]]; then
+      mm_tilde "$art"; mm_skip "$REPLY" "$why"
       MM_SKIPPED=$((MM_SKIPPED + 1))
       continue
     fi
@@ -1195,8 +1237,10 @@ _purge_run() {
   done
   # Items hard-linked only among themselves (a project's .pnpm-store and its node_modules, cp -al
   # copies) free those files once all of them are gone, as the real run's later deletes count:
-  # a dry run sizes what it would delete as one selection.
-  [[ "$MM_DRY_RUN" == 1 ]] && (( ${#freed_paths[@]} > 1 )) && MM_FREED=$(( freed0 + $(mm_frees "${freed_paths[@]}") ))
+  # a dry run sizes what it would delete as one selection (per-item sums stay if that sizing fails).
+  if [[ "$MM_DRY_RUN" == 1 ]] && (( ${#freed_paths[@]} > 1 )) && fb=$(mm_frees "${freed_paths[@]}") && [[ "$fb" =~ ^[0-9]+$ ]]; then
+    MM_FREED=$(( freed0 + fb ))
+  fi
   _purge_banner "$free_before" "${#done_proj[@]}"
 }
 
