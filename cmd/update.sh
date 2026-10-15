@@ -114,6 +114,7 @@ mm_cmd_main() {
     esac
     shift
   done
+  command -v git >/dev/null || mm_die "git is not installed, and mm update needs it: sudo apt-get install git"
   [[ -z "$report" && "$MM_DRY_RUN" == 1 ]] && report="dry run"
   [[ -z "$report" && "$MM_TTY" != 1 ]] && report="no terminal"
   # Nobody can answer a credential prompt without a terminal: fail instead of hanging.

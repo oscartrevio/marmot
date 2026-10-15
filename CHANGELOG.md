@@ -17,6 +17,8 @@ All notable changes to marmot are recorded here. The format follows
   with a warning.
 - `install.sh --uninstall` disables the schedule first, so no timer or cron line calls a removed
   launcher.
+- `install.sh` no longer needs git (only `mm update` does, and says so) and prints the exact
+  line that puts the launcher folder on PATH.
 
 ## 0.2.0
 

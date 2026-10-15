@@ -146,3 +146,16 @@ teardown() { mm_test_teardown; }
   grep -qx 'systemctl --user disable --now marmot-schedule.timer' "$CALLS"
   [ ! -e "$MARMOT_PREFIX" ]
 }
+
+@test "installs without git, and says where to put bin on PATH" {
+  local tools="$BATS_TEST_TMPDIR/tools" c
+  mkdir -p "$tools"
+  for c in bash env find awk sed grep stat realpath du df uname dirname readlink cp mkdir ln cat; do
+    ln -s "$(command -v "$c")" "$tools/$c"
+  done
+  PATH="$tools" SHELL=/bin/zsh run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
+  [[ "$output" == *"~/.zshrc"* || "$output" == *"$HOME/.zshrc"* ]]
+  [[ "$output" == *"export PATH=\"$MARMOT_BIN:\$PATH\""* || "$output" == *'export PATH="$HOME/'* ]]
+}

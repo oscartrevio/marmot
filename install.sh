@@ -42,6 +42,15 @@ _link() {
   ln -sfn "$prefix/marmot" "$l" && say "linked $l"
 }
 
+# _path_hint — the line that puts $bindir on PATH, and the startup file it belongs in.
+_path_hint() {
+  local dir=$bindir rc=~/.profile
+  [[ "$dir" == "$HOME"/* ]] && dir="\$HOME/${dir#"$HOME"/}"
+  case "${SHELL:-}" in */zsh) rc=~/.zshrc ;; */bash) rc=~/.bashrc ;; esac
+  warn "$bindir is not on your PATH. Add this line to $rc, then open a new shell:"
+  printf '    export PATH="%s:$PATH"\n' "$dir" >&2
+}
+
 # _unschedule — remove the timer or crontab line `mm schedule enable` created, so nothing keeps
 # calling a launcher that is about to go away.
 _unschedule() {
@@ -72,8 +81,9 @@ check() {
   [[ "$(uname -s)" == Linux ]] || die "marmot runs on Linux (Ubuntu/Debian)."
   (( BASH_VERSINFO[0] >= 5 )) || die "bash 5.0 or newer is required (found $BASH_VERSION)."
   local c missing=()
-  for c in find awk sed grep stat realpath du df git; do command -v "$c" >/dev/null || missing+=("$c"); done
+  for c in find awk sed grep stat realpath du df; do command -v "$c" >/dev/null || missing+=("$c"); done
   (( ${#missing[@]} == 0 )) || die "missing required tools: ${missing[*]}"
+  command -v git >/dev/null || say "git not found: everything works except mm update (install git and clone marmot to use it)."
   command -v apt-get >/dev/null || warn "no apt-get: system-package steps will be skipped (marmot targets Ubuntu/Debian)."
   local opt=()
   command -v fzf >/dev/null      || opt+=("fzf (pickers)")
@@ -88,7 +98,7 @@ check() {
 record_source() {
   local commit="" describe="" bin
   bin=$(cd "$bindir" && pwd)
-  if [[ "$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" == "$src" ]]; then
+  if command -v git >/dev/null && [[ "$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" == "$src" ]]; then
     commit=$(git -C "$src" rev-parse -q --verify HEAD 2>/dev/null) || commit=""
     if [[ -n "$commit" ]]; then describe=$(git -C "$src" describe --tags --always --dirty 2>/dev/null) || describe=""; fi
   fi
@@ -122,7 +132,7 @@ install() {
   if (( copied )); then record_source; fi
   _link mm
   _link marmot || true
-  case ":$PATH:" in *":$bindir:"*) ;; *) warn "$bindir is not on your PATH; add it to your shell profile." ;; esac
+  case ":$PATH:" in *":$bindir:"*) ;; *) _path_hint ;; esac
   say ""
   say "Shell completion:"
   say "  bash: echo 'source $prefix/completion/mm.bash' >> ~/.bashrc"
