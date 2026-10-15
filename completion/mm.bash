@@ -8,7 +8,7 @@ _mm() {
   local opts="--dry-run -n --debug --help"
   case "$cmd" in
     clean)     opts+=" --days --whitelist" ;;
-    status)    opts="--once --json --view --interval --help"
+    status)    opts="--once --json --agent --view --interval --help"
                if [[ "${COMP_WORDS[COMP_CWORD-1]}" == --view ]]; then
                  mapfile -t COMPREPLY < <(compgen -W "compact full" -- "$cur"); return
                fi ;;

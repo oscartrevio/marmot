@@ -20,6 +20,10 @@ mm history     everything marmot changed, refused or moved to the Trash
 
 Every command takes `--dry-run` (`-n`) to preview and `--help`.
 
+Coding agents can check the machine too: `mm status --agent` (the default when the output is
+not a terminal) prints a short plain-text snapshot, problems first, each with the marmot or
+system command that addresses it. `mm status --json` has every number.
+
 ## Install
 
 ```sh
