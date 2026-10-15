@@ -396,9 +396,8 @@ _schedule_status() {
 
 # _schedule_last_line — one line about the last run (after mm_schedule_last).
 _schedule_last_line() {
-  local ago=$(( $(date +%s) - MM_LAST_EPOCH )) a
-  if (( ago < 3600 )); then a="$(( ago / 60 ))m ago"; elif (( ago < 86400 )); then a="$(( ago / 3600 ))h ago"; else a="$(( ago / 86400 ))d ago"; fi
-  printf '%s (%s, %s) · took %ss · freed %s' "${MM_LAST_AT/T/ }" "$a" "$MM_LAST_TRIGGER" "$MM_LAST_DURATION" "$(mm_human "$MM_LAST_FREED")"
+  printf '%s (%s ago, %s) · took %ss · freed %s' "${MM_LAST_AT/T/ }" "$(mm_ago $(( $(date +%s) - MM_LAST_EPOCH )))" \
+    "$MM_LAST_TRIGGER" "$MM_LAST_DURATION" "$(mm_human "$MM_LAST_FREED")"
   (( MM_LAST_TRASHED )) && printf ' · %s to Trash' "$(mm_human "$MM_LAST_TRASHED")"
   printf ' · %s items · %s skipped · %s errors' "$MM_LAST_ITEMS" "$MM_LAST_SKIPPED" "$MM_LAST_ERRORS"
 }

@@ -17,14 +17,6 @@ _optimize_unchanged() { _OPTIMIZE_UNCHANGED=$((_OPTIMIZE_UNCHANGED + 1)); mm_ok 
 _optimize_skipped() { _OPTIMIZE_SKIPPED=$((_OPTIMIZE_SKIPPED + 1)); mm_skip "$1" "$2"; }
 _optimize_attention() { _OPTIMIZE_ATTENTION=$((_OPTIMIZE_ATTENTION + 1)); mm_warn "$1"; }
 
-# _optimize_ago SECONDS — "16h ago" / "3d ago".
-_optimize_ago() {
-  local s=$1
-  if (( s < 3600 )); then echo "$((s / 60))m ago"
-  elif (( s < 172800 )); then echo "$((s / 3600))h ago"
-  else echo "$((s / 86400))d ago"; fi
-}
-
 # _optimize_meminfo KEY — value in bytes from /proc/meminfo.
 _optimize_meminfo() { awk -v k="$1:" '$1 == k { printf "%.0f\n", $2 * 1024; exit }' /proc/meminfo; }
 
@@ -468,7 +460,7 @@ _optimize_orphan_line() {
   local pid start age bytes comm cwd args agent
   IFS=$'\t' read -r pid start age bytes comm cwd args <<<"$1"
   agent=$(_optimize_agent_of "$pid" "$comm") && comm+=" [$agent]"
-  printf '%-7s %-16s %-8s %9s  %s  %s\n' "$pid" "$comm" "$(_optimize_ago "$age" | sed 's/ ago//')" \
+  printf '%-7s %-16s %-8s %9s  %s  %s\n' "$pid" "$comm" "$(mm_ago "$age")" \
     "$(mm_human "$bytes")" "$cwd" "$args"
 }
 
@@ -682,7 +674,7 @@ _optimize_browser_line() {
   [[ -n "$tree" ]] && n=$(( $(wc -w <<<"$tree") + 1 ))
   [[ "$profile" == - ]] && profile="(no profile dir)"
   printf '%-7s %-14s %-6s %9s  %s · %s processes · parent %s\n' "$pid" "$name" \
-    "$(_optimize_ago "$age" | sed 's/ ago//')" "$(mm_human "$bytes")" "$profile" "$n" "$parent"
+    "$(mm_ago "$age")" "$(mm_human "$bytes")" "$profile" "$n" "$parent"
 }
 
 _optimize_browser_task() {
@@ -774,7 +766,7 @@ _optimize_disk() {
   elif ! command -v fstrim >/dev/null; then
     _optimize_skipped "SSD TRIM" "fstrim not installed"
   elif last=$(_optimize_last_trim) && since=$(( $(date +%s) - last )) && (( since < 86400 )); then
-    _optimize_unchanged "SSD TRIM" "fstrim.timer ran $(_optimize_ago "$since")"
+    _optimize_unchanged "SSD TRIM" "fstrim.timer ran $(mm_ago "$since") ago"
   elif [[ "$MM_DRY_RUN" != 1 ]] && ! mm_can_sudo; then
     _optimize_skipped "SSD TRIM" "needs sudo"
   elif mm_run "fstrim /" mm_sudo fstrim -v /; then

@@ -102,6 +102,13 @@ mm_human() {
   }'
 }
 
+# mm_ago SECONDS — a span as one unit: "16m" under an hour, "16h" under two days, else "3d".
+mm_ago() {
+  if (( $1 < 3600 )); then printf '%dm' $(( $1 / 60 ))
+  elif (( $1 < 172800 )); then printf '%dh' $(( $1 / 3600 ))
+  else printf '%dd' $(( $1 / 86400 )); fi
+}
+
 # mm_tilde PATH — PATH with a leading $HOME shown as ~, in REPLY. No subshell: status renders
 # call it for every row.
 mm_tilde() {
