@@ -23,12 +23,14 @@ MM_TRASH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
 
 : "${MM_DRY_RUN:=0}" "${MM_DEBUG:=0}"
 MM_CMD="${MM_CMD:-marmot}"
-MM_FREED=0     # bytes permanently removed (or that would be, in dry-run) by mm_rm
+# Byte counts below are what a delete really releases (mm_frees): files hard-linked from outside
+# the item (pnpm's store, cp -al copies) stay on disk and are not counted.
+MM_FREED=0     # bytes permanently freed (or that would be, in dry-run) by mm_rm
 MM_TRASHED=0   # bytes moved to the Trash (or that would be) by mm_rm --trash; not freed yet
 MM_COUNT=0     # items removed or trashed by mm_rm
 MM_SKIPPED=0   # items refused by mm_rm
 MM_SKIP_REASON=""
-MM_LAST_BYTES=0  # size of the item the last successful mm_rm handled
+MM_LAST_BYTES=0  # bytes the last successful mm_rm freed (or moved to the Trash)
 # MM_TTY=1 when the user ran marmot from a terminal (stdin is a tty and /dev/tty opens). Decided once
 # here, at startup: inside pipelines and $(...) stdin/stdout are not the terminal, so later -t
 # checks lie. Prompts and pickers talk to /dev/tty directly.
@@ -115,6 +117,27 @@ mm_size() {
   (( $# )) || { echo 0; return; }
   local -a pre=(); [[ "${MM_SIZE_SUDO:-0}" == 1 ]] && pre=(sudo -n)
   "${pre[@]}" du -scB1 --one-file-system -- "$@" 2>/dev/null | awk 'END { printf "%.0f\n", $1 }'
+}
+
+# mm_size_frees PATH... — "SIZE FREES" in bytes for the trees at PATHs, from one walk (0 0 if
+# missing). SIZE is disk usage with every inode counted once, like du. FREES is what deleting all
+# of PATHs would release: directories, and files whose every hard link lies inside them. A pnpm
+# node_modules hard-linked to the store is large in SIZE and nearly nothing in FREES. Uses sudo
+# when MM_SIZE_SUDO=1.
+mm_size_frees() {
+  (( $# )) || { echo "0 0"; return; }
+  local -a pre=(); [[ "${MM_SIZE_SUDO:-0}" == 1 ]] && pre=(sudo -n)
+  "${pre[@]}" find "$@" -xdev -printf '%D:%i %n %b %y\n' 2>/dev/null | awk '
+    $4 == "d" || $2 < 2 { s += $3; f += $3; next }
+    { if (!($1 in seen)) s += $3; if (++seen[$1] == $2) f += $3 }
+    END { printf "%.0f %.0f\n", s * 512, f * 512 }'
+}
+
+# mm_frees PATH... — the FREES half of mm_size_frees.
+mm_frees() {
+  local s f
+  read -r s f < <(mm_size_frees "$@")
+  printf '%s\n' "${f:-0}"
 }
 
 # mm_free_bytes [MOUNT] — available bytes on the filesystem holding MOUNT (default /).
@@ -328,8 +351,8 @@ mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 # (device/inode/ctime) and location after sizing. --trash moves it to the XDG Trash instead and
 # never falls back to a permanent delete.
 # Returns 0 done (or would be, in dry-run), 1 refused (MM_SKIP_REASON set), 2 action failed.
-# Updates MM_FREED or MM_TRASHED, MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals other than
-# "missing" and failures are written to the operations log.
+# Updates MM_FREED or MM_TRASHED (by mm_frees), MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals
+# other than "missing" and failures are written to the operations log.
 mm_rm() {
   local mode=remove
   [[ "${1:-}" == --trash ]] && { mode=trash; shift; }
@@ -357,7 +380,7 @@ mm_rm() {
   mm_in_use "$real" && { _mm_refuse "in use"; return 1; }
 
   id=$(mm_identity "$real") || { _mm_refuse "missing"; return 1; }
-  bytes=$(mm_size "$real")
+  bytes=$(mm_frees "$real")
   # The accounting below is bash arithmetic: validate now, so nothing fails after the rm.
   [[ "$bytes" =~ ^[0-9]+$ ]] || { _mm_refuse "size unreadable"; return 1; }
   # Sizing a large tree takes a while: act only if the same object is still at the same place.
