@@ -714,7 +714,7 @@ _purge_wt_eval() {
   # Agent state (e.g. ~/.cursor/worktrees) is waived here only: git itself vouches for the content.
   if mm_protected "$w" >/dev/null; then why="protected"
   elif [[ "${_WT_LOCKED[$i]}" == 1 ]]; then why="locked"
-  elif mm_in_use "$w"; then why="in use"
+  elif mm_in_use "$w"; then why=$(mm_inuse_why "$w" || echo "in use")
   elif MM_KEEP_AGENT_STATE=0 mm_whitelisted "$w"; then why="whitelisted"
   else
     rc=0; _purge_wt_clean "$w" || rc=$?
@@ -816,7 +816,7 @@ _purge_worktrees() {
   local -A pruned=()
   for i in "${sel[@]}"; do
     w="${_WT_PATH[$i]}" m="${_WT_MAIN[$i]}" c="${_WT_COMMON[$i]}"
-    if mm_in_use "$w"; then mm_skip "$(_purge_tilde "$w")" "in use"; continue; fi
+    if mm_in_use "$w"; then mm_skip "$(_purge_tilde "$w")" "$(mm_inuse_why "$w" || echo "in use")"; continue; fi
     rc=0; _purge_wt_clean "$w" || rc=$?
     (( rc == 0 )) || { _purge_kept "$(_purge_tilde "$w")" "changed since the scan"; continue; }
     if [[ -d "$m" ]]; then
@@ -1011,7 +1011,7 @@ _purge_run() {
   if (( ${#skip_n[@]} )); then
     mm_section "In use"
     while IFS= read -r key; do
-      mm_skip "$(_purge_tilde "$key") · ${skip_n[$key]} artifact$( (( skip_n[$key] > 1 )) && echo s) (${skip_names[$key]})" "in use"
+      mm_skip "$(_purge_tilde "$key") · ${skip_n[$key]} artifact$( (( skip_n[$key] > 1 )) && echo s) (${skip_names[$key]})" "$(mm_inuse_why "$key" || echo "in use")"
     done < <(printf '%s\n' "${!skip_n[@]}" | sort)
   fi
 
@@ -1173,7 +1173,7 @@ _purge_run() {
   for i in "${sel[@]}"; do
     art="${arts[$i]}" proj="${projs[$i]}" g="${gits[$i]}"
     if [[ -n "${busy[$proj]:-}" || ( -n "$g" && -n "${busy[$g]:-}" ) ]]; then
-      mm_skip "$(_purge_tilde "$art")" "in use"
+      mm_skip "$(_purge_tilde "$art")" "$(mm_inuse_why "${g:-$proj}" || echo "in use")"
       MM_SKIPPED=$((MM_SKIPPED + 1))
       continue
     fi
