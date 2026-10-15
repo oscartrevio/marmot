@@ -243,6 +243,9 @@ Tests use a throwaway `HOME` and stub every command that changes the system. CI 
 `tests/run.sh` once per pull request. Run the end-to-end scenario before changing what gets
 deleted.
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) (and [AGENTS.md](AGENTS.md) for coding agents). Report
+security problems privately as [SECURITY.md](SECURITY.md) describes.
+
 ## License
 
 GPL-3.0. marmot is inspired by [Mole](https://github.com/tw93/Mole) by tw93, which does this for
