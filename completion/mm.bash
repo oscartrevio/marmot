@@ -14,6 +14,7 @@ _mm() {
                fi ;;
     analyze)   opts+=" --json" ;;
     purge)     opts+=" --yes -y --all --days --paths" ;;
+    uninstall) opts+=" --list -l --all -a" ;;
     history)   opts="--json --all --limit -l --help" ;;
     schedule)
       if (( COMP_CWORD == 2 )) && [[ "$cur" != -* ]]; then
