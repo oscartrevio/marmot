@@ -111,8 +111,11 @@ lacks() { ! grep -q -- "$1" "$2"; }
   printf 'read -r _ <>fifo\n' >"$SB/wt/__omp_worker_lsp_mux"
   mm_test_bg "$SB/wt" "$SB/bin/omp" __omp_worker_lsp_mux
   ORPHAN=${MM_TEST_PIDS[-1]}
-  # The folder goes once the script holds the FIFO (bash has read it by then).
-  for _ in $(seq 50); do find "/proc/$ORPHAN/fd" -lname "$SB/wt/fifo" 2>/dev/null | grep -q . && break; sleep 0.1; done
+  # The folder goes once the script holds the FIFO (bash has read it by then). Under a loaded
+  # parallel run this takes seconds: wait up to 20, and fail here rather than on a missing offer.
+  local held=0
+  for _ in $(seq 200); do find "/proc/$ORPHAN/fd" -lname "$SB/wt/fifo" 2>/dev/null | grep -q . && { held=1; break; }; sleep 0.1; done
+  (( held ))
   rm -r -- "$SB/wt"
   record_offers
   MM_TTY=1 _optimize_orphan_task
