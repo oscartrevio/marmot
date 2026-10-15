@@ -99,3 +99,33 @@ teardown() { mm_test_teardown; }
   run "$MARMOT_BIN/mm" --version
   [[ "$output" == *"($(git -C "$MARMOT_PREFIX" rev-parse --short=7 HEAD))" ]]
 }
+
+@test "refuses to replace a prefix that is a marmot git checkout, leaving it intact" {
+  mm_test_checkout "$MARMOT_PREFIX"
+  echo mine >"$MARMOT_PREFIX/notes"
+  run "$MM_SRC/install.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"git checkout"*"MARMOT_PREFIX"* ]]
+  [ -d "$MARMOT_PREFIX/.git" ]
+  [ "$(cat "$MARMOT_PREFIX/notes")" = mine ]
+}
+
+@test "an existing file at bin/mm is not replaced and install fails naming it" {
+  mkdir -p "$MARMOT_BIN"; echo mine >"$MARMOT_BIN/mm"
+  run "$MM_SRC/install.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"$MARMOT_BIN/mm"* ]]
+  [ "$(cat "$MARMOT_BIN/mm")" = mine ]
+}
+
+@test "a foreign bin/marmot is kept with a warning while mm is linked" {
+  mkdir -p "$MARMOT_BIN"; ln -s /bin/true "$MARMOT_BIN/marmot"
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"kept $MARMOT_BIN/marmot"* ]]
+  [ "$(readlink "$MARMOT_BIN/marmot")" = /bin/true ]
+  [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
+  run "$MM_SRC/install.sh" --uninstall
+  [ ! -e "$MARMOT_BIN/mm" ]
+  [ "$(readlink "$MARMOT_BIN/marmot")" = /bin/true ]
+}

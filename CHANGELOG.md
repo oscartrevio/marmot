@@ -13,6 +13,8 @@ All notable changes to marmot are recorded here. The format follows
 
 - CI runs once per pull request, as one job running the suite one file at a time; docs-only
   changes skip it.
+- `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`
+  with a warning.
 
 ## 0.2.0
 

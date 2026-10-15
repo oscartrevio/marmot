@@ -22,6 +22,26 @@ die()  { printf '✗ %s\n' "$*" >&2; exit 1; }
 # _is_marmot_tree DIR — DIR looks like a marmot install (guards every removal below).
 _is_marmot_tree() { [[ -f "$1/marmot" && -f "$1/lib/core.sh" && -d "$1/cmd" ]]; }
 
+# _is_checkout DIR — DIR holds git metadata: never removed, whoever asks.
+_is_checkout() { [[ -e "$1/.git" ]]; }
+
+# _foreign NAME — $bindir/NAME exists and is not a symlink to a marmot launcher.
+_foreign() {
+  local l="$bindir/$1"
+  [[ -e "$l" || -L "$l" ]] && ! { [[ -L "$l" ]] && _is_marmot_tree "$(dirname "$(readlink -f "$l")")"; }
+}
+
+# _link NAME — point $bindir/NAME at this install unless _foreign; 1 (with a warning naming the
+# file) when it was left alone.
+_link() {
+  local l="$bindir/$1"
+  if _foreign "$1"; then
+    warn "kept $l: it is not a marmot launcher (remove or rename it to use $1)"
+    return 1
+  fi
+  ln -sfn "$prefix/marmot" "$l" && say "linked $l"
+}
+
 uninstall() {
   local l
   for l in "$bindir/mm" "$bindir/marmot"; do
@@ -30,7 +50,7 @@ uninstall() {
     fi
   done
   if _is_marmot_tree "$prefix"; then
-    if [[ -e "$prefix/.git" ]]; then
+    if _is_checkout "$prefix"; then
       say "kept $prefix (a git checkout; remove it yourself if you want)"
     else
       rm -rf -- "$prefix" && say "removed $prefix"   # SAFE: verified marmot install, not a git checkout
@@ -74,11 +94,13 @@ record_source() {
 
 install() {
   check
+  _foreign mm && die "$bindir/mm exists and is not a marmot launcher: move it away or set MARMOT_BIN, then run install.sh again"
   local copied=0
   if [[ "$(readlink -f "$prefix" 2>/dev/null)" != "$src" ]]; then
     if [[ -e "$prefix" ]]; then
       _is_marmot_tree "$prefix" || die "$prefix exists and is not a marmot install; set MARMOT_PREFIX."
-      rm -rf -- "$prefix"   # SAFE: verified marmot tree, replaced by this checkout
+      _is_checkout "$prefix" && die "$prefix is a git checkout; not replacing it. Set MARMOT_PREFIX to install elsewhere, or remove it yourself."
+      rm -rf -- "$prefix"   # SAFE: verified marmot tree and not a git checkout, replaced by this checkout
     fi
     mkdir -p "$prefix"
     # Only what runs: the launcher, libraries, commands, completion, and this installer (for
@@ -89,9 +111,8 @@ install() {
   fi
   mkdir -p "$bindir"
   if (( copied )); then record_source; fi
-  ln -sfn "$prefix/marmot" "$bindir/mm"
-  ln -sfn "$prefix/marmot" "$bindir/marmot"
-  say "linked $bindir/mm and $bindir/marmot"
+  _link mm
+  _link marmot || true
   case ":$PATH:" in *":$bindir:"*) ;; *) warn "$bindir is not on your PATH; add it to your shell profile." ;; esac
   say ""
   say "Shell completion:"
