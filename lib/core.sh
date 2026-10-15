@@ -271,14 +271,8 @@ MM_INUSE_TAKEN=0
 # passwordless sudo; otherwise only this user's (MM_INUSE_PARTIAL=1, warned). An empty snapshot is
 # fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
-  local script='declare -A ns=(); { for p in /proc/[0-9]*; do
-      readlink "$p/cwd" "$p/root" "$p/exe"
-      for f in "$p"/fd/*; do readlink "$f"; done
-      awk '"'"'$6 ~ /^\// { print $6 }'"'"' "$p/maps"
-      n=$(readlink "$p/ns/mnt") && [[ -z "${ns[$n]:-}" ]] && { ns[$n]=1; awk '"'"'{ print $4; print $5 }'"'"' "$p/mountinfo"; }
-    done; awk '"'"'{ print $4; print $5 }'"'"' /proc/self/mountinfo
-    awk '"'"'NR > 1 && $8 ~ /^\// { print $8 }'"'"' /proc/net/unix; } 2>/dev/null |
-    sed "s/ (deleted)\$//" | grep "^/" | sort -u'
+  local script
+  script="$(declare -f _mm_inuse_scan); _mm_inuse_scan"
   MM_INUSE_PARTIAL=0
   if (( EUID == 0 )) || { [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; }; then
     MM_INUSE=$(mm_sudo bash -c "$script")
@@ -294,6 +288,20 @@ mm_inuse_refresh() {
     else mm_warn "No passwordless sudo: only your own processes are checked for in-use paths"; fi
   fi
   mm_debug "in-use snapshot: $(mm_inuse_paths | wc -l) paths (partial=$MM_INUSE_PARTIAL)"
+}
+
+# _mm_inuse_scan — every live path, sorted, one per line. Runs in a child bash (as root when
+# possible), so it uses nothing else from this file. Batch reads: one find, one cat, a few awks,
+# whatever the process count.
+_mm_inuse_scan() {
+  { find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
+    # cat, not one awk over the files: mawk stops at the first unreadable one
+    cat /proc/[0-9]*/maps | awk '$6 ~ /^\// && !seen[$6]++ { print $6 }'
+    { echo /proc/self/mountinfo
+      find /proc/[0-9]*/ns/mnt -maxdepth 0 -printf '%l %h\n' | awk '!seen[$1]++ { sub(/\/ns$/, "/mountinfo", $2); print $2 }'
+    } | xargs -d '\n' cat | awk '{ print $4; print $5 }'
+    awk 'NR > 1 && $8 ~ /^\// { print $8 }' /proc/net/unix
+  } 2>/dev/null | sed 's/ (deleted)$//' | grep '^/' | sort -u
 }
 
 # mm_inuse_paths — print the current snapshot, one path per line (taking one if needed).
@@ -685,7 +693,7 @@ mm_apt_busy() {
     # root either (and a dry run runs nothing): there is no step to protect.
     [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 ]] && command -v sudo >/dev/null || return 1
   fi
-  out=$(mm_sudo bash -c 'if for f in /proc/[0-9]*/fd/*; do readlink "$f"; done 2>/dev/null |
+  out=$(mm_sudo bash -c 'if find /proc/[0-9]*/fd -maxdepth 1 -type l -printf "%l\n" 2>/dev/null |
     grep -qxF -f <(printf "%s\n" "$@"); then echo held; else echo free; fi' _ "${locks[@]}")
   case "$out" in
     free) return 1 ;;

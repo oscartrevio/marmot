@@ -54,13 +54,14 @@ Options:
 Keys (live): q quit · v switch between the compact and full view
 Slow probes (apt, systemd, kernel packages, docker) refresh every 5 minutes.
 
-Agents: one row per running AI coding agent session (lib/agents.sh catalog; matched by process
-  name or by the script an interpreter runs): folder, age, busy/idle (>= 2% CPU), CPU and memory
-  of the agent with everything it started; sub-agents count toward their parent. Memory is
-  proportional (PSS + swapped PSS: pages shared inside the session count once; JSON keeps the
-  name rss_swap_bytes). An agent whose folder was deleted is flagged as an orphan. An agent's
-  own helper processes (language-server hubs, daemons; the helpers field in lib/agents.sh) are
-  not sessions: they show on a "helpers" line with everything they started.
+Agents: one row per running AI coding agent session (lib/agents.sh catalog plus your rows in
+  $MM_CONFIG_DIR/agents; matched by process name or by the script an interpreter runs): folder,
+  age, busy/idle (>= 2% CPU), CPU and memory of the agent with everything it started; sub-agents
+  count toward their parent. Memory is proportional (PSS + swapped PSS: pages shared inside the
+  session count once; JSON keeps the name rss_swap_bytes). An agent whose folder was deleted is
+  flagged as an orphan. An agent's own helper processes (language-server hubs, daemons; the
+  helpers field in lib/agents.sh) are not sessions: they show on a "helpers" line with everything
+  they started.
 Lingering: dev servers/toolchains (node, bun, deno, python, vite, next-server, esbuild, uvicorn,
   gunicorn, ...) of yours running longer than the linger age and not part of a live agent session.
 Ports: TCP ports your processes have listened on longer than the linger age.
@@ -2537,6 +2538,8 @@ mm_cmd_main() {
   elif [[ "$mode" == live && "$MM_TTY" != 1 ]]; then mode=once; fi
   command -v jq >/dev/null || [[ "$mode" != json ]] || mm_die "jq is required for --json"
 
+  # stderr: --json and --agent output on stdout stays clean.
+  for v in "${MM_AGENT_REJECTED[@]}"; do mm_warn "agents row ignored: $v" >&2; done
   _status_init
   case "$mode" in
     live) _status_live ;;

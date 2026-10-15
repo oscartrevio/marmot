@@ -12,6 +12,15 @@
 #   - `mm purge` looks for git worktrees in their worktree dirs.
 # Paths that do not exist on a machine are simply ignored. Add an agent by adding a row.
 #
+# Any other tool: add rows in the same format to $MM_CONFIG_DIR/agents (default
+# ~/.config/marmot/agents), one per line; blank lines and lines starting with # are ignored. They
+# load after the built-in rows and a row named like a built-in one replaces it. A user row needs a
+# name and process names, and every path in it (state, sessions, versions, active symlink,
+# worktrees, logs, helper prefixes) must be ~/... or an absolute path strictly inside the home
+# folder, also once symlinks are resolved, with no . or .. segment, glob or control character.
+# Rows that break a rule are ignored and listed ("<file>:<line>: <reason>") in MM_AGENT_REJECTED.
+#   My Tool|mytool mytool-cli|~/.mytool ~/.config/mytool|~/.mytool/sessions||||~/.mytool/logs
+#
 # Row fields, separated by '|':
 #   name | process names | state dirs/files | session dirs | versions dir | active-version symlink
 #   | worktree dirs | logs dirs | helpers
@@ -21,10 +30,9 @@
 # hubs, daemon brokers, completion daemons): they are not sessions. A pattern starting with ~/ or
 # / is a working-directory prefix (the process runs in or below it); any other is a glob matched
 # against the process's first argument (argv[1]). `mm status` counts them on a separate helpers
-# line, with everything they started, and `mm optimize` labels them as helpers.
-#   oh-my-pi    `omp __omp_worker_lsp_mux` (language-server hub; parent of tsc and other servers),
-#               `omp __omp_worker_daemon_broker`, `omp __omp_worker_text_predict` (word completion,
-#               run in ~/.omp/run/daemons/global/text-predict)
+# line, with everything they started, and `mm optimize` labels them as helpers. For example,
+# oh-my-pi's row lists `__omp_worker_*` (its language-server hub, daemon broker and word-completion
+# workers run as `omp __omp_worker_<kind>`) and ~/.omp/run/daemons/ (where its daemons run).
 #
 # Worktree dirs are where a tool creates git worktrees by default (users can move them). They are
 # hints for discovery only: purge acts on a directory there only if its .git file points into a
@@ -74,28 +82,80 @@ uzi|uzi|~/.local/share/uzi||||~/.local/share/uzi/worktrees
 
 MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
 MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=()
+MM_AGENT_REJECTED=()   # "<file>:<line>: <reason>" for user rows that were not accepted
 
-# _mm_tilde_list WORDS — expand a leading ~ in each space-separated word.
+# _mm_tilde_list WORDS — the space-separated WORDS in REPLY, single-spaced, a leading ~ of each
+# expanded. No subshell: it runs for every field of every row at each start.
 _mm_tilde_list() {
-  local w words=()
-  for w in $1; do [[ "$w" == "~"* ]] && w="$HOME${w:1}"; words+=("$w"); done
-  printf '%s' "${words[*]}"
+  local -a w=()
+  read -r -a w <<<"$1"
+  w=("${w[@]/#\~/$HOME}")
+  REPLY=${w[*]}
 }
 
-_mm_agents_load() {
-  local name procs state sessions versions active worktrees logs helpers
-  while IFS='|' read -r name procs state sessions versions active worktrees logs helpers; do
+# _mm_agent_path_problem WORD — 0 with the reason in REPLY when WORD (a path of a user row) is not
+# strictly inside $HOME as written and once symlinks are resolved, or has a . or .. segment or a
+# glob character; 1 when it is fine.
+_mm_agent_path_problem() {
+  local p=$1 real
+  [[ "$p" == \~/* ]] && p="$HOME${p:1}"
+  if [[ "/$p/" == */../* || "/$p/" == */./* ]]; then REPLY="path '$1' has . or .. segments"; return 0; fi
+  if [[ "$p" == *[\*?[]* ]]; then REPLY="path '$1' has glob characters"; return 0; fi
+  real=$(realpath -m -- "$p" 2>/dev/null)
+  [[ "$p" == "$HOME"/?* && "$real" == "$HOME"/?* ]] && return 1
+  REPLY="'$1' is not inside your home folder"
+}
+
+# _mm_agents_parse ORIGIN — read rows from stdin and load them; a row named like a loaded one
+# replaces it. Rows of the user's file (ORIGIN is its name) are validated first.
+_mm_agents_parse() {
+  local origin=$1 line n=0 i j w where bad name procs state sessions versions active worktrees logs helpers
+  local -a words=() more=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    line=${line//$'\t'/ }
+    read -r line <<<"$line"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    IFS='|' read -r name procs state sessions versions active worktrees logs helpers <<<"$line"
+    read -r name <<<"$name"
+    if [[ "$origin" != builtin ]]; then
+      where="$origin:$n"
+      if [[ "$line" == *[[:cntrl:]]* ]]; then MM_AGENT_REJECTED+=("$where: control characters"); continue; fi
+      if [[ -z "$name" ]]; then MM_AGENT_REJECTED+=("$where: no name"); continue; fi
+      if [[ -z "${procs// /}" ]]; then MM_AGENT_REJECTED+=("$where: no process names"); continue; fi
+      read -r -a words <<<"$versions"
+      read -r -a more <<<"$active"
+      if ((${#words[@]} > 1 || ${#more[@]} > 1)); then
+        MM_AGENT_REJECTED+=("$where: one versions dir and one active symlink at most"); continue
+      fi
+      read -r -a words <<<"$state $sessions $versions $active $worktrees $logs"
+      read -r -a more <<<"$helpers"
+      for w in "${more[@]}"; do [[ "$w" == \~/* || "$w" == /* ]] && words+=("$w"); done
+      bad=""
+      for w in "${words[@]}"; do _mm_agent_path_problem "$w" && { bad=$REPLY; break; }; done
+      if [[ -n "$bad" ]]; then MM_AGENT_REJECTED+=("$where: $bad"); continue; fi
+    fi
     [[ -n "$name" ]] || continue
-    MM_AGENT_NAME+=("$name")
-    MM_AGENT_PROCS+=("$procs")
-    MM_AGENT_STATE+=("$(_mm_tilde_list "$state")")
-    MM_AGENT_SESSIONS+=("$(_mm_tilde_list "$sessions")")
-    MM_AGENT_VERSIONS+=("$(_mm_tilde_list "$versions")")
-    MM_AGENT_ACTIVE+=("$(_mm_tilde_list "$active")")
-    MM_AGENT_WORKTREES+=("$(_mm_tilde_list "$worktrees")")
-    MM_AGENT_LOGS+=("$(_mm_tilde_list "$logs")")
-    MM_AGENT_HELPERS+=("$helpers")
-  done <<<"$MM_AGENTS_TABLE"
+    i=${#MM_AGENT_NAME[@]}
+    for j in "${!MM_AGENT_NAME[@]}"; do [[ "${MM_AGENT_NAME[j]}" == "$name" ]] && { i=$j; break; }; done
+    MM_AGENT_NAME[i]=$name
+    MM_AGENT_PROCS[i]=$procs
+    _mm_tilde_list "$state"; MM_AGENT_STATE[i]=$REPLY
+    _mm_tilde_list "$sessions"; MM_AGENT_SESSIONS[i]=$REPLY
+    _mm_tilde_list "$versions"; MM_AGENT_VERSIONS[i]=$REPLY
+    _mm_tilde_list "$active"; MM_AGENT_ACTIVE[i]=$REPLY
+    _mm_tilde_list "$worktrees"; MM_AGENT_WORKTREES[i]=$REPLY
+    _mm_tilde_list "$logs"; MM_AGENT_LOGS[i]=$REPLY
+    MM_AGENT_HELPERS[i]=$helpers
+  done
+}
+
+# _mm_agents_load — the built-in table, then the user's agents file. lib/core.sh sets
+# MM_CONFIG_DIR only after sourcing this file, hence the same default here.
+_mm_agents_load() {
+  local user="${MM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/marmot}/agents"
+  _mm_agents_parse builtin <<<"$MM_AGENTS_TABLE"
+  if [[ -f "$user" && -r "$user" ]]; then _mm_agents_parse "${user/#$HOME/\~}" <"$user"; fi
 }
 _mm_agents_load
 
