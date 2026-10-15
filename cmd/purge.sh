@@ -193,34 +193,59 @@ _purge_gitcmd() {
 # _purge_git DIR ARGS... — _purge_gitcmd run in DIR.
 _purge_git() { local d="$1"; shift; _purge_gitcmd -C "$d" "$@"; }
 
-# _purge_repo_of DIR — nearest ancestor-or-self holding a .git entry (up to /); 1 if none.
+# _purge_repo_of DIR — sets _PURGE_REPO to the nearest ancestor-or-self holding a .git entry
+# (up to /); 1 if none.
 _purge_repo_of() {
   local d="$1"
   while [[ "$d" == /?* ]]; do
-    [[ -e "$d/.git" || -L "$d/.git" ]] && { printf '%s' "$d"; return 0; }
+    [[ -e "$d/.git" || -L "$d/.git" ]] && { _PURGE_REPO="$d"; return 0; }
     d="${d%/*}"
   done
-  [[ -e /.git ]] && { printf '/'; return 0; }
+  [[ -e /.git ]] && { _PURGE_REPO=/; return 0; }
   return 1
 }
 
-# _purge_tracked PATH — tri-state git probe (Mole's mole_path_has_git_tracked_files):
-# 0 git tracks files under PATH, 1 no repository owns PATH or it tracks nothing there,
-# 2 the probe failed or timed out (state unknown: callers must keep PATH).
-_purge_tracked() {
-  local path="$1" repo rel out rc=0
-  repo=$(_purge_repo_of "$path") || return 1
-  rel="${path#"$repo"/}"; [[ "$repo" == / ]] && rel="${path#/}"
-  out=$(_purge_git "$repo" ls-files -- ":(top,literal)$rel") || rc=$?
-  (( rc == 0 )) || return 2
-  [[ -n "$out" ]] && return 0
-  return 1
+# Git state of the scanned artifacts, per _purge_tracked_load: 0 git tracks files under it,
+# 2 the probe failed or timed out. Absent: no repository owns it or it tracks nothing there.
+declare -A _PURGE_TRACKED=()
+
+# _purge_tracked_load ART... — fill _PURGE_TRACKED with one `git ls-files` per repository
+# (Mole's mole_path_has_git_tracked_files, batched). A file name holding a newline splits into
+# pieces whose first one still starts with the artifact: it can only add "tracked", never hide it.
+_purge_tracked_load() {
+  local art repo rel rc
+  local -A rels=()
+  _PURGE_TRACKED=()
+  for art; do
+    [[ "$art" == /?* && "$art" != *[[:cntrl:]]* ]] || continue
+    _purge_repo_of "$art" || continue
+    [[ "$_PURGE_REPO" != "$art" ]] || continue
+    rel="${art#"$_PURGE_REPO"/}"; [[ "$_PURGE_REPO" == / ]] && rel="${art#/}"
+    rels[$_PURGE_REPO]+="$rel"$'\n'
+  done
+  for repo in "${!rels[@]}"; do
+    while IFS=$'\t' read -r rc rel; do
+      art="${repo%/}/$rel"
+      _PURGE_TRACKED[$art]=$rc
+    done < <({ _purge_git "$repo" ls-files -z | tr '\0' '\n'; printf '\1%s\n' "${PIPESTATUS[0]}"; } |
+      awk 'NR == FNR { q[$0] = 1; next }
+        { last = $0; p = $0
+          while (p != "") {
+            if ((p in q) && !(p in hit)) { hit[p] = 1; print "0\t" p }
+            if (!sub(/\/[^\/]*$/, "", p)) break
+          } }
+        END { if (last != "\0010") for (p in q) print "2\t" p }' <(printf '%s' "${rels[$repo]}") -)
+  done
 }
+
+# _purge_tracked PATH — tri-state, per _purge_tracked_load: 0 git tracks files under PATH, 1 no
+# repository owns PATH or it tracks nothing there, 2 unknown (callers must keep PATH).
+_purge_tracked() { return "${_PURGE_TRACKED[$1]:-1}"; }
 
 # _purge_ignored DIR NAME — 0 git ignores DIR/NAME, 1 not ignored or no repository, 2 unknown.
 _purge_ignored() {
   local rc=0
-  _purge_repo_of "$1" >/dev/null || return 1
+  _purge_repo_of "$1" || return 1
   _purge_git "$1" check-ignore -q -- "$2" || rc=$?
   case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
@@ -228,7 +253,8 @@ _purge_ignored() {
 # _purge_valid ARTIFACT ROOT... — 0 purgeable, 1 not an artifact (ignored silently), 2 keep and
 # say so (git state unknown). Rules: absolute, no control characters, a real directory (not a
 # symlink), not a repository itself, not inside a $HOME dot-dir no ROOT points into, a named rule
-# (_purge_rule) or a tagged cache (_purge_tagged_cache), and nothing under it tracked by git.
+# (_purge_rule) or a tagged cache (_purge_tagged_cache), and nothing under it tracked by git
+# (_purge_tracked_load must have seen ARTIFACT).
 _purge_valid() {
   local art="$1" proj="${1%/*}" name="${1##*/}" rc; shift
   _PURGE_WHY=""
@@ -296,35 +322,37 @@ _purge_tagged_cache() {
   return 1
 }
 
-# _purge_gitroot DIR — nearest ancestor-or-self holding .git, below $HOME (a dotfiles repo at
-# $HOME must not group every project together); empty if none.
+# _purge_gitroot DIR — sets _PURGE_GITROOT to the nearest ancestor-or-self holding .git, below
+# $HOME (a dotfiles repo at $HOME must not group every project together); empty if none.
 _purge_gitroot() {
   local d="$1"
+  _PURGE_GITROOT=""
   while [[ "$d" == /?* && "$d" != "$HOME" ]]; do
-    [[ -e "$d/.git" ]] && { printf '%s' "$d"; return; }
+    [[ -e "$d/.git" ]] && { _PURGE_GITROOT="$d"; return; }
     d="${d%/*}"
   done
 }
 
-# _purge_gitdir_of WORKTREE — the per-worktree git dir (WORKTREE/.git, or where its .git file
-# points); 1 if it can't be resolved.
+# _purge_gitdir_of WORKTREE — sets _PURGE_GITDIR to the per-worktree git dir (WORKTREE/.git, or
+# where its .git file points); 1 if it can't be resolved.
 _purge_gitdir_of() {
-  local e="$1/.git" gd
-  if [[ -d "$e" && ! -L "$e" ]]; then printf '%s' "$e"; return 0; fi
+  local e="$1/.git" gd=""
+  if [[ -d "$e" && ! -L "$e" ]]; then _PURGE_GITDIR="$e"; return 0; fi
   [[ -f "$e" && ! -L "$e" ]] || return 1
-  gd=$(sed -n '1s/^gitdir: //p' -- "$e" 2>/dev/null)
-  [[ -n "$gd" ]] || return 1
+  IFS= read -r gd <"$e" 2>/dev/null
+  [[ "$gd" == "gitdir: "?* ]] || return 1
+  gd="${gd#gitdir: }"
   [[ "$gd" == /* ]] || gd="$1/$gd"
   [[ -d "$gd" ]] || return 1
-  printf '%s' "$gd"
+  _PURGE_GITDIR="$gd"
 }
 
 # _purge_common_dir GITENTRY — absolute common git dir of the repository a .git entry belongs to
 # (a worktree's .git file leads to <repo>/.git/worktrees/<name>, whose commondir leads home).
 _purge_common_dir() {
   local gd c
-  gd=$(_purge_gitdir_of "${1%/.git}") || return 1
-  c="$gd"
+  _purge_gitdir_of "${1%/.git}" || return 1
+  gd="$_PURGE_GITDIR" c="$_PURGE_GITDIR"
   if [[ -f "$gd/commondir" ]]; then
     c=$(<"$gd/commondir")
     [[ "$c" == /* ]] || c="$gd/$c"
@@ -341,7 +369,8 @@ _purge_agent_worktrees() {
   while IFS= read -r d; do
     [[ -d "$d" && ! -L "$d" ]] || continue
     while IFS= read -r -d '' f; do
-      gd=$(_purge_gitdir_of "${f%/.git}") || continue
+      _purge_gitdir_of "${f%/.git}" || continue
+      gd="$_PURGE_GITDIR"
       [[ "$gd" == */worktrees/?* && -f "$gd/commondir" ]] && printf '%s\0' "$f"
     done < <(timeout "$_PURGE_SCAN_TIMEOUT" find "$d" -xdev -mindepth 2 -maxdepth 6 \
       \( -name node_modules -o -name .git -type d \) -prune -o -name .git -type f -print0 2>/dev/null)
@@ -355,22 +384,42 @@ _purge_in_agent_wtdir() {
   return 1
 }
 
-# _purge_activity DIR [GITROOT] — epoch of the newest mtime among DIR, its top-level files, and
-# the git index/HEAD of DIR's repository (worktree .git files are followed to their gitdir).
-# Prints nothing when the repository's git dir can't be resolved (activity unknown).
+# _purge_activity DIR<TAB>GITROOT... — "EPOCH<TAB>DIR" for each DIR: the newest mtime among DIR,
+# its top-level files, and the git index/HEAD of GITROOT's repository (worktree .git files are
+# followed to their gitdir; empty GITROOT: no repository). One find and one stat for all DIRs.
+# A DIR whose repository's git dir can't be resolved is left out (activity unknown).
 _purge_activity() {
-  local dir="$1" git="${2:-}" gd newest
-  local -a probes=()
-  if [[ -n "$git" ]]; then
-    gd=$(_purge_gitdir_of "$git") || return 0
-    [[ -f "$git/.git" ]] && probes+=("$git/.git")
-    probes+=("$gd/index" "$gd/HEAD")
-  fi
-  newest=$({
-    find "$dir" -maxdepth 1 \( -type f -o -path "$dir" \) -printf '%T@\n' 2>/dev/null
-    (( ${#probes[@]} )) && stat -c %Y -- "${probes[@]}" 2>/dev/null
-  } | sort -n | tail -n1)
-  printf '%s' "${newest%.*}"
+  local pair dir git
+  local -a dirs=() probes=() map=()
+  local -A gd=()
+  for pair; do
+    dir="${pair%%$'\t'*}" git="${pair#*$'\t'}"
+    if [[ -n "$git" && -z "${gd[$git]+x}" ]]; then
+      gd[$git]=""
+      if _purge_gitdir_of "$git"; then
+        gd[$git]="$_PURGE_GITDIR"
+        [[ -f "$git/.git" ]] && { probes+=("$git/.git"); map+=("P"$'\t'"$git/.git"$'\t'"$git"); }
+        probes+=("$_PURGE_GITDIR/index" "$_PURGE_GITDIR/HEAD")
+        map+=("P"$'\t'"$_PURGE_GITDIR/index"$'\t'"$git" "P"$'\t'"$_PURGE_GITDIR/HEAD"$'\t'"$git")
+      fi
+    fi
+    [[ -z "$git" || -n "${gd[$git]}" ]] || continue
+    dirs+=("$dir"); map+=("Q"$'\t'"$dir"$'\t'"$git")
+  done
+  (( ${#dirs[@]} )) || return 0
+  {
+    find "${dirs[@]}" -maxdepth 0 -printf '%T@\t%p\n' 2>/dev/null
+    find "${dirs[@]}" -mindepth 1 -maxdepth 1 -type f -printf '%T@\t%h\n' 2>/dev/null
+    (( ${#probes[@]} )) && stat -c '%Y'$'\t''%n' -- "${probes[@]}" 2>/dev/null
+  } | awk -F '\t' 'NR == FNR { if ($1 == "Q") q[$2] = $3; else pr[$2] = $3; next }
+    ($2 in q) { t = int($1); if (t > d[$2]) d[$2] = t; next }
+    ($2 in pr) { t = int($1); g = pr[$2]; if (t > r[g]) r[g] = t }
+    END {
+      for (k in q) {
+        t = d[k]; g = q[k]
+        if (g != "" && r[g] > t) t = r[g]
+        if (t > 0) printf "%.0f\t%s\n", t, k
+      } }' <(printf '%s\n' "${map[@]}") -
 }
 
 # _purge_busy PATH... — the given paths that are in use (or have something in use below them),
@@ -549,10 +598,10 @@ _purge_default_ref() {
 # top-level files' mtimes (artifacts are not descended into), its git dir's index/HEAD, and the
 # HEAD commit time.
 _purge_wt_idle() {
-  local w="$1" gd newest ct
+  local w="$1" newest ct
   newest=$({
     find "$w" -maxdepth 1 \( -type f -o -path "$w" \) -printf '%T@\n' 2>/dev/null
-    gd=$(_purge_gitdir_of "$w") && stat -c %Y -- "$gd/index" "$gd/HEAD" 2>/dev/null
+    _purge_gitdir_of "$w" && stat -c %Y -- "$_PURGE_GITDIR/index" "$_PURGE_GITDIR/HEAD" 2>/dev/null
     ct=$(_purge_git "$w" log -1 --format=%ct HEAD) && printf '%s\n' "$ct"
   } | sort -n | tail -n1)
   newest="${newest%.*}"
@@ -888,13 +937,14 @@ _purge_run() {
 
   # ---- validate artifacts
   local -a kept_out=()
-  local -A seen=() gitroot_of=() activity=()
+  local -A seen=() gitroot_of=()
   local -a arts=() projs=() gits=()
   local art proj anc ok g rc
   # shallowest first, so an artifact inside another one is seen as part of it
   mapfile -d '' -t cand_raw < <(for art in "${cand_raw[@]}"; do
       anc="${art//[!\/]/}"; printf '%s\t%s\0' "${#anc}" "$art"
     done | sort -z -s -n -t$'\t' -k1,1 | cut -z -f2-)
+  _purge_tracked_load "${cand_raw[@]}"
   for art in "${cand_raw[@]}"; do
     [[ -n "$art" && -z "${seen[$art]:-}" ]] || continue
     # an artifact nested inside an already-matched one is part of it
@@ -911,10 +961,7 @@ _purge_run() {
     (( rc == 0 )) || continue
     seen[$art]=1
     proj="${art%/*}"; [[ "$art" == */.nx/cache ]] && proj="${art%/.nx/cache}"
-    if [[ -z "${gitroot_of[$proj]+x}" ]]; then
-      gitroot_of[$proj]=$(_purge_gitroot "$proj")
-      activity[$proj]=$(_purge_activity "$proj" "${gitroot_of[$proj]}")
-    fi
+    if [[ -z "${gitroot_of[$proj]+x}" ]]; then _purge_gitroot "$proj"; gitroot_of[$proj]=$_PURGE_GITROOT; fi
     arts+=("$art"); projs+=("$proj"); gits+=("${gitroot_of[$proj]}")
   done
 
@@ -978,6 +1025,11 @@ _purge_run() {
   fi
 
   # ---- classify and sort by what deleting frees
+  # activity: a project's own and top-level mtimes and its repository's index/HEAD, one probe for all
+  local -A activity=() pair_of=()
+  local t
+  for i in "${cand[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+  while IFS=$'\t' read -r t p; do activity[$p]=$t; done < <(_purge_activity "${pair_of[@]}")
   local now; now=$(date +%s)
   local -a order=() idle=() stale=() pnpm_art=()
   local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act shared=0
@@ -1002,7 +1054,7 @@ _purge_run() {
   local -A row_of=()
   for i in "${order[@]}"; do
     sz=${size[${arts[$i]}]:-0} fr=${frees[${arts[$i]}]:-0}
-    row=$(printf '%9s  %9s  %5s  %s' "$(mm_human "$sz")" "$(mm_human "$fr")" "$(_purge_age "${idle[i]}")" "$(_purge_tilde "${arts[$i]}")")
+    printf -v row '%9s  %9s  %5s  %s' "$(mm_human "$sz")" "$(mm_human "$fr")" "$(_purge_age "${idle[i]}")" "$(_purge_tilde "${arts[$i]}")"
     _purge_to_trash "${arts[$i]}" && row+=" (to Trash)"
     if (( fr < sz )); then
       shared=1; (( pnpm_art[i] )) && row+=" (rest in the pnpm store)"

@@ -101,6 +101,29 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [ -f "$SB/r/dist/blob" ]
 }
 
+@test "one repository, several artifacts: the tracked one is kept, the untracked ones removed" {
+  local r="$SB/mono"
+  node_project "$r/packages/a" dist; node_project "$r/packages/b" dist; node_project "$r"
+  printf 'node_modules/\ndist/\n' >"$r/.gitignore"
+  git -C "$r" init -q; git -C "$r" add -f packages/a/dist; git_repo "$r"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ -f "$r/packages/a/dist/blob" ]
+  [ ! -e "$r/packages/b/dist" ]
+  [ ! -e "$r/node_modules" ]
+}
+
+@test "git probe failure keeps every artifact of that repository; other repositories still purge" {
+  node_project "$SB/bad" node_modules .turbo; printf 'node_modules/\n.turbo/\n' >"$SB/bad/.gitignore"; git_repo "$SB/bad"
+  echo garbage >"$SB/bad/.git/index"
+  node_project "$SB/good"; printf 'node_modules/\n' >"$SB/good/.gitignore"; git_repo "$SB/good"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ -f "$SB/bad/node_modules/blob" ]
+  [ -f "$SB/bad/.turbo/blob" ]
+  [ ! -e "$SB/good/node_modules" ]
+}
+
 @test "nested .git inside an artifact keeps it" {
   node_project "$SB/a"; mkdir -p "$SB/a/node_modules/dep/.git"
   node_project "$SB/b"; mkdir -p "$SB/b/node_modules/.git"

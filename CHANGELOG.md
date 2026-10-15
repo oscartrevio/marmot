@@ -27,6 +27,8 @@ All notable changes to marmot are recorded here. The format follows
 - `mm history --help` and `mm update --help` list every option; `mm --help` says where to start.
 - In-use detection reads `/proc` in a few batch passes instead of one `readlink` per open file:
   about 10x faster (4.7 s to 0.44 s on a machine with 240 processes).
+- `mm purge` asks git once per repository for tracked files and reads every project's activity in
+  one pass: about a third faster.
 
 ## 0.2.0
 
