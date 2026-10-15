@@ -42,14 +42,6 @@ teardown() { mm_test_teardown; }
   done
 }
 
-@test "mm_agent_procs lists each process name once" {
-  run mm_agent_procs
-  [ "$status" -eq 0 ]
-  [ -n "$output" ]
-  [ "$(sort <<<"$output" | uniq -d)" = "" ]
-  grep -qx claude <<<"$output"
-}
-
 @test "mm_agent_state_paths prints paths relative to ~" {
   run mm_agent_state_paths
   [ "$status" -eq 0 ]
@@ -214,7 +206,6 @@ user_agents() {
   [ "${MM_AGENT_PROCS[c]}" = my-claude ]
   [ "${MM_AGENT_STATE[c]}" = "$HOME/.my-claude" ]
   [ -z "${MM_AGENT_VERSIONS[c]}" ]
-  run mm_agent_procs
-  grep -qx my-claude <<<"$output"
-  ! grep -qx claude <<<"$output"
+  [[ " ${MM_AGENT_PROCS[*]} " == *" my-claude "* ]]
+  [[ " ${MM_AGENT_PROCS[*]} " != *" claude "* ]]
 }

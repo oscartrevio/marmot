@@ -2214,7 +2214,7 @@ _status_json() {
 # plain "key: value" lines and short tables, no escape sequences, bars or sparklines. Problems
 # come first, each with the marmot or system command that addresses it (shown, never run).
 _status_agent_text() {
-  local C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN="" C_RESET=""
+  local C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
   local e pid agent proc age kb orphan cpu busy cwd name kind t a m sz us av it iu p n i up
   local -a probs=() rows=()
 

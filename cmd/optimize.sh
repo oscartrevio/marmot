@@ -16,7 +16,6 @@ _optimize_applied() {
 _optimize_unchanged() { _OPTIMIZE_UNCHANGED=$((_OPTIMIZE_UNCHANGED + 1)); mm_ok "$@"; }
 _optimize_skipped() { _OPTIMIZE_SKIPPED=$((_OPTIMIZE_SKIPPED + 1)); mm_skip "$1" "$2"; }
 _optimize_attention() { _OPTIMIZE_ATTENTION=$((_OPTIMIZE_ATTENTION + 1)); mm_warn "$1"; }
-_optimize_hint() { printf '    %s%s%s\n' "$C_DIM" "$1" "$C_RESET"; }
 
 # _optimize_ago SECONDS — "16h ago" / "3d ago".
 _optimize_ago() {

@@ -46,9 +46,9 @@ fi
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_BOLD=$'\e[1m' C_DIM=$'\e[2m' C_RED=$'\e[31m' C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m'
-  C_BLUE=$'\e[34m' C_MAGENTA=$'\e[35m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
+  C_BLUE=$'\e[34m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
 else
-  C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN="" C_RESET=""
+  C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
 fi
 MM_RULE="======================================================================"
 
@@ -79,19 +79,6 @@ mm_banner() {
   printf '\n%s\n%s%s%s\n' "$MM_RULE" "$C_BOLD" "$title" "$C_RESET"
   local line; for line in "$@"; do printf '%s\n' "$line"; done
   printf '%s\n' "$MM_RULE"
-}
-
-# mm_bar PERCENT [WIDTH] — "█████░░░░" colored by threshold (>=90 red, >=75 yellow).
-mm_bar() {
-  local pct=${1%.*} width=${2:-20} fill color
-  (( pct < 0 )) && pct=0; (( pct > 100 )) && pct=100
-  fill=$(( (pct * width + 50) / 100 ))
-  if (( pct >= 90 )); then color=$C_RED; elif (( pct >= 75 )); then color=$C_YELLOW; else color=$C_GREEN; fi
-  printf '%s' "$color"
-  local i; for ((i = 0; i < fill; i++)); do printf '█'; done
-  printf '%s' "$C_DIM"
-  for ((i = fill; i < width; i++)); do printf '░'; done
-  printf '%s' "$C_RESET"
 }
 
 # mm_confirm QUESTION — y/N prompt on the terminal. There is no auto-accept: without a terminal

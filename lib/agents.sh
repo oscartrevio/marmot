@@ -159,9 +159,6 @@ _mm_agents_load() {
 }
 _mm_agents_load
 
-# mm_agent_procs — every agent process name, one per line.
-mm_agent_procs() { printf '%s\n' "${MM_AGENT_PROCS[@]}" | tr ' ' '\n' | awk 'NF && !seen[$0]++'; }
-
 # mm_agent_worktree_dirs — every agent worktree dir (~ expanded), one per line.
 mm_agent_worktree_dirs() { printf '%s\n' "${MM_AGENT_WORKTREES[@]}" | tr ' ' '\n' | awk 'NF && !seen[$0]++'; }
 
