@@ -16,6 +16,7 @@ mm_cmd_main() {
     esac
     shift
   done
+  (( json )) && ! command -v jq >/dev/null && mm_die "jq is required for --json"
   [[ -s "$MM_LOG_FILE" ]] || { echo "No operations recorded yet ($MM_LOG_FILE)."; return 0; }
 
   local src=(cat "$MM_LOG_FILE"); (( limit > 0 )) && src=(tail -n "$limit" "$MM_LOG_FILE")

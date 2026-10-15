@@ -1589,12 +1589,12 @@ _status_cols() {
 # ---------------------------------------------------------------- JSON
 
 _status_json() {
-  local tc tm ag li or po df nets e ifc i core_list=""
+  local tc tm ag li orph po df nets e ifc i core_list=""
   tc=$(printf '%s\n' "${ST_TOPCPU[@]}")
   tm=$(printf '%s\n' "${ST_TOPMEM[@]}")
   ag=$(printf '%s\n' "${ST_AGENTS[@]}")
   li=$(printf '%s\n' "${ST_LINGER[@]}")
-  or=$(printf '%s\n' "${ST_ORPHANS[@]}")
+  orph=$(printf '%s\n' "${ST_ORPHANS[@]}")
   po=$(printf '%s\n' "${ST_PORTS[@]}")
   df=$(printf '%s\n' "${ST_DF[@]}")
   nets=""
@@ -1612,7 +1612,7 @@ _status_json() {
     --arg up "$ST_UP" --arg reboot "$ST_REBOOT" --arg rpkgs "$ST_REBOOT_PKGS" \
     --arg ag "$ag" --arg akb "$ST_AGENT_KB" --arg amax "$ST_AGENT_MAXAGE" \
     --arg li "$li" --arg lkb "$ST_LINGER_KB" --arg linger "$ST_LINGER_AGE" \
-    --arg or "$or" --arg po "$po" --arg nlisten "$ST_NLISTEN" \
+    --arg orph "$orph" --arg po "$po" --arg nlisten "$ST_NLISTEN" \
     --argjson slow "$(for e in "${!ST_SLOW[@]}"; do printf '%s\t%s\n' "$e" "${ST_SLOW[$e]}"; done |
       jq -Rn '[inputs | split("\t") | {(.[0]): .[1]}] | add // {}')" \
     --arg cl_addr "$ST_CL_ADDR" --arg cl_name "$ST_CL_NAME" --arg cl_path "$ST_CL_PATH" \
@@ -1694,7 +1694,7 @@ _status_json() {
           processes: ($li | lines | map({ pid: (.[0] | tonumber), name: .[1], age_seconds: (.[2] | tonumber),
             rss_swap_bytes: ((.[3] | tonumber) * 1024), orphan: (.[4] == "1") }))
         },
-        orphans: ($or | lines | map({ pid: (.[0] | tonumber), name: .[1], kind: .[4],
+        orphans: ($orph | lines | map({ pid: (.[0] | tonumber), name: .[1], kind: .[4],
           age_seconds: (.[2] | tonumber), deleted_cwd: .[3] })),
         listening_ports: {
           min_age_seconds: ($linger | tonumber), total_listening: ($nlisten | tonumber),
