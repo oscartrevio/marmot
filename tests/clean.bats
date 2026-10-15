@@ -1210,11 +1210,12 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
 
 # ---------------------------------------------------------------- mise, conda, Homebrew, nix
 
-# fake_pkg_tools — mise, conda and brew doubles that remove what the real commands would: mise its
-# cache; conda tarballs, index cache and logs in $SB/conda/pkgs (the extracted package stays);
-# brew an old formula version and an old download (its own -n estimate says 2.1MB).
+# fake_pkg_tools — mise, conda and brew doubles that remove what the real commands would: mise a
+# stale download (prune; the one in use stays); conda tarballs, index cache and logs in
+# $SB/conda/pkgs (the extracted package stays); brew an old formula version and an old download
+# (its own -n estimate says 2.1MB).
 fake_pkg_tools() {
-  fake_rec mise '[[ "$*" == "cache clear" ]] && rm -rf "$HOME/.cache/mise/"*; exit 0'
+  fake_rec mise '[[ "$*" == "cache prune" ]] && rm -f "$HOME/.cache/mise/node/node-v18.tar.gz"; exit 0'
   fake_rec conda 'case "$*" in
     "config --show pkgs_dirs") printf "pkgs_dirs:\n  - %s\n  - /nonexistent/pkgs\n" "$SB/conda/pkgs" ;;
     clean*) rm -rf "$SB/conda/pkgs/"*.tar.bz2 "$SB/conda/pkgs/"*.conda "$SB/conda/pkgs/cache" "$SB/conda/pkgs/.logs" ;;
@@ -1226,30 +1227,32 @@ fake_pkg_tools() {
       echo "==> This operation would free approximately 2.1MB of disk space." ;;
     "cleanup --prune=30") rm -rf "$SB/Cellar/jq/1.6" "$SB/brewcache/downloads/old" ;;
   esac'
-  blob "$HOME/.cache/mise/node/node-v20.tar.gz"
+  blob "$HOME/.cache/mise/node/node-v20.tar.gz"; blob "$HOME/.cache/mise/node/node-v18.tar.gz"
   blob "$SB/conda/pkgs/numpy-1.26.tar.bz2"; blob "$SB/conda/pkgs/scipy-1.11.conda"; blob "$SB/conda/pkgs/cache/repodata.json"
   blob "$SB/conda/pkgs/numpy-1.26/lib/core.so"
   blob "$SB/Cellar/jq/1.6/bin/jq"; blob "$SB/Cellar/jq/1.7/bin/jq"; blob "$SB/brewcache/downloads/old"
 }
 pkg_tools() { _clean_mise; _clean_conda; _clean_brew; }
 
-@test "tool cleans: mise, conda and Homebrew clean through their own commands; dry-run is within 5%" {
+@test "tool cleans: mise prunes, conda and Homebrew clean through their own commands; dry-run is within 5%" {
   fake_pkg_tools
   src
   _clean_busy() { return 1; }   # isolate from tools running on the host
-  local est real
+  local est real mise
   MM_DRY_RUN=1; pkg_tools >/dev/null
-  est=$_CLEAN_TOOL_BYTES
-  none grep -E 'cache clear|conda clean|cleanup --prune=30$' "$CALLS"
-  exist "$HOME/.cache/mise/node/node-v20.tar.gz" "$SB/conda/pkgs/numpy-1.26.tar.bz2" "$SB/Cellar/jq/1.6/bin/jq"
-  MM_DRY_RUN=0 _CLEAN_TOOL_BYTES=0; pkg_tools >/dev/null
-  real=$_CLEAN_TOOL_BYTES
-  grep -qxF '/ mise cache clear' "$CALLS"
+  est=$_CLEAN_TOOL_BYTES        # a prune cannot be previewed: mise adds nothing
+  none grep -E 'cache prune|conda clean|cleanup --prune=30$' "$CALLS"
+  exist "$HOME/.cache/mise/node/node-v18.tar.gz" "$SB/conda/pkgs/numpy-1.26.tar.bz2" "$SB/Cellar/jq/1.6/bin/jq"
+  MM_DRY_RUN=0 _CLEAN_TOOL_BYTES=0; _clean_mise >/dev/null
+  mise=$_CLEAN_TOOL_BYTES; _clean_conda >/dev/null; _clean_brew >/dev/null
+  real=$((_CLEAN_TOOL_BYTES - mise))
+  grep -qxF '/ mise cache prune' "$CALLS"
+  none grep -F 'mise cache clear' "$CALLS"
   grep -qxF '/ conda clean --yes --index-cache --tarballs --logfiles' "$CALLS"
   grep -qxF '/ brew cleanup --prune=30' "$CALLS"
-  gone "$HOME/.cache/mise/node" "$SB/conda/pkgs/numpy-1.26.tar.bz2" "$SB/conda/pkgs/cache" "$SB/Cellar/jq/1.6"
-  exist "$SB/conda/pkgs/numpy-1.26/lib/core.so" "$SB/Cellar/jq/1.7/bin/jq"
-  (( real >= 6 * 1100000 ))                                  # measured: 1 mise + 3 conda + 2 brew blobs
+  gone "$HOME/.cache/mise/node/node-v18.tar.gz" "$SB/conda/pkgs/numpy-1.26.tar.bz2" "$SB/conda/pkgs/cache" "$SB/Cellar/jq/1.6"
+  exist "$HOME/.cache/mise/node/node-v20.tar.gz" "$SB/conda/pkgs/numpy-1.26/lib/core.so" "$SB/Cellar/jq/1.7/bin/jq"
+  (( mise >= 1100000 && real >= 5 * 1100000 ))              # measured: 3 conda + 2 brew blobs
   (( est * 100 >= real * 95 && est * 100 <= real * 105 ))
 }
 
@@ -1259,7 +1262,7 @@ pkg_tools() { _clean_mise; _clean_conda; _clean_brew; }
   src
   run pkg_tools
   [ "$status" -eq 0 ]
-  none grep -E 'cache clear|conda clean|cleanup --prune=30' "$CALLS"
+  none grep -E 'cache prune|conda clean|cleanup --prune=30' "$CALLS"
   exist "$HOME/.cache/mise/node/node-v20.tar.gz" "$SB/conda/pkgs/numpy-1.26.tar.bz2" "$SB/Cellar/jq/1.6/bin/jq"
 }
 

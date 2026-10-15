@@ -756,10 +756,11 @@ _clean_cloud_log_rm() {
 # ---------------------------------------------------------------- mise, conda, Homebrew, nix
 
 # mise keeps downloads and version lists in its cache folder; installed tools live elsewhere
-# (~/.local/share/mise), so clearing it only costs re-downloads.
+# (~/.local/share/mise). `mise cache prune` drops only files not read for 30 days
+# (MISE_CACHE_PRUNE_AGE), so what current tools use stays.
 _clean_mise() {
   local dir="${MISE_CACHE_DIR:-$(mm_catalog_expand %CACHE%)/mise}"
-  _clean_tool "mise cache" mise "${dir%/}" mise cache clear
+  _clean_tool --prune "mise cache" mise "${dir%/}" mise cache prune
 }
 
 # conda: package tarballs, the index cache and log files of every package cache it can write.
