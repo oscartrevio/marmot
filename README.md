@@ -100,7 +100,8 @@ every supported tool, not what a machine must have.
   use move to the Trash; empty folders are removed afterwards.
 - **Reported only** under "Kept for you to review", with their size and the command that reclaims
   them: model stores (Hugging Face, Ollama, torch), dependency repositories (`~/.m2`, `~/.ivy2`,
-  sbt, pub, NuGet, the Go module cache), Node versions, Docker volumes, W&B, the Terraform plugin cache, agent state.
+  sbt, pub, NuGet, the Go module cache), Node versions, Docker volumes, W&B, the Terraform plugin cache, agent state,
+  and the biggest folders in `~/.cache` that no catalog row covers (add a row to clean one).
 - **Never swept**: `/tmp` and `/var/tmp` beyond the browser leftovers above. They hold other
   programs' sockets and locks, and the OS ages them; marmot shows their size and the
   systemd-tmpfiles age that applies (or the `tmpfiles.d` line to add when nothing ages them).
