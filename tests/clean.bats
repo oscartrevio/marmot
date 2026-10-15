@@ -410,6 +410,23 @@ busy_proc() {
   [ "$(mm_log_rows remove | grep -c "^$HOME/.cache/pip/")" -eq 2 ]
 }
 
+@test "a catalog cache entry whose size walk times out is kept; the others go" {
+  mkdir -p "$HOME/.cache/pip/http-v2/a" "$HOME/.cache/pip/wheels"
+  echo x >"$HOME/.cache/pip/http-v2/a/body"; echo y >"$HOME/.cache/pip/wheels/w.whl"
+  mm_age "$HOME/.cache/pip" 30
+  catalog
+  local real; real=$(command -v find)
+  # the sizing walk (find -printf '%D:%i ...') of wheels never finishes; every other find is real
+  mm_test_fake find "[[ \"\$1\" == */.cache/pip/wheels && \"\$*\" == *%D:%i* ]] && exec sleep 5
+exec $real \"\$@\""
+  hash -r
+  MM_SIZE_TIMEOUT=0.3 run _clean_catalog_caches
+  exist "$HOME/.cache/pip/wheels/w.whl"
+  gone "$HOME/.cache/pip/http-v2"
+  [ "$(mm_log_rows refused)" = "$HOME/.cache/pip/wheels"$'\t'"size unknown (timed out)" ]
+  [[ "$output" == *"1 kept"* ]]
+}
+
 @test "catalog cache entries used in the last 7 days stay (an MCP server npx runs); older ones go" {
   local x="$HOME/.npm/_npx"
   mkdir -p "$x/old/node_modules/a" "$x/read/node_modules/b" "$x/written/node_modules/c" "$x/nested/node_modules/d/dist"

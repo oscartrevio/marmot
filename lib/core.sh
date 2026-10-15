@@ -120,32 +120,60 @@ mm_tilde() {
 # (Debian 12, Ubuntu 22.04) prints integers above 2^31-1 as 2.14748e+09 and clamps %d to
 # 2147483647, which bash arithmetic rejects or miscounts. %.0f is exact up to 2^53.
 
-# mm_size PATH... — total bytes on disk (0 if missing). Uses sudo when MM_SIZE_SUDO=1.
+# Sizing walks run under `timeout MM_SIZE_TIMEOUT` seconds (default 300): a tree too big or too
+# slow to measure (a hung network mount, millions of files) ends the walk. When du/find times out
+# or (mm_size_frees, mm_frees) fails at all (an unreadable folder, a vanished file, sudo refused),
+# they print NOTHING and return 124 (timed out) or 1: the size is unknown, never 0. Missing PATHs
+# count 0. mm_size, for reports only, keeps du's total of what it could read.
+# mm_size_frees calls no other function: purge runs it in xargs workers after `export -f`.
+
+# mm_size PATH... — total bytes on disk (0 if none exists). Uses sudo when MM_SIZE_SUDO=1. Only
+# reports and estimates use it, so a folder du can partly not read (another user's files in /tmp
+# without sudo) gives what du could measure; a timeout or no total at all is unknown. The gate
+# measures with mm_frees, which takes no partial answer.
 mm_size() {
-  (( $# )) || { echo 0; return; }
-  local -a pre=(); [[ "${MM_SIZE_SUDO:-0}" == 1 ]] && pre=(sudo -n)
-  "${pre[@]}" du -scB1 --one-file-system -- "$@" 2>/dev/null | awk 'END { printf "%.0f\n", $1 }'
+  local -a pre=() paths=(); local p out rc
+  for p in "$@"; do [[ -e "$p" || -L "$p" ]] && paths+=("$p"); done
+  (( ${#paths[@]} )) || { echo 0; return 0; }
+  [[ "${MM_SIZE_SUDO:-0}" == 1 ]] && pre=(sudo -n)
+  out=$(timeout "${MM_SIZE_TIMEOUT:-300}" "${pre[@]}" du -scB1 --one-file-system -- "${paths[@]}" 2>/dev/null)
+  rc=$?
+  (( rc == 124 )) && return 124
+  out=$(awk 'END { if ($2 == "total" && $1 ~ /^[0-9]+$/) printf "%.0f\n", $1 }' <<<"$out")
+  [[ -n "$out" ]] || return 1
+  printf '%s\n' "$out"
 }
 
-# mm_size_frees PATH... — "SIZE FREES" in bytes for the trees at PATHs, from one walk (0 0 if
-# missing). SIZE is disk usage with every inode counted once, like du. FREES is what deleting all
-# of PATHs would release: directories, and files whose every hard link lies inside them. A pnpm
-# node_modules hard-linked to the store is large in SIZE and nearly nothing in FREES. Uses sudo
-# when MM_SIZE_SUDO=1.
+# mm_size_frees PATH... — "SIZE FREES" in bytes for the trees at PATHs, from one walk ("0 0" if
+# none exists). SIZE is disk usage with every inode counted once, like du. FREES is what deleting
+# all of PATHs would release: directories, and files whose every hard link lies inside them. A
+# pnpm node_modules hard-linked to the store is large in SIZE and nearly nothing in FREES. Uses
+# sudo when MM_SIZE_SUDO=1.
 mm_size_frees() {
-  (( $# )) || { echo "0 0"; return; }
-  local -a pre=(); [[ "${MM_SIZE_SUDO:-0}" == 1 ]] && pre=(sudo -n)
-  "${pre[@]}" find "$@" -xdev -printf '%D:%i %n %b %y\n' 2>/dev/null | awk '
+  local -a pre=() paths=(); local p out rc
+  for p in "$@"; do [[ -e "$p" || -L "$p" ]] && paths+=("$p"); done
+  (( ${#paths[@]} )) || { echo "0 0"; return 0; }
+  [[ "${MM_SIZE_SUDO:-0}" == 1 ]] && pre=(sudo -n)
+  out=$(timeout "${MM_SIZE_TIMEOUT:-300}" "${pre[@]}" find "${paths[@]}" -xdev -printf '%D:%i %n %b %y\n' 2>/dev/null | awk '
     $4 == "d" || $2 < 2 { s += $3; f += $3; next }
     { if (!($1 in seen)) s += $3; if (++seen[$1] == $2) f += $3 }
-    END { printf "%.0f %.0f\n", s * 512, f * 512 }'
+    END { printf "%.0f %.0f\n", s * 512, f * 512 }'; exit "${PIPESTATUS[0]}")
+  rc=$?
+  (( rc == 0 )) || return $(( rc == 124 ? 124 : 1 ))
+  printf '%s\n' "$out"
 }
 
-# mm_frees PATH... — the FREES half of mm_size_frees.
+# mm_frees PATH... — the FREES half of mm_size_frees (nothing, and its status, when unknown).
 mm_frees() {
-  local s f
-  read -r s f < <(mm_size_frees "$@")
-  printf '%s\n' "${f:-0}"
+  local out
+  out=$(mm_size_frees "$@") || return
+  printf '%s\n' "${out#* }"
+}
+
+# mm_size_human PATH... — mm_size as mm_human text, or "size unknown".
+mm_size_human() {
+  local b
+  if b=$(mm_size "$@"); then mm_human "$b"; else echo "size unknown"; fi
 }
 
 # mm_free_bytes [MOUNT] — available bytes on the filesystem holding MOUNT (default /).
@@ -635,9 +663,9 @@ mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 
 # mm_rm [--trash] PATH ALLOWED_ROOT — the only way marmot deletes or trashes files.
 # Refuses unless PATH is strictly inside ALLOWED_ROOT (after resolving parent symlinks), has no
-# control characters, is not protected, not whitelisted, not in use, and is still the same object
-# (device/inode/ctime) and location after sizing. --trash moves it to the XDG Trash instead and
-# never falls back to a permanent delete.
+# control characters, is not protected, not whitelisted, not in use, can be sized within
+# MM_SIZE_TIMEOUT, and is still the same object (device/inode/ctime) and location after sizing.
+# --trash moves it to the XDG Trash instead and never falls back to a permanent delete.
 # Returns 0 done (or would be, in dry-run), 1 refused (MM_SKIP_REASON set), 2 action failed.
 # Updates MM_FREED or MM_TRASHED (by mm_frees), MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals
 # other than "missing" and failures are written to the operations log; failures also to MM_ERRORS.
@@ -682,7 +710,9 @@ mm_rm() {
   p=$(mm_inuse_why "$real") && { _mm_refuse "$p"; return 1; }
 
   id=$(mm_identity "$real") || { _mm_refuse "missing"; return 1; }
-  bytes=$(mm_frees "$real")
+  bytes=$(mm_frees "$real") || {
+    if (( $? == 124 )); then _mm_refuse "size unknown (timed out)"; else _mm_refuse "size unreadable"; fi; return 1
+  }
   # The accounting below is bash arithmetic: validate now, so nothing fails after the rm.
   [[ "$bytes" =~ ^[0-9]+$ ]] || { _mm_refuse "size unreadable"; return 1; }
   # Sizing a large tree takes a while: act only if the same object is still at the same place.
