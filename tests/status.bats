@@ -27,7 +27,7 @@ exit 1"
 teardown() {
   local p
   # Background helpers may have children of their own (a fake agent running a server).
-  for p in "${MM_TEST_PIDS[@]}" "${DETACHED_PIDS[@]}"; do kill $(pgrep -P "$p") 2>/dev/null; done
+  for p in "${MM_TEST_PIDS[@]}" "${DETACHED_PIDS[@]}"; do kill $(mm_test_pids --parent "$p") 2>/dev/null; done
   for p in "${DETACHED_PIDS[@]}"; do kill "$p" 2>/dev/null; done
   mm_test_teardown
 }
@@ -161,7 +161,7 @@ live() {
   chmod +x "$SB/bin/claude"
   detached "$HOME/proj/busy" "$SB/bin/claude"
   local busy=$DETACHED sub
-  for _ in 1 2 3 4 5 6 7 8 9 10; do sub=$(pgrep -P "$busy" -x codex) && break; sleep 0.1; done
+  for _ in 1 2 3 4 5 6 7 8 9 10; do sub=$(mm_test_pids --parent "$busy" --comm codex); [[ -n "$sub" ]] && break; sleep 0.1; done
   [ -n "$sub" ]
   status_json
   jq -e --argjson b "$busy" --argjson i "$idle" --argjson s "$sub" '.system.agents.sessions as $all
@@ -192,7 +192,7 @@ EOF
   local agent=$DETACHED p rss=0 n
   for _ in $(seq 50); do n=$(compgen -G "$SB/ready.*" | wc -l); ((n == 2)) && break; sleep 0.1; done
   [ "$n" -eq 2 ]
-  for p in $(pgrep -f "$SB/bin/hog.py"); do rss=$((rss + $(awk '/^VmRSS:/ { print $2 }' "/proc/$p/status"))); done
+  for p in $(mm_test_pids --cmdline-has "$SB/bin/hog.py"); do rss=$((rss + $(awk '/^VmRSS:/ { print $2 }' "/proc/$p/status"))); done
   # The premise: summed RSS counts the shared 128 MiB twice.
   ((rss >= 256 * 1024))
   status_json
@@ -275,7 +275,7 @@ EOF
   detached "$SB" "$SB/bin/claude"
   local agent=$DETACHED child
   [ "$(cat "/proc/$agent/comm")" = claude ]
-  for _ in 1 2 3 4 5 6 7 8 9 10; do child=$(pgrep -P "$agent" python3) && break; sleep 0.1; done
+  for _ in 1 2 3 4 5 6 7 8 9 10; do child=$(mm_test_pids --parent "$agent" --comm python3); [[ -n "$child" ]] && break; sleep 0.1; done
   [ -n "$child" ]
   listening "$child"
   status_json MM_STATUS_LINGER_AGE=0
@@ -448,7 +448,12 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   [ "$status" -eq 0 ]
   local row
   row=$(grep -E '^Checks ' <<<"$output")
-  [[ "$row" == *"✓ kernel"*"✓ units"*"✓ docker"*"✓ unattended"*"1 update"* ]]
+  if [[ -d /run/systemd/system ]]; then
+    [[ "$row" == *"✓ kernel"*"✓ units"*"✓ docker"*"✓ unattended"*"1 update"* ]]
+  else   # no systemd (containers): no unit or unattended-upgrades checks at all
+    [[ "$row" == *"✓ kernel"*"✓ docker"*"1 update"* ]]
+    [[ "$row" != *units* && "$row" != *unattended* ]]
+  fi
   # The reboot flag is the host's own file: whichever way it is, it is reported.
   if [[ -e /var/run/reboot-required ]]; then grep -E '! reboot required.*: sudo reboot$' <<<"$output"
   else [[ "$row" == *"✓ reboot"* ]]; fi
@@ -463,11 +468,13 @@ exit 0'
   mm_test_fake unattended-upgrade 'exit 0'
   run mm status --once --view full
   [ "$status" -eq 0 ]
-  grep -E '^ +! 1 failed unit: foo\.service: systemctl --failed$' <<<"$output"
+  if [[ -d /run/systemd/system ]]; then
+    grep -E '^ +! 1 failed unit: foo\.service: systemctl --failed$' <<<"$output"
+    # Too long for one 80-column line: the command follows on the next line, whole.
+    grep -A1 -E '^ +! unattended-upgrades inactive:' <<<"$output" | grep -E ' sudo systemctl enable --now unattended-upgrades$'
+  fi
   grep -E '^ +! kernel 99\.0\.0-1 installed, running .*: sudo reboot$' <<<"$output"
   grep -E '^ +! docker daemon not reachable: docker info$' <<<"$output"
-  # Too long for one 80-column line: the command follows on the next line, whole.
-  grep -A1 -E '^ +! unattended-upgrades inactive:' <<<"$output" | grep -E ' sudo systemctl enable --now unattended-upgrades$'
   [ "$(grep -cE '✓ (kernel|units|docker|unattended)' <<<"$output")" -eq 0 ]
 }
 

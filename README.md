@@ -81,10 +81,14 @@ Environment: `MM_STATUS_LINGER_AGE`, `MM_STATUS_VPN_IFACES`, `MM_OPTIMIZE_ORPHAN
 ## Development
 
 ```sh
-sudo apt-get install bats shellcheck
+sudo apt-get install bats shellcheck jq python3
 tests/run.sh            # shellcheck + the whole bats suite
 tests/run.sh tests/purge.bats
 ```
+
+The suite needs bats-core 1.5 or newer. Ubuntu 22.04's package is older; `tests/run.sh` says so
+and prints how to install a pinned release. CI runs the suite on the Ubuntu 24.04 runner and, as
+a non-root user, in Debian 12 and Ubuntu 22.04 containers.
 
 Tests never touch the real machine: each one gets a throwaway `HOME`, and commands that change
 the system (`sudo`, apt, docker, snap, kill, swap, mount, package managers) are replaced by stubs

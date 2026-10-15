@@ -22,3 +22,32 @@ jobs:
         run: sudo apt-get update -q && sudo apt-get install -y -q bats shellcheck
       - name: shellcheck + bats
         run: tests/run.sh
+
+  # Debian 12 and Ubuntu 22.04 ship mawk 1.3.4-20200120 and jq 1.6; Debian's base image also has no
+  # procps, psmisc, iproute2 or sudo. The suite runs there as a normal user, as most people run marmot.
+  distro:
+    name: test (${{ matrix.image }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    container: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ["debian:12", "ubuntu:22.04"]
+    steps:
+      - name: Install test tools
+        run: |
+          apt-get update -q
+          DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            bats ca-certificates git jq python3 shellcheck
+          # bats-core 1.5+ is required; Ubuntu 22.04's package is 1.2.
+          if [ "$(printf '%s\n' 1.5.0 "$(bats --version | cut -d' ' -f2)" | sort -V | head -1)" != 1.5.0 ]; then
+            git clone -q --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core /tmp/bats-core
+            /tmp/bats-core/install.sh /usr/local
+          fi
+          useradd -m tester
+      - uses: actions/checkout@v4
+      - name: shellcheck + bats (as tester)
+        run: |
+          chown -R tester .
+          su tester -c 'tests/run.sh'

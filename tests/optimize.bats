@@ -11,7 +11,7 @@ setup() {
 }
 teardown() {
   local p
-  for p in ${EXTRA_PIDS:-}; do kill $(pgrep -P "$p") "$p" 2>/dev/null; done
+  for p in ${EXTRA_PIDS:-}; do kill $(mm_test_pids --parent "$p") "$p" 2>/dev/null; done
   mm_test_teardown
 }
 
@@ -120,7 +120,7 @@ lacks() { ! grep -q -- "$1" "$2"; }
   (sleep 30 | script -qfc "cd '$SB/tty' && sleep 61" /dev/null >/dev/null 2>&1) &
   EXTRA_PIDS="$!"
   local p="" i
-  for i in 1 2 3 4 5 6 7 8 9 10; do p=$(pgrep -fx 'sleep 61' | head -1); [[ -n "$p" ]] && break; sleep 0.2; done
+  for i in 1 2 3 4 5 6 7 8 9 10; do p=$(mm_test_pids --cmdline 'sleep 61' | head -1); [[ -n "$p" ]] && break; sleep 0.2; done
   [ -n "$p" ]
   EXTRA_PIDS+=" $p"
   [ "$(_optimize_stat_field "$p" 5)" != 0 ]   # really has a controlling tty
