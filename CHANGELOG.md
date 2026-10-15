@@ -36,6 +36,7 @@ All notable changes to marmot are recorded here. The format follows
 - `mm clean` keeps catalog cache entries used in the last 7 days: an MCP server launched with
   `npx -y` is no longer downloaded again after every run.
 - `mm clean` runs `mise cache prune` (files not read for 30 days) instead of `mise cache clear`.
+- `mm clean --help` lists every option, `--sessions N` included.
 
 ## 0.2.0
 

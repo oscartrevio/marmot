@@ -186,6 +186,13 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   [ "$status" -ne 0 ]
 }
 
+@test "mm clean --help documents every option the parser accepts" {
+  run mm clean --help
+  [ "$status" -eq 0 ]
+  local o
+  for o in --sessions --whitelist --dry-run --debug --help; do [[ "$output" == *"$o"* ]] || { echo "missing $o"; return 1; }; done
+}
+
 # ---------------------------------------------------------------- Trash retention
 
 @test "Trash sweep removes an item trashed 8 days ago with its .trashinfo, keeps a 1-day-old one" {

@@ -22,7 +22,7 @@ _CLEAN_RECENT_DAYS=7     # catalog cache entries used more recently than this ar
 
 _clean_usage() {
   cat <<EOF
-Usage: mm clean [--whitelist] [--dry-run] [--debug]
+Usage: mm clean [--sessions N] [--whitelist] [--dry-run] [--debug]
 
 Removes thumbnails and developer caches (npm, pnpm, yarn, bun, uv, pip, Go build, Cargo downloads,
 Gradle build cache and daemon logs, Deno, Bazel, Zig, Prisma, Electron, pyenv, RubyGems,
@@ -68,9 +68,12 @@ Turn it on with sessions_keep_days=N in $MM_CONFIG_FILE (runs without a terminal
 or use --sessions N for one run (asks first).
 
 Options:
-  --sessions N  move agent session files older than N days to the Trash (this run)
-  --whitelist   edit protected paths ($MM_WHITELIST_FILE)
-  -n, --dry-run show what would be cleaned; change nothing
+  --sessions N   move agent session files older than N days to the Trash (this run;
+                 also --sessions=N)
+  --whitelist    edit protected paths ($MM_WHITELIST_FILE)
+  -n, --dry-run  show what would be cleaned; change nothing
+      --debug    verbose logs
+  -h, --help     show this help
 
 Add your own cache folders (inside your home folder) to $MM_CONFIG_DIR/catalog, one per line:
   cache|My tool cache|~/.cache/mytool|mytool
