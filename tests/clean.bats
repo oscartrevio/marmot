@@ -904,3 +904,74 @@ blocks() { local p s=0; for p; do s=$((s + $(stat -c %b "$p") * 512)); done; ech
   exist "$c/_usr_bin_python3.1000.crash" "$c/.lock" "$d/core.chrome.1000.abc.2.zst" "$a/fresh/report"
   [ ! -e "$XDG_DATA_HOME/Trash/files/old" ]   # permanent, not trashed
 }
+
+# ---------------------------------------------------------------- automation-browser temp files
+
+# browser_tmp NAME... — an entry $MM_TEST_TMP_ROOT/NAME holding a 1.1MB profile file.
+browser_tmp() { local n; for n; do blob "$MM_TEST_TMP_ROOT/$n/Default/Cache/data_1"; done; }
+
+@test "browser temp: idle Playwright/Puppeteer/Chromium leftovers are deleted for good, the rest kept" {
+  src
+  browser_tmp playwright_chromiumdev_profile-a1B2 puppeteer_dev_chrome_profile-c3D4 \
+    .org.chromium.Chromium.e5F6 playwright-artifacts-g7H8 org.chromium.Chromium.url_fetcher_.Ab \
+    .com.google.Chrome.Qr12St
+  echo x >"$MM_TEST_TMP_ROOT/com.google.Chrome.file1"
+  browser_tmp playwright_chromiumdev_profile-busy chrome-profile-mine x-playwright-artifacts-1 old-dir
+  mm_test_clock 1   # everything above is a day old (ctime included)...
+  touch -d '+1 day' "$MM_TEST_TMP_ROOT/playwright_chromiumdev_profile-busy/Default/Cache/data_1"   # ...but this one was just written
+  local t=$MM_TEST_TMP_ROOT
+  MM_DRY_RUN=1 _clean_browser_tmp "$t" >/dev/null
+  local estimate=$MM_FREED
+  exist "$t/playwright_chromiumdev_profile-a1B2" "$t/com.google.Chrome.file1"
+  MM_FREED=0
+  _clean_browser_tmp "$t" >/dev/null
+  gone "$t/playwright_chromiumdev_profile-a1B2" "$t/puppeteer_dev_chrome_profile-c3D4" \
+    "$t/.org.chromium.Chromium.e5F6" "$t/playwright-artifacts-g7H8" \
+    "$t/org.chromium.Chromium.url_fetcher_.Ab" "$t/.com.google.Chrome.Qr12St" "$t/com.google.Chrome.file1"
+  exist "$t/playwright_chromiumdev_profile-busy" "$t/chrome-profile-mine" "$t/x-playwright-artifacts-1" "$t/old-dir"
+  [ "$MM_FREED" -ge $((6 * 1100000)) ]
+  [ "$MM_FREED" -eq "$estimate" ]
+  [ ! -e "$XDG_DATA_HOME/Trash/files" ]
+  [ "$(mm_log_rows remove | wc -l)" -eq 7 ]
+}
+
+@test "browser temp: entries a process works in or holds open are kept" {
+  src
+  browser_tmp playwright_chromiumdev_profile-cwd puppeteer_dev_chrome_profile-fd
+  local t=$MM_TEST_TMP_ROOT
+  mm_test_bg "$t/playwright_chromiumdev_profile-cwd" sleep 60
+  mm_test_bg "$SB" sleep 61 3<"$t/puppeteer_dev_chrome_profile-fd/Default/Cache/data_1"
+  mm_test_clock 1
+  _clean_browser_tmp "$t" >/dev/null
+  exist "$t/playwright_chromiumdev_profile-cwd/Default/Cache/data_1" "$t/puppeteer_dev_chrome_profile-fd/Default/Cache/data_1"
+  [ "$(mm_log_rows refused | cut -f2 | sort -u)" = "in use" ]
+}
+
+@test "browser temp: another user's entries are never touched" {
+  (( EUID == 0 )) || skip "needs root to give a file to another user"
+  src
+  browser_tmp playwright_chromiumdev_profile-theirs playwright_chromiumdev_profile-mine
+  chown -R 65534:65534 "$MM_TEST_TMP_ROOT/playwright_chromiumdev_profile-theirs"
+  mm_test_clock 1
+  _clean_browser_tmp "$MM_TEST_TMP_ROOT" >/dev/null
+  exist "$MM_TEST_TMP_ROOT/playwright_chromiumdev_profile-theirs/Default/Cache/data_1"
+  gone "$MM_TEST_TMP_ROOT/playwright_chromiumdev_profile-mine"
+}
+
+@test "browser temp: the test root override only works inside the test sandbox" {
+  src
+  [ "$(_clean_browser_tmp_root)" = "$MM_TEST_TMP_ROOT" ]
+  none env MM_TEST_TMP_ROOT=/tmp bash -c '. "$1/lib/core.sh"; . "$1/cmd/clean.sh"; _clean_browser_tmp_root' _ "$MM_SRC"
+  none env MM_TEST_TMP_ROOT="$SB/tmp/../../../.." bash -c '. "$1/lib/core.sh"; . "$1/cmd/clean.sh"; _clean_browser_tmp_root' _ "$MM_SRC"
+  [ "$(env -u MM_TEST_TMP_ROOT bash -c '. "$1/lib/core.sh"; . "$1/cmd/clean.sh"; _clean_browser_tmp_root' _ "$MM_SRC")" = /tmp ]
+}
+
+@test "browser temp: mm clean removes them from the temp root and leaves everything else there" {
+  browser_tmp playwright_chromiumdev_profile-old
+  mkdir -p "$MM_TEST_TMP_ROOT/some-build"; echo x >"$MM_TEST_TMP_ROOT/some-build/f"
+  mm_test_clock 1
+  full_run
+  [ "$status" -eq 0 ]
+  gone "$MM_TEST_TMP_ROOT/playwright_chromiumdev_profile-old"
+  exist "$MM_TEST_TMP_ROOT/some-build/f"
+}

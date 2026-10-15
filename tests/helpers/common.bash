@@ -39,6 +39,10 @@ mm_test_setup() {
   export MM_TTY=0 NO_COLOR=1 LC_ALL=C.UTF-8
   export MM_TEST_UNSTUBBED_LOG="$sandbox/unstubbed.log"
   : >"$MM_TEST_UNSTUBBED_LOG"
+  # The automation-browser sweep of /tmp runs in this folder instead (cmd/clean.sh honors the
+  # override only inside $BATS_TEST_TMPDIR).
+  export MM_TEST_TMP_ROOT="$SB/tmp"
+  mkdir -p "$MM_TEST_TMP_ROOT"
   mm_test_install_stubs
   MM_TEST_PIDS=()
 }
