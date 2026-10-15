@@ -29,6 +29,7 @@ All notable changes to marmot are recorded here. The format follows
   about 10x faster (4.7 s to 0.44 s on a machine with 240 processes).
 - `mm purge` asks git once per repository for tracked files and reads every project's activity in
   one pass: about a third faster.
+- `mm purge` counts unstaged edits and new files anywhere in a project as activity.
 
 ## 0.2.0
 

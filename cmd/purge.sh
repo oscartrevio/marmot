@@ -422,6 +422,32 @@ _purge_activity() {
       } }' <(printf '%s\n' "${map[@]}") -
 }
 
+# _purge_changed GITROOT PROJ... — "EPOCH<TAB>PROJ" for each PROJ (GITROOT or a directory in it)
+# holding files git reports modified or untracked (not ignored), EPOCH the newest of their mtimes:
+# edits deep in src/ count as activity before they are staged. One git call for all PROJs;
+# "?<TAB>PROJ" for every PROJ when it fails or times out (activity unknown).
+_purge_changed() {
+  local root="$1" t rel p; shift
+  while IFS=$'\t' read -r t rel; do
+    printf '%s\t%s\n' "$t" "$root${rel#.}"
+  done < <({ _purge_git "$root" ls-files -m -o --exclude-standard -z |
+      (cd -- "$root" && xargs -0 -r stat -c '%Y %n' -- 2>/dev/null)
+    printf '\1%s\n' "${PIPESTATUS[0]}"; } |
+    awk 'NR == FNR { q[$0] = 1; next }
+      { last = $0 }
+      /^[0-9]+ / {
+        t = $1 + 0; p = "./" substr($0, index($0, " ") + 1)
+        while (1) {
+          if ((p in q) && t > m[p]) m[p] = t
+          if (!sub(/\/[^\/]*$/, "", p)) break
+        } }
+      END {
+        for (p in q)
+          if (last == "\0010") { if (p in m) printf "%.0f\t%s\n", m[p], p }
+          else printf "?\t%s\n", p
+      }' <(for p; do if [[ "$p" == "$root" ]]; then echo .; else printf './%s\n' "${p#"$root"/}"; fi; done) -)
+}
+
 # _purge_busy PATH... — the given paths that are in use (or have something in use below them),
 # per one pass over the in-use snapshot.
 _purge_busy() {
@@ -688,7 +714,7 @@ _purge_wt_eval() {
   # Agent state (e.g. ~/.cursor/worktrees) is waived here only: git itself vouches for the content.
   if mm_protected "$w" >/dev/null; then why="protected"
   elif [[ "${_WT_LOCKED[$i]}" == 1 ]]; then why="locked"
-  elif mm_in_use "$w"; then why="in use"
+  elif mm_in_use "$w"; then why=$(mm_inuse_why "$w" || echo "in use")
   elif MM_KEEP_AGENT_STATE=0 mm_whitelisted "$w"; then why="whitelisted"
   else
     rc=0; _purge_wt_clean "$w" || rc=$?
@@ -790,7 +816,7 @@ _purge_worktrees() {
   local -A pruned=()
   for i in "${sel[@]}"; do
     w="${_WT_PATH[$i]}" m="${_WT_MAIN[$i]}" c="${_WT_COMMON[$i]}"
-    if mm_in_use "$w"; then mm_skip "$(_purge_tilde "$w")" "in use"; continue; fi
+    if mm_in_use "$w"; then mm_skip "$(_purge_tilde "$w")" "$(mm_inuse_why "$w" || echo "in use")"; continue; fi
     rc=0; _purge_wt_clean "$w" || rc=$?
     (( rc == 0 )) || { _purge_kept "$(_purge_tilde "$w")" "changed since the scan"; continue; }
     if [[ -d "$m" ]]; then
@@ -985,7 +1011,7 @@ _purge_run() {
   if (( ${#skip_n[@]} )); then
     mm_section "In use"
     while IFS= read -r key; do
-      mm_skip "$(_purge_tilde "$key") · ${skip_n[$key]} artifact$( (( skip_n[$key] > 1 )) && echo s) (${skip_names[$key]})" "in use"
+      mm_skip "$(_purge_tilde "$key") · ${skip_n[$key]} artifact$( (( skip_n[$key] > 1 )) && echo s) (${skip_names[$key]})" "$(mm_inuse_why "$key" || echo "in use")"
     done < <(printf '%s\n' "${!skip_n[@]}" | sort)
   fi
 
@@ -1025,11 +1051,24 @@ _purge_run() {
   fi
 
   # ---- classify and sort by what deleting frees
-  # activity: a project's own and top-level mtimes and its repository's index/HEAD, one probe for all
-  local -A activity=() pair_of=()
-  local t
-  for i in "${cand[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+  # activity: a project's own and top-level mtimes, its repository's index/HEAD, and the files git
+  # reports changed or new (deep edits not staged yet): one probe per repository
+  local -A activity=() pair_of=() changed=()
+  local -a list=()
+  local t cur
+  for i in "${cand[@]}"; do
+    pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"
+    [[ -n "${gits[$i]}" ]] && changed[${gits[$i]}]+="${projs[$i]}"$'\n'
+  done
   while IFS=$'\t' read -r t p; do activity[$p]=$t; done < <(_purge_activity "${pair_of[@]}")
+  for g in "${!changed[@]}"; do
+    mapfile -t list <<<"${changed[$g]%$'\n'}"
+    while IFS=$'\t' read -r t p; do
+      cur="${activity[$p]:-}"
+      if [[ "$t" == "?" ]]; then activity[$p]=""
+      elif [[ -n "$cur" && "$t" =~ ^[0-9]+$ ]] && (( t > cur )); then activity[$p]=$t; fi
+    done < <(_purge_changed "$g" "${list[@]}")
+  done
   local now; now=$(date +%s)
   local -a order=() idle=() stale=() pnpm_art=()
   local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act shared=0
@@ -1134,7 +1173,7 @@ _purge_run() {
   for i in "${sel[@]}"; do
     art="${arts[$i]}" proj="${projs[$i]}" g="${gits[$i]}"
     if [[ -n "${busy[$proj]:-}" || ( -n "$g" && -n "${busy[$g]:-}" ) ]]; then
-      mm_skip "$(_purge_tilde "$art")" "in use"
+      mm_skip "$(_purge_tilde "$art")" "$(mm_inuse_why "${g:-$proj}" || echo "in use")"
       MM_SKIPPED=$((MM_SKIPPED + 1))
       continue
     fi

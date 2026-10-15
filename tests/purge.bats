@@ -173,6 +173,19 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [[ "$output" == *"skipped (in use)"* ]]
 }
 
+@test "a project an MCP server config runs from is kept and says which config uses it" {
+  node_project "$SB/mcp"; echo 'x' >"$SB/mcp/server.js"
+  node_project "$SB/idle"
+  mkdir -p "$HOME/.codeium/windsurf"
+  printf '{"mcpServers": {"mine": {"command": "node", "args": ["%s/mcp/server.js"]}}}\n' "$SB" \
+    >"$HOME/.codeium/windsurf/mcp_config.json"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ -d "$SB/mcp/node_modules" ]
+  [ ! -e "$SB/idle/node_modules" ]
+  [[ "$output" == *"used by ~/.codeium/windsurf/mcp_config.json"* ]]
+}
+
 @test "--yes removes stale artifacts only and leaves recent ones" {
   node_project "$SB/old" node_modules .next
   mm_age "$SB/old" 30
@@ -192,6 +205,22 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [ -d "$SB/p/node_modules" ]
   run mm purge --yes --days 3 "$SB"
   [ ! -e "$SB/p/node_modules" ]
+}
+
+@test "a project whose agent edits files deep in src/ without staging is not stale" {
+  local p
+  for p in edited added idle; do
+    node_project "$SB/$p"; mkdir -p "$SB/$p/src/lib"; echo v1 >"$SB/$p/src/lib/a.ts"
+    printf 'node_modules/\n' >"$SB/$p/.gitignore"; git_repo "$SB/$p"
+  done
+  mm_age "$SB" 30
+  echo v2 >"$SB/edited/src/lib/a.ts"   # modified, not staged
+  echo new >"$SB/added/src/lib/b.ts"   # untracked, not ignored
+  run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ -d "$SB/edited/node_modules" ]
+  [ -d "$SB/added/node_modules" ]
+  [ ! -e "$SB/idle/node_modules" ]
 }
 
 @test "--yes --all is rejected and deletes nothing" {
