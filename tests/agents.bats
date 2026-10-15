@@ -162,3 +162,59 @@ Tool|tool|~/.tool|~/.tool/sessions|~/.tool/versions|~/.local/bin/tool
   run mm_agent_dir "$HOME/.local/state"
   [ "$status" -ne 0 ]
 }
+
+# ---------------------------------------------------------------- user rows ($MM_CONFIG_DIR/agents)
+
+# user_agents ROWS... — write ROWS, one per line, to the user's agents file and reload marmot.
+user_agents() {
+  mkdir -p "$HOME/.config/marmot"
+  printf '%s\n' "$@" >"$HOME/.config/marmot/agents"
+  mm_core
+}
+
+@test "a user row protects its state: mm_rm refuses it, a folder outside it goes" {
+  user_agents '# my tools' '' 'My Tool|mytool|~/.mytool ~/.mytool.json|~/.mytool/sessions'
+  mkdir -p "$HOME/.mytool/sessions/s1" "$HOME/.other"
+  : >"$HOME/.mytool.json"
+  mm_inuse_refresh
+  local p
+  for p in "$HOME/.mytool" "$HOME/.mytool/sessions/s1" "$HOME/.mytool.json"; do
+    ! MM_DRY_RUN=1 mm_rm "$p" "$HOME" >/dev/null 2>&1 || { echo "removable: $p"; false; }
+    [[ "$MM_SKIP_REASON" == whitelisted || "$MM_SKIP_REASON" == protected ]] || { echo "$p: $MM_SKIP_REASON"; false; }
+  done
+  [ -d "$HOME/.mytool/sessions/s1" ]
+  MM_DRY_RUN=1 run mm_rm "$HOME/.other" "$HOME"
+  [ "$status" -eq 0 ]
+  [ "${#MM_AGENT_REJECTED[@]}" -eq 0 ]
+}
+
+@test "user rows with a path outside HOME, a .. segment or no process are rejected with file:line" {
+  user_agents 'Good|good|~/.good' 'Etc|etc|/etc' 'Dots|dots|~/.dots/../.ssh' 'Tmp|tmp|~/.tmp||||||/tmp/x' \
+    'NoProc||~/.noproc' 'Home|home|~'
+  ln -s /etc "$HOME/.link"
+  printf 'Link|link|~/.link/sub\n' >>"$HOME/.config/marmot/agents"
+  mm_core
+  [ "${#MM_AGENT_REJECTED[@]}" -eq 6 ]
+  local r
+  for r in 2 3 4 5 6 7; do
+    printf '%s\n' "${MM_AGENT_REJECTED[@]}" | grep -q "^~/.config/marmot/agents:$r: " || { echo "line $r not rejected"; false; }
+  done
+  agent Good
+  for r in Etc Dots Tmp NoProc Home Link; do ! agent "$r" || { echo "loaded: $r"; false; }; done
+  run mm_agent_state_paths
+  ! grep -qx -e /etc -e '~/.ssh' <<<"$output"
+}
+
+@test "a user row named like a built-in one replaces it" {
+  local n=${#MM_AGENT_NAME[@]}
+  user_agents 'Claude Code|my-claude|~/.my-claude'
+  [ "${#MM_AGENT_NAME[@]}" -eq "$n" ]
+  local c
+  c=$(agent "Claude Code")
+  [ "${MM_AGENT_PROCS[c]}" = my-claude ]
+  [ "${MM_AGENT_STATE[c]}" = "$HOME/.my-claude" ]
+  [ -z "${MM_AGENT_VERSIONS[c]}" ]
+  run mm_agent_procs
+  grep -qx my-claude <<<"$output"
+  ! grep -qx claude <<<"$output"
+}

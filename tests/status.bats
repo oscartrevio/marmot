@@ -160,6 +160,18 @@ live() {
   jq -e --argjson p "$pid" '.system.agents.sessions | any(.pid == $p and .agent == "Gemini CLI")' <<<"$JSON"
 }
 
+@test "a tool from the user's agents file is counted as an agent session; a bad row is reported on stderr" {
+  needs_jq
+  mkdir -p "$HOME/.config/marmot" "$SB/work"
+  printf '%s\n' 'My Tool|mytool|~/.mytool' 'Bad|claude|/etc' >"$HOME/.config/marmot/agents"
+  fake_agent mytool
+  detached "$SB/work" "$SB/bin/mytool" 30
+  local pid=$DETACHED err="$BATS_TEST_TMPDIR/err"
+  JSON=$(mm status --json 2>"$err")
+  jq -e --argjson p "$pid" '.system.agents.sessions | any(.pid == $p and .agent == "My Tool" and .process == "mytool")' <<<"$JSON"
+  grep -F 'agents row ignored: ~/.config/marmot/agents:2: ' "$err"
+}
+
 @test "a session is the top-level agent: its tree's CPU and memory count, sub-agents are not extra" {
   needs_jq
   fake_agent codex
@@ -548,6 +560,15 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   grep -E '^YOU +local terminal \(script\)$' <<<"$out"
   out=$(script -qfec "env -u MM_TEST_NO_TTY mm status --agent" /dev/null | tr -d '\r')
   grep -E '^client: local terminal \(script\) · last input (<10s|[0-9]+s)$' <<<"$out"
+}
+
+@test "client: a terminal host marmot has no label for is shown under its process name" {
+  needs_jq
+  command -v script >/dev/null || skip "script(1) not installed"
+  cp "$(command -v script)" "$SB/bin/myterm"
+  local out
+  out=$("$SB/bin/myterm" -qfec "env -u MM_TEST_NO_TTY mm status --json" /dev/null | tr -d '\r' | sed 's/\x1b\[[0-9;]*m//g')
+  jq -e '.client | .transport == "local" and .via == "myterm"' <<<"$out"
 }
 
 @test "client: the terminal host's own sockets decide direct, relay, udp or local; sshd and mosh name the peer" {

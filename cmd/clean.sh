@@ -387,6 +387,7 @@ _clean_catalog_caches() {
   local r i real filter
   local -A seen=()
   for r in "${MM_CAT_REJECTED[@]}"; do mm_warn "catalog row ignored: $r"; done
+  for r in "${MM_AGENT_REJECTED[@]}"; do mm_warn "agents row ignored: $r"; done
   for i in "${!MM_CAT_KIND[@]}"; do
     [[ "${MM_CAT_KIND[$i]}" == cache ]] || continue
     if [[ "${MM_CAT_SPEC[$i]}" == tool:?* ]]; then

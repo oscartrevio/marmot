@@ -8,6 +8,8 @@ All notable changes to marmot are recorded here. The format follows
 ### Added
 
 - GPL-3.0 license.
+- `~/.config/marmot/agents`: add any coding agent or orchestrator in the same row format as the
+  built-in table; its state is protected and its sessions show in `mm status`.
 
 ### Changed
 
