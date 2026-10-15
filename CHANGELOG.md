@@ -15,6 +15,8 @@ All notable changes to marmot are recorded here. The format follows
   changes skip it.
 - `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`
   with a warning.
+- `install.sh --uninstall` disables the schedule first, so no timer or cron line calls a removed
+  launcher.
 
 ## 0.2.0
 

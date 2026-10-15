@@ -129,3 +129,20 @@ teardown() { mm_test_teardown; }
   [ ! -e "$MARMOT_BIN/mm" ]
   [ "$(readlink "$MARMOT_BIN/marmot")" = /bin/true ]
 }
+
+@test "--uninstall disables the schedule mm schedule enable created" {
+  export CALLS="$BATS_TEST_TMPDIR/calls"; : >"$CALLS"
+  mm_test_fake systemctl 'echo "systemctl $*" >>"$CALLS"'
+  mm_test_fake loginctl 'echo Linger=yes'
+  "$MM_SRC/install.sh" >/dev/null
+  "$MARMOT_BIN/mm" schedule enable >/dev/null
+  local units="$XDG_CONFIG_HOME/systemd/user"
+  [ -f "$units/marmot-schedule.timer" ]
+  run "$MM_SRC/install.sh" --uninstall
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"schedule"* ]]
+  [ ! -e "$units/marmot-schedule.timer" ]
+  [ ! -e "$units/marmot-schedule.service" ]
+  grep -qx 'systemctl --user disable --now marmot-schedule.timer' "$CALLS"
+  [ ! -e "$MARMOT_PREFIX" ]
+}

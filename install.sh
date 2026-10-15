@@ -42,8 +42,17 @@ _link() {
   ln -sfn "$prefix/marmot" "$l" && say "linked $l"
 }
 
+# _unschedule — remove the timer or crontab line `mm schedule enable` created, so nothing keeps
+# calling a launcher that is about to go away.
+_unschedule() {
+  [[ -f "$prefix/marmot" ]] || return 0
+  say "disabling marmot's schedule (mm schedule disable):"
+  bash "$prefix/marmot" schedule disable </dev/null || warn "could not disable the schedule: run mm schedule disable before uninstalling"
+}
+
 uninstall() {
   local l
+  _unschedule
   for l in "$bindir/mm" "$bindir/marmot"; do
     if [[ -L "$l" && "$(readlink -f "$l")" == "$prefix/marmot" ]]; then
       rm -f -- "$l" && say "removed $l"   # SAFE: our own launcher symlink, target verified
