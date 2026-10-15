@@ -510,3 +510,9 @@ EOF
   exist "$HOME/.npm/_cacache/blob" "$SB/store/blob" "$SB/yarncache/blob"
   [ ! -e "$XDG_STATE_HOME/marmot/operations.log" ]
 }
+
+@test "tool-reported sizes above 2 GiB convert to exact bytes" {
+  src
+  [ "$(_clean_to_bytes 3GiB)" = 3221225472 ]
+  [ "$(_clean_to_bytes 2.5GB)" = 2500000000 ]
+}

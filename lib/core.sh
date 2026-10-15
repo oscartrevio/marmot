@@ -106,15 +106,19 @@ mm_human() {
   }'
 }
 
+# Every awk that hands a number back to bash prints it with printf "%.0f": mawk 1.3.4-20200120
+# (Debian 12, Ubuntu 22.04) prints integers above 2^31-1 as 2.14748e+09 and clamps %d to
+# 2147483647, which bash arithmetic rejects or miscounts. %.0f is exact up to 2^53.
+
 # mm_size PATH... — total bytes on disk (0 if missing). Uses sudo when MM_SIZE_SUDO=1.
 mm_size() {
   (( $# )) || { echo 0; return; }
   local -a pre=(); [[ "${MM_SIZE_SUDO:-0}" == 1 ]] && pre=(sudo -n)
-  "${pre[@]}" du -scB1 --one-file-system -- "$@" 2>/dev/null | awk 'END { print $1 + 0 }'
+  "${pre[@]}" du -scB1 --one-file-system -- "$@" 2>/dev/null | awk 'END { printf "%.0f\n", $1 }'
 }
 
 # mm_free_bytes [MOUNT] — available bytes on the filesystem holding MOUNT (default /).
-mm_free_bytes() { df -B1 --output=avail "${1:-/}" 2>/dev/null | awk 'NR == 2 { print $1 + 0 }'; }
+mm_free_bytes() { df -B1 --output=avail "${1:-/}" 2>/dev/null | awk 'NR == 2 { printf "%.0f\n", $1 }'; }
 
 # mm_idle_days PATH — whole days since the newest activity anywhere in PATH's tree: mtime and
 # ctime of every entry (ctime catches fresh extractions/moves that keep old mtimes) and atime of
@@ -336,6 +340,8 @@ mm_rm() {
 
   id=$(mm_identity "$real") || { _mm_refuse "missing"; return 1; }
   bytes=$(mm_size "$real")
+  # The accounting below is bash arithmetic: validate now, so nothing fails after the rm.
+  [[ "$bytes" =~ ^[0-9]+$ ]] || { _mm_refuse "size unreadable"; return 1; }
   # Sizing a large tree takes a while: act only if the same object is still at the same place.
   if [[ "$(realpath -e -- "$(dirname -- "$real")" 2>/dev/null)" != "$parent" || "$(mm_identity "$real")" != "$id" ]]; then
     _mm_refuse "changed while sizing"; return 1

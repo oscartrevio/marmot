@@ -168,9 +168,9 @@ _uninstall_collect_snap() {
     _uninstall_base "$name" && { _UN_BASE[$name]="base system"; continue; }
     files=(/var/lib/snapd/snaps/"${name}"_*.snap)
     if [[ -e "${files[0]}" ]]; then
-      bytes=$(stat -c %s -- "${files[@]}" | awk '{ s += $1 } END { print s + 0 }')
+      bytes=$(stat -c %s -- "${files[@]}" | awk '{ s += $1 } END { printf "%.0f\n", s }')
     else
-      bytes=$(timeout 20 du -sLB1 "/snap/$name/current/" 2>/dev/null | awk '{ print $1 + 0 }')
+      bytes=$(timeout 20 du -sLB1 "/snap/$name/current/" 2>/dev/null | awk '{ printf "%.0f\n", $1 }')
     fi
     f="/var/lib/snapd/snaps/${name}_${rev}.snap"
     t=$(stat -c %Y -- "$f" 2>/dev/null || stat -c %Y -- "/snap/$name/current" 2>/dev/null || echo 0)
@@ -472,7 +472,7 @@ _uninstall_apt_sim() {
 
 _uninstall_apt_bytes() { # PKG... — summed Installed-Size in bytes
   (( $# )) || { echo 0; return; }
-  dpkg-query -W -f='${Installed-Size}\n' "$@" 2>/dev/null | awk '{ s += $1 } END { print s * 1024 }'
+  dpkg-query -W -f='${Installed-Size}\n' "$@" 2>/dev/null | awk '{ s += $1 } END { printf "%.0f\n", s * 1024 }'
 }
 
 _uninstall_apt_busy() {

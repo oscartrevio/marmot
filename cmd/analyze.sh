@@ -49,7 +49,7 @@ _analyze_du() {
     END {
       if (root in s) { print s[root] "\t" (rc == 0 ? "complete" : "partial"); exit }
       for (k in s) { d = k; sub(/\/[^\/]*$/, "", d); if (!(d in s)) t += s[k] }
-      print t + 0 "\tpartial"
+      printf "%.0f\tpartial\n", t
     }' <<<"$out"
 }
 
@@ -57,7 +57,7 @@ _analyze_du() {
 _analyze_old_downloads() {
   local out rc
   out=$(timeout "${MM_ANALYZE_TIMEOUT:-20}" find "$1" -xdev -type f -mtime +90 -printf '%b\n' 2>/dev/null); rc=$?
-  awk -v rc="$rc" '{ t += $1 * 512 } END { print t + 0 "\t" (rc == 0 ? "complete" : "partial") }' <<<"$out"
+  awk -v rc="$rc" '{ t += $1 * 512 } END { printf "%.0f\t%s\n", t, (rc == 0 ? "complete" : "partial") }' <<<"$out"
 }
 
 # _analyze_measure IDX LABEL ACCESS PATHS OUTDIR — writes one overview row to OUTDIR/IDX:
