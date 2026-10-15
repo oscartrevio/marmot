@@ -1,5 +1,5 @@
 # shellcheck shell=bash
-# mm clean [--whitelist] — remove caches, old builds, package and Docker leftovers.
+# mm clean [--sessions DAYS] [--whitelist] — remove caches, old builds, package and Docker leftovers.
 # Regenerable caches are removed; the Trash keeps items for 7 days. Shared temp folders (/tmp,
 # /var/tmp) are only reported: other programs keep runtime state there and the OS ages them.
 # Tool-driven cleans (npm, apt, docker...) add measured sizes on top of mm_rm's totals.
@@ -29,12 +29,19 @@ dangling images, images no container uses (pulled or built 30+ days ago), old bu
 stale editor server builds.
 Trash items deleted more than 7 days ago are removed for good. /tmp and /var/tmp are not
 swept: they hold other programs' runtime state, and the OS ages them (systemd-tmpfiles); their
-size and the OS policy are reported. Agent sessions, model stores, dependency repositories,
-Node versions and Docker volumes are never touched: they are listed with their size under
+size and the OS policy are reported. Model stores, dependency repositories, Node versions,
+Docker volumes and agent state are never touched: they are listed with their size under
 "Kept for you to review". Steps that cannot be undone (Trash sweep, packages, containers,
 images) ask first and are skipped without a terminal.
 
+Agent sessions are kept unless you opt in: with a retention of N days, session files (and
+rotated logs in agent state) last written more than N days ago and not in use move to the
+Trash; credentials, whitelisted paths and files in use are never touched. Turn it on with
+sessions_keep_days=N in $MM_CONFIG_FILE (runs without a terminal act only then), or use
+--sessions N for one run (asks first).
+
 Options:
+  --sessions N  move agent session files older than N days to the Trash (this run)
   --whitelist   edit protected paths ($MM_WHITELIST_FILE)
   -n, --dry-run show what would be cleaned; change nothing
 
@@ -384,6 +391,99 @@ _clean_pnpm() {
   after=$(mm_size "$store"); freed=$(( before > after ? before - after : 0 ))
   _clean_track "$freed" 1
   mm_ok "pnpm store" "pruned, $(mm_human "$freed")"
+}
+
+# ---------------------------------------------------------------- agent sessions (opt-in)
+
+# Session transcripts are the user's conversations: untouched unless they set a retention
+# (sessions_keep_days=N in the config file, or --sessions N for one run). Then files under each
+# agent's session dirs (lib/agents.sh) and rotated logs in its state dirs, last written more than
+# N days ago and not in use, move to the Trash (restorable); folders they leave empty are removed.
+# The config file is standing consent: without a terminal only a configured retention acts.
+_CLEAN_ROTATED_LOGS=('*.log.[0-9]*' '*.log.*.gz' '*.log.old')
+
+# _clean_trash_dev — device id of the Trash files dir (or its nearest existing ancestor).
+_clean_trash_dev() {
+  local p="$MM_TRASH_DIR/files"
+  while [[ ! -e "$p" && "$p" == /?* ]]; do p=$(dirname -- "$p"); done
+  stat -c %d -- "$p" 2>/dev/null
+}
+
+# _clean_agent_root DIR TRASH_DEV — set _CLEAN_ROOT to DIR resolved when it is one agent's own
+# directory inside $HOME on the Trash's filesystem (mm_rm --trash only renames); says so when not.
+_clean_agent_root() {
+  _CLEAN_ROOT=$(realpath -e -- "$1" 2>/dev/null) && mm_agent_dir "$_CLEAN_ROOT" || return 1
+  if [[ "$(stat -c %d -- "$_CLEAN_ROOT" 2>/dev/null)" != "$2" ]]; then
+    mm_skip "${1/#$HOME/\~}" "Trash is on another filesystem"; return 1
+  fi
+}
+
+# _clean_sessions DAYS SOURCE — SOURCE is "config" (the config file) or "flag" (--sessions).
+_clean_sessions() {
+  local days="$1" from="$2" now tdev i dir root rec t blk path n b old rc d
+  local total=0 tb=0
+  local -a units=() names=() logs=() match=()
+  # Per agent index: candidates, their bytes, oldest mtime; moved, moved bytes, kept, failed,
+  # emptied folders. s_up: every folder above a moved file (inside its root) -> "index<TAB>root".
+  local -A seen=() s_cnt=() s_bytes=() s_old=() s_n=() s_b=() s_kept=() s_fail=() s_empty=() s_up=()
+  _clean_cat "Agent sessions older than $days days"
+  now=$(date +%s) tdev=$(_clean_trash_dev)
+  for d in "${_CLEAN_ROTATED_LOGS[@]}"; do logs+=(-o -name "$d"); done
+  for i in "${!MM_AGENT_NAME[@]}"; do
+    # Session files first, then rotated logs in the agent's state dirs (each file listed once).
+    # shellcheck disable=SC2153 # set by lib/agents.sh
+    for dir in ${MM_AGENT_SESSIONS[$i]} ${MM_AGENT_STATE[$i]}; do
+      [[ -d "$dir" ]] || continue
+      _clean_agent_root "$dir" "$tdev" || continue
+      root=$_CLEAN_ROOT match=(-type f)
+      [[ " ${MM_AGENT_SESSIONS[$i]} " == *" $dir "* ]] || match=(-type f \( "${logs[@]:1}" \))
+      while IFS= read -r -d '' rec; do
+        t=${rec%% *} rec=${rec#* } blk=${rec%% *} path=${rec#* }
+        [[ -z "${seen[$path]+x}" ]] || continue
+        seen[$path]=1
+        units+=("$i"$'\t'"$root"$'\t'"$path")
+        s_cnt[$i]=$(( ${s_cnt[$i]:-0} + 1 )) s_bytes[$i]=$(( ${s_bytes[$i]:-0} + blk * 512 ))
+        t=${t%.*}; (( t < ${s_old[$i]:-$now} )) && s_old[$i]=$t
+      done < <(find "$root" -xdev "${match[@]}" -mmin +$((days * 1440)) -printf '%T@ %b %p\0' 2>/dev/null)
+    done
+  done
+  if (( ${#units[@]} == 0 )); then mm_ok "Agent sessions" "nothing older than $days days"; _clean_cat_end; return 0; fi
+  for i in "${!MM_AGENT_NAME[@]}"; do
+    [[ -n "${s_cnt[$i]+x}" ]] || continue
+    names+=("$i") total=$((total + s_cnt[$i])) tb=$((tb + s_bytes[$i]))
+    mm_act "${MM_AGENT_NAME[$i]}: $(_clean_detail "${s_cnt[$i]}" files "${s_bytes[$i]}"), oldest $(( (now - s_old[$i]) / 86400 ))d"
+  done
+  if [[ "$MM_DRY_RUN" == 1 || "$MM_TTY" == 1 || "$from" != config ]]; then
+    _clean_ask "Agent sessions" "Move $total session files ($(mm_human "$tb")) older than $days days to the Trash?" || { _clean_cat_end; return 0; }
+  fi
+  for rec in "${units[@]}"; do
+    IFS=$'\t' read -r i root path <<<"$rec"
+    MM_AGENT_WAIVER=$root mm_rm --trash "$path" "$root"; rc=$?
+    case $rc in
+      0) s_n[$i]=$(( ${s_n[$i]:-0} + 1 )) s_b[$i]=$(( ${s_b[$i]:-0} + MM_LAST_BYTES ))
+         d=${path%/*}
+         while [[ "$d" == "$root"/?* ]]; do s_up[$d]=$i$'\t'$root; d=${d%/*}; done ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && s_kept[$i]=$(( ${s_kept[$i]:-0} + 1 )) ;;
+      *) s_fail[$i]=$(( ${s_fail[$i]:-0} + 1 )) ;;
+    esac
+  done
+  # Folders the moves emptied, deepest first. They are housekeeping, not counted as items.
+  if [[ "$MM_DRY_RUN" != 1 ]] && (( ${#s_up[@]} )); then
+    while IFS= read -r d; do
+      IFS=$'\t' read -r i root <<<"${s_up[$d]}"
+      [[ -d "$d" && ! -L "$d" && -z "$(find "$d" -mindepth 1 -print -quit 2>/dev/null)" ]] || continue
+      MM_AGENT_WAIVER=$root mm_rm "$d" "$root" && { MM_COUNT=$((MM_COUNT - 1)); s_empty[$i]=$(( ${s_empty[$i]:-0} + 1 )); }
+    done < <(printf '%s\n' "${!s_up[@]}" | awk '{ print length($0) "\t" $0 }' | sort -rn | cut -f2-)
+  fi
+  for i in "${names[@]}"; do
+    n=${s_n[$i]:-0} b=${s_b[$i]:-0}
+    old="$(_clean_detail "$n" files "$b") to Trash, oldest $(( (now - s_old[$i]) / 86400 ))d"
+    (( ${s_kept[$i]:-0} )) && old+=", ${s_kept[$i]} kept (in use, whitelisted or named like credentials)"
+    (( ${s_fail[$i]:-0} )) && old+=", ${s_fail[$i]} failed"
+    (( ${s_empty[$i]:-0} )) && old+=", ${s_empty[$i]} empty folders removed"
+    mm_ok "${MM_AGENT_NAME[$i]} sessions" "$old"
+  done
+  _clean_cat_end
 }
 
 # ---------------------------------------------------------------- 3. system
@@ -767,7 +867,7 @@ _clean_review_agents() {
   done
   if (( added )); then   # one hint under the last agent row
     last=${_CLEAN_REVIEW[-1]}
-    _CLEAN_REVIEW[-1]="${last%$'\t'*}"$'\t'"agent settings and session transcripts: prune them with each agent's own tools"
+    _CLEAN_REVIEW[-1]="${last%$'\t'*}"$'\t'"agent settings and sessions: opt in to session retention with mm clean --sessions DAYS or sessions_keep_days=DAYS in ${MM_CONFIG_FILE/#$HOME/\~}"
   fi
 }
 
@@ -873,14 +973,26 @@ _clean_review_print() {
 # ---------------------------------------------------------------- main
 
 mm_cmd_main() {
+  local sessions="" from="" v
   while (( $# )); do
     case "$1" in
       --whitelist) mm_whitelist_edit; return ;;
+      --sessions) sessions="${2:-}"; from=flag; shift ;;
+      --sessions=*) sessions="${1#*=}"; from=flag ;;
       -h|--help) _clean_usage; return 0 ;;
       *) mm_die "unknown option: $1 (see mm clean --help)" ;;
     esac
     shift
   done
+  if [[ -n "$from" ]]; then
+    if ! [[ "$sessions" =~ ^[0-9]+$ ]] || (( 10#$sessions < 1 )); then mm_die "--sessions needs a number of days (1 or more)"; fi
+    sessions=$((10#$sessions))
+  elif v=$(mm_config sessions_keep_days); then
+    if [[ "$v" =~ ^[0-9]+$ ]] && (( 10#$v >= 1 )); then sessions=$((10#$v)) from=config
+    elif [[ -n "$v" && "$v" != 0 && "$v" != off ]]; then
+      mm_warn "ignoring sessions_keep_days=$v in $MM_CONFIG_FILE: not a number of days"
+    fi
+  fi
 
   mm_header "Clean Your System"
   mm_catalog_load
@@ -891,6 +1003,7 @@ mm_cmd_main() {
   _clean_user
   _clean_dev
   _clean_builds
+  [[ -n "$sessions" ]] && _clean_sessions "$sessions" "$from"
   _clean_system
   _clean_docker
   _clean_editors
