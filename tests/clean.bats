@@ -519,14 +519,14 @@ EOF
 
 # sessions_fixture — Claude Code and Codex CLI homes, everything 90 days old except one fresh
 # session: sessions in two Claude projects (one only old), a dated Codex session, credentials in
-# both state dirs, and a live plus a rotated Codex log.
+# both state dirs, and a live plus a rotated log in Codex state (outside its logs dir).
 sessions_fixture() {
   local cl="$HOME/.claude" cx="$HOME/.codex"
-  mkdir -p "$cl/projects/p1" "$cl/projects/p2" "$cx/sessions/2026/01/02" "$cx/log"
+  mkdir -p "$cl/projects/p1" "$cl/projects/p2" "$cx/sessions/2026/01/02" "$cx/debug"
   echo old >"$cl/projects/p1/old.jsonl"; echo new >"$cl/projects/p1/new.jsonl"
   echo old >"$cl/projects/p2/only.jsonl"; echo '{"t":1}' >"$cl/.credentials.json"
   echo '{}' >"$cx/auth.json"; echo r >"$cx/sessions/2026/01/02/rollout-a.jsonl"
-  echo l >"$cx/log/codex-tui.log.1"; echo live >"$cx/log/codex-tui.log"
+  echo l >"$cx/debug/codex.log.1"; echo live >"$cx/debug/codex.log"
   mm_age "$cl" 90; mm_age "$cx" 90
   touch "$cl/projects/p1/new.jsonl"
 }
@@ -543,7 +543,7 @@ sessions_run() {
   full_run
   [ "$status" -eq 0 ]
   exist "$HOME/.claude/projects/p1/old.jsonl" "$HOME/.claude/projects/p2/only.jsonl" \
-    "$HOME/.codex/sessions/2026/01/02/rollout-a.jsonl" "$HOME/.codex/log/codex-tui.log.1"
+    "$HOME/.codex/sessions/2026/01/02/rollout-a.jsonl" "$HOME/.codex/debug/codex.log.1"
   [ ! -e "$XDG_DATA_HOME/Trash/files" ]
 }
 
@@ -553,9 +553,9 @@ sessions_run() {
   [ "$status" -eq 0 ]
   local cl="$HOME/.claude" cx="$HOME/.codex" t="$XDG_DATA_HOME/Trash"
   gone "$cl/projects/p1/old.jsonl" "$cl/projects/p2/only.jsonl" "$cx/sessions/2026/01/02/rollout-a.jsonl" \
-    "$cx/log/codex-tui.log.1"
-  exist "$cl/projects/p1/new.jsonl" "$cx/log/codex-tui.log" "$cl/.credentials.json" "$cx/auth.json"
-  exist "$t/files/old.jsonl" "$t/files/only.jsonl" "$t/files/rollout-a.jsonl" "$t/files/codex-tui.log.1"
+    "$cx/debug/codex.log.1"
+  exist "$cl/projects/p1/new.jsonl" "$cx/debug/codex.log" "$cl/.credentials.json" "$cx/auth.json"
+  exist "$t/files/old.jsonl" "$t/files/only.jsonl" "$t/files/rollout-a.jsonl" "$t/files/codex.log.1"
   grep -qxF "Path=$cl/projects/p1/old.jsonl" "$t/info/old.jsonl.trashinfo"
   gone "$cl/projects/p2" "$cx/sessions/2026"             # folders the moves emptied
   exist "$cl/projects" "$cx/sessions" "$cl/projects/p1"  # session roots and non-empty folders stay
@@ -974,4 +974,103 @@ browser_tmp() { local n; for n; do blob "$MM_TEST_TMP_ROOT/$n/Default/Cache/data
   [ "$status" -eq 0 ]
   gone "$MM_TEST_TMP_ROOT/playwright_chromiumdev_profile-old"
   exist "$MM_TEST_TMP_ROOT/some-build/f"
+}
+
+# ---------------------------------------------------------------- agent logs
+
+# logs_fixture — oh-my-pi, Copilot CLI and Goose logs dirs and an oh-my-pi session dir, everything
+# 30 days old except one fresh log: old, rotated and compressed logs, a log named like a token, a
+# non-log file, Copilot extension logs, Goose dated CLI logs, and old .log files in a session dir.
+logs_fixture() {
+  local o="$HOME/.omp/logs" c="$HOME/.copilot/logs" g="$HOME/.local/state/goose/logs"
+  local s="$HOME/.omp/agent/sessions/-proj"
+  mkdir -p "$o" "$c/extensions" "$g/cli/2026-01-01" "$s"
+  echo old >"$o/omp.2026-01-01.111.log"; echo rot >"$o/omp.log.1"; echo gz >"$o/omp.log.2.gz"
+  echo tok >"$o/token-refresh.log"; echo note >"$o/notes.txt"; echo new >"$o/omp.2026-10-10.222.log"
+  echo old >"$c/process-1700000000-42.log"; echo old >"$c/extensions/ext.log"
+  echo old >"$g/cli/2026-01-01/goose.log"; echo jl >"$g/llm_request.0.jsonl"
+  echo sess >"$s/tool.log"; echo sess >"$s/run.log.1"; echo '{}' >"$s/s.jsonl"
+  mm_age "$HOME/.omp" 30; mm_age "$HOME/.copilot" 30; mm_age "$HOME/.local/state" 30
+  touch "$o/omp.2026-10-10.222.log"
+}
+
+# logs_run — the agent logs step on its own.
+logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
+
+@test "agent logs: old logs and their rotations are deleted for good; recent, other and credential-named files stay" {
+  logs_fixture
+  run logs_run
+  [ "$status" -eq 0 ]
+  local o="$HOME/.omp/logs" c="$HOME/.copilot/logs" g="$HOME/.local/state/goose/logs"
+  gone "$o/omp.2026-01-01.111.log" "$o/omp.log.1" "$o/omp.log.2.gz" \
+    "$c/process-1700000000-42.log" "$c/extensions/ext.log" "$g/cli/2026-01-01/goose.log"
+  exist "$o/omp.2026-10-10.222.log" "$o/token-refresh.log" "$o/notes.txt" "$g/llm_request.0.jsonl"
+  exist "$o" "$c/extensions" "$g/cli/2026-01-01"
+  [ ! -e "$XDG_DATA_HOME/Trash/files" ]
+}
+
+@test "agent logs: session dirs are never searched, even for old .log files" {
+  logs_fixture
+  local s="$HOME/.omp/agent/sessions/-proj" n="$HOME/.omp/logs/run"
+  mkdir -p "$HOME/.claude/projects/p" "$n"
+  echo x >"$HOME/.claude/projects/p/debug.log"; echo x >"$n/nested.log"
+  mm_age "$HOME/.claude" 30; mm_age "$n" 30
+  src; mm_inuse_refresh >/dev/null 2>&1
+  local i
+  for i in "${!MM_AGENT_NAME[@]}"; do   # a session dir nested in a logs dir is pruned too
+    [[ "${MM_AGENT_NAME[i]}" == oh-my-pi ]] && MM_AGENT_SESSIONS[i]+=" $n"
+  done
+  run _clean_agent_logs
+  [ "$status" -eq 0 ]
+  exist "$s/tool.log" "$s/run.log.1" "$s/s.jsonl" "$HOME/.claude/projects/p/debug.log" "$n/nested.log"
+  gone "$HOME/.omp/logs/omp.log.1"
+}
+
+@test "agent logs: files in use and whitelisted ones are kept" {
+  logs_fixture
+  local o="$HOME/.omp/logs"
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; printf '%s\n' "$HOME/.copilot/logs" >"$XDG_CONFIG_HOME/marmot/whitelist"
+  mm_test_bg "$o" tail -f "$o/omp.2026-01-01.111.log"
+  run logs_run
+  [ "$status" -eq 0 ]
+  exist "$o/omp.2026-01-01.111.log" "$HOME/.copilot/logs/process-1700000000-42.log" "$HOME/.copilot/logs/extensions/ext.log"
+  gone "$o/omp.log.1" "$HOME/.local/state/goose/logs/cli/2026-01-01/goose.log"   # the rest still goes
+}
+
+@test "agent logs: a logs dir that is a symlink out of the home folder is left alone" {
+  mkdir -p "$SB/elsewhere" "$HOME/.omp"; echo keep >"$SB/elsewhere/omp.log"; mm_age "$SB/elsewhere" 30
+  ln -s "$SB/elsewhere" "$HOME/.omp/logs"
+  run logs_run
+  [ "$status" -eq 0 ]
+  exist "$SB/elsewhere/omp.log"
+}
+
+@test "agent logs: dry-run reports exactly what the real run then removes, and changes nothing" {
+  logs_fixture
+  MM_DRY_RUN=1 run logs_run
+  [ "$status" -eq 0 ]
+  local dry=$output
+  [[ "$dry" == *"oh-my-pi logs"* ]]
+  exist "$HOME/.omp/logs/omp.log.1" "$HOME/.copilot/logs/extensions/ext.log"
+  run logs_run
+  [ "$status" -eq 0 ]
+  [ "$output" = "$dry" ]
+  gone "$HOME/.omp/logs/omp.log.1" "$HOME/.copilot/logs/extensions/ext.log"
+}
+
+@test "agent logs: on by default, permanent even with session retention on; sessions stay opt-in" {
+  logs_fixture
+  mkdir -p "$HOME/.codex/log"; echo l >"$HOME/.codex/log/codex-tui.log"; mm_age "$HOME/.codex" 30
+  full_run
+  [ "$status" -eq 0 ]
+  gone "$HOME/.omp/logs/omp.log.1" "$HOME/.codex/log/codex-tui.log"
+  exist "$HOME/.omp/agent/sessions/-proj/tool.log" "$HOME/.omp/agent/sessions/-proj/s.jsonl"
+  [ ! -e "$XDG_DATA_HOME/Trash/files" ]
+  logs_fixture
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'sessions_keep_days=7' >"$XDG_CONFIG_HOME/marmot/config"
+  full_run
+  [ "$status" -eq 0 ]
+  gone "$HOME/.omp/logs/omp.log.1"
+  [ ! -e "$XDG_DATA_HOME/Trash/files/omp.log.1" ]          # logs are not moved to the Trash
+  [ -e "$XDG_DATA_HOME/Trash/files/s.jsonl" ]              # the configured retention still runs
 }

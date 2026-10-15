@@ -6,8 +6,8 @@ Gemini CLI, Copilot CLI, opencode, Aider, ...), Node/Python/Go/Rust toolchains, 
 of git worktrees. Inspired by [Mole](https://github.com/tw93/Mole), which does this for Macs.
 
 ```text
-mm clean       caches, old browser builds, old agent CLI versions, gcloud/Azure CLI logs,
-               apt/snap/journal, old kernels, rotated system logs and crash dumps (7+ days),
+mm clean       caches, old browser builds, old agent CLI versions, agent and gcloud/Azure CLI
+               logs, apt/snap/journal, old kernels, rotated system logs and crash dumps (7+ days),
                Docker leftovers, stale editor servers, automation-browser temp profiles in /tmp;
                reports /tmp and how the OS ages it
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
@@ -54,7 +54,11 @@ marmot deletes files, so it is built to refuse rather than guess:
   (`~/.aws`, `~/.kube`, `~/.docker`, `~/.netrc`, ...), `~/.config`, and the state of every known
   coding agent (settings, credentials, session transcripts; see `lib/agents.sh`). Agent sessions
   are only reported unless you opt in to session retention (below); credentials inside agent
-  state are never touched even then. Besides that, a short list of log folders inside these
+  state are never touched even then. An agent's own log files are not conversations: `mm clean`
+  deletes `*.log` files (and their rotations) last written more than 7 days ago and not in use,
+  only in the logs folder the agent documents (e.g. `~/.omp/logs`, `~/.copilot/logs`,
+  `~/.local/state/goose/logs`), never inside session folders and never files named like
+  credentials. Besides that, a short list of log folders inside these
   protections is open (`MM_CLEAN_CARVEOUTS` in `lib/core.sh`): `mm clean` deletes gcloud logs
   (`~/.config/gcloud/logs`, or `$CLOUDSDK_CONFIG/logs`) and Azure CLI logs (`~/.azure/logs`, or
   `$AZURE_CONFIG_DIR/logs`) older than 7 days. Inside them your whitelist and the in-use checks

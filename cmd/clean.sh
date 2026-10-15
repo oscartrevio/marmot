@@ -42,11 +42,13 @@ touched: they are listed with their size under "Kept for you to review". Steps t
 undone (Trash sweep, packages, logs, crash dumps, containers, images) ask first and are skipped
 without a terminal.
 
-Agent sessions are kept unless you opt in: with a retention of N days, session files (and
-rotated logs in agent state) last written more than N days ago and not in use move to the
-Trash; credentials, whitelisted paths and files in use are never touched. Turn it on with
-sessions_keep_days=N in $MM_CONFIG_FILE (runs without a terminal act only then), or use
---sessions N for one run (asks first).
+Coding agents' own log files (*.log and rotated logs in their documented logs folders, such
+as ~/.omp/logs or ~/.copilot/logs) last written more than 7 days ago and not in use are removed;
+session folders are not searched. Agent sessions are kept unless you opt in: with a retention
+of N days, session files (and rotated logs in agent state) last written more than N days ago and
+not in use move to the Trash; credentials, whitelisted paths and files in use are never touched.
+Turn it on with sessions_keep_days=N in $MM_CONFIG_FILE (runs without a terminal act only then),
+or use --sessions N for one run (asks first).
 
 Options:
   --sessions N  move agent session files older than N days to the Trash (this run)
@@ -415,12 +417,83 @@ _clean_pnpm() {
   mm_ok "pnpm store" "pruned, $(mm_human "$freed")"
 }
 
+# ---------------------------------------------------------------- agent logs
+
+# Coding agents' own diagnostic logs (logs dirs in lib/agents.sh) are not conversations: *.log
+# files and their rotations there, last written more than _CLEAN_LOG_DAYS days ago and not in use,
+# are removed for good, on every run. Session dirs are never searched (sessions stay opt-in, below).
+# Each file goes through mm_rm with the agent waiver for its logs dir, so files named like
+# credentials, whitelisted paths and open files are kept.
+_CLEAN_LOG_DAYS=7
+_CLEAN_LOG_NAMES=('*.log' '*.log.[0-9]*' '*.log.*.gz' '*.log.old')
+
+# _clean_find_literal PATH — PATH with find's glob characters escaped, for -path.
+_clean_find_literal() {
+  local s=${1//\\/\\\\}
+  s=${s//\*/\\*} s=${s//\?/\\?} s=${s//\[/\\[}
+  printf '%s' "$s"
+}
+
+_clean_agent_logs() {
+  local i dir root s rec t path now n b old kept fail any=0 shown=0 detail
+  local -a names=() sess=() prune=(-false)
+  local -A seen=()
+  for i in "${!MM_AGENT_NAME[@]}"; do
+    for dir in ${MM_AGENT_LOGS[$i]}; do [[ -d "$dir" ]] && any=1; done
+  done
+  (( any )) || return 0
+  _clean_cat "Agent logs"
+  now=$(date +%s)
+  for s in "${_CLEAN_LOG_NAMES[@]}"; do names+=(-o -name "$s"); done
+  for i in "${!MM_AGENT_NAME[@]}"; do
+    # shellcheck disable=SC2153 # set by lib/agents.sh
+    for dir in ${MM_AGENT_SESSIONS[$i]}; do
+      s=$(realpath -e -- "$dir" 2>/dev/null) || continue
+      sess+=("$s") prune+=(-o -path "$(_clean_find_literal "$s")")
+    done
+  done
+  for i in "${!MM_AGENT_NAME[@]}"; do
+    n=0 b=0 kept=0 fail=0 old=$now
+    for dir in ${MM_AGENT_LOGS[$i]}; do
+      [[ -d "$dir" ]] || continue
+      if ! root=$(realpath -e -- "$dir" 2>/dev/null) || ! mm_agent_dir "$root"; then
+        mm_skip "${dir/#$HOME/\~}" "outside your home folder"; continue
+      fi
+      for s in "${sess[@]}"; do
+        [[ "$root" == "$s" || "$root" == "$s"/* ]] && { mm_skip "${dir/#$HOME/\~}" "inside a session folder"; continue 2; }
+      done
+      while IFS= read -r -d '' rec; do
+        t=${rec%% *} path=${rec#* }
+        [[ -z "${seen[$path]+x}" ]] || continue
+        seen[$path]=1
+        MM_AGENT_WAIVER=$root mm_rm "$path" "$root"
+        case $? in
+          0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) t=${t%.*}; (( t < old )) && old=$t ;;
+          1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+          *) fail=$((fail + 1)) ;;
+        esac
+      done < <(find "$root" -xdev \( -type d \( "${prune[@]}" \) -prune \) -o \
+        \( -type f \( "${names[@]:1}" \) -mmin +$((_CLEAN_LOG_DAYS * 1440)) -printf '%T@ %p\0' \) 2>/dev/null)
+    done
+    (( n + kept + fail )) || continue
+    detail=$(_clean_detail "$n" files "$b")
+    (( n )) && detail+=", oldest $(( (now - old) / 86400 ))d"
+    (( kept )) && detail+=", $kept kept (in use, whitelisted or named like credentials)"
+    (( fail )) && detail+=", $fail failed"
+    mm_ok "${MM_AGENT_NAME[$i]} logs" "$detail"
+    shown=1
+  done
+  (( shown )) || mm_ok "Agent logs" "nothing older than $_CLEAN_LOG_DAYS days"
+  _clean_cat_end
+}
+
 # ---------------------------------------------------------------- agent sessions (opt-in)
 
 # Session transcripts are the user's conversations: untouched unless they set a retention
 # (sessions_keep_days=N in the config file, or --sessions N for one run). Then files under each
-# agent's session dirs (lib/agents.sh) and rotated logs in its state dirs, last written more than
-# N days ago and not in use, move to the Trash (restorable); folders they leave empty are removed.
+# agent's session dirs (lib/agents.sh) and rotated logs in its state dirs (outside its logs dirs,
+# which the agent logs step handles), last written more than N days ago and not in use, move to
+# the Trash (restorable); folders they leave empty are removed.
 # The config file is standing consent: without a terminal only a configured retention acts.
 _CLEAN_ROTATED_LOGS=('*.log.[0-9]*' '*.log.*.gz' '*.log.old')
 
@@ -442,15 +515,18 @@ _clean_agent_root() {
 
 # _clean_sessions DAYS SOURCE — SOURCE is "config" (the config file) or "flag" (--sessions).
 _clean_sessions() {
-  local days="$1" from="$2" now tdev i dir root rec t blk path n b old rc d
+  local days="$1" from="$2" now tdev i dir root rec t blk path n b old rc d l
   local total=0 tb=0
-  local -a units=() names=() logs=() match=()
+  local -a units=() names=() logs=() match=() skip=(-false)
   # Per agent index: candidates, their bytes, oldest mtime; moved, moved bytes, kept, failed,
   # emptied folders. s_up: every folder above a moved file (inside its root) -> "index<TAB>root".
   local -A seen=() s_cnt=() s_bytes=() s_old=() s_n=() s_b=() s_kept=() s_fail=() s_empty=() s_up=()
   _clean_cat "Agent sessions older than $days days"
   now=$(date +%s) tdev=$(_clean_trash_dev)
   for d in "${_CLEAN_ROTATED_LOGS[@]}"; do logs+=(-o -name "$d"); done
+  for l in "${MM_AGENT_LOGS[@]}"; do
+    for d in $l; do d=$(realpath -e -- "$d" 2>/dev/null) && skip+=(-o -path "$(_clean_find_literal "$d")"); done
+  done
   for i in "${!MM_AGENT_NAME[@]}"; do
     # Session files first, then rotated logs in the agent's state dirs (each file listed once).
     # shellcheck disable=SC2153 # set by lib/agents.sh
@@ -466,7 +542,8 @@ _clean_sessions() {
         units+=("$i"$'\t'"$root"$'\t'"$path")
         s_cnt[$i]=$(( ${s_cnt[$i]:-0} + 1 )) s_bytes[$i]=$(( ${s_bytes[$i]:-0} + blk * 512 ))
         t=${t%.*}; (( t < ${s_old[$i]:-$now} )) && s_old[$i]=$t
-      done < <(find "$root" -xdev "${match[@]}" -mmin +$((days * 1440)) -printf '%T@ %b %p\0' 2>/dev/null)
+      done < <(find "$root" -xdev \( -type d \( "${skip[@]}" \) -prune \) -o \
+        \( "${match[@]}" -mmin +$((days * 1440)) -printf '%T@ %b %p\0' \) 2>/dev/null)
     done
   done
   if (( ${#units[@]} == 0 )); then mm_ok "Agent sessions" "nothing older than $days days"; _clean_cat_end; return 0; fi
@@ -1321,6 +1398,7 @@ mm_cmd_main() {
   _clean_user
   _clean_dev
   _clean_builds
+  _clean_agent_logs
   [[ -n "$sessions" ]] && _clean_sessions "$sessions" "$from"
   _clean_browsers
   _clean_system
