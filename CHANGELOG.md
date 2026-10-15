@@ -19,6 +19,7 @@ All notable changes to marmot are recorded here. The format follows
   launcher.
 - `install.sh` no longer needs git (only `mm update` does, and says so) and prints the exact
   line that puts the launcher folder on PATH.
+- `mm history --help` and `mm update --help` list every option; `mm --help` says where to start.
 
 ## 0.2.0
 

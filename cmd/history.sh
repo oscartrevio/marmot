@@ -4,6 +4,18 @@
 # Log rows: time, command, action (remove|trash|refused|failed|run), target, bytes, detail.
 # Rows written before the detail column existed have 5 fields; detail is then empty.
 
+_history_usage() {
+  cat <<EOF
+Usage: mm history [-l N | --all] [--json]
+
+Shows what marmot removed, moved to the Trash, refused or failed, newest last (read-only).
+
+  -l, --limit N   Show the newest N rows (default 30)
+      --all       Show every row
+      --json      Print the rows as a JSON array (needs jq)
+EOF
+}
+
 mm_cmd_main() {
   local limit=30 json=0
   while (( $# )); do
@@ -11,7 +23,7 @@ mm_cmd_main() {
       -l|--limit) [[ "${2:-}" =~ ^[0-9]+$ ]] || mm_die "$1 needs a number"; limit="$2"; shift ;;
       --all) limit=0 ;;
       --json) json=1 ;;
-      -h|--help) echo "Usage: mm history [-l N | --all] [--json]"; return 0 ;;
+      -h|--help) _history_usage; return 0 ;;
       *) mm_die "unknown option: $1" ;;
     esac
     shift
