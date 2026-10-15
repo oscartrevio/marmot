@@ -53,6 +53,8 @@ profile_tools() {
 profile_home() {
   trash_item old31 31; trash_item new29 29
   mkdir -p "$HOME/.cache/pip/wheels"; echo w >"$HOME/.cache/pip/wheels/w.whl"   # catalog cache row
+  mm_age "$HOME/.cache/pip" 10
+  mkdir -p "$HOME/.cache/pip/http-v2"; echo h >"$HOME/.cache/pip/http-v2/h"   # used today: kept
   blob "$SB/yarncache/blob"                                                  # a tool's own clean
   mkdir -p "$HOME/.cache/ms-playwright/chromium-1000" "$HOME/.cache/ms-playwright/chromium-1100"
   local v="$HOME/.local/share/claude/versions"
@@ -95,7 +97,7 @@ profile_home() {
   gone "$XDG_DATA_HOME/Trash/files/old31" "$XDG_DATA_HOME/Trash/info/old31.trashinfo"
   exist "$XDG_DATA_HOME/Trash/files/new29"
   gone "$HOME/.cache/pip/wheels" "$SB/yarncache/blob" "$HOME/.cache/ms-playwright/chromium-1000"
-  exist "$HOME/.cache/ms-playwright/chromium-1100"
+  exist "$HOME/.cache/ms-playwright/chromium-1100" "$HOME/.cache/pip/http-v2/h"
   gone "$HOME/.local/share/claude/versions/1.0.0"
   exist "$HOME/.local/share/claude/versions/1.0.1" "$HOME/.local/share/claude/versions/1.0.2"
   gone "$HOME/.omp/logs/omp.old.log" "$HOME/.config/gcloud/logs/2026.01.01"
