@@ -17,6 +17,8 @@ All notable changes to marmot are recorded here. The format follows
   them, with the catalog row that would.
 - `SECURITY.md`, `CONTRIBUTING.md` and `AGENTS.md`.
 - `mm purge` keeps build folders holding a `*-keypair.json` (Solana/Anchor deploy keys).
+- The operations log rotates to `operations.log.old` past 5 MB (`MM_LOG_MAX_BYTES`); `mm history`
+  reads both.
 
 ### Changed
 

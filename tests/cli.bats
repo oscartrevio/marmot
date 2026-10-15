@@ -58,6 +58,17 @@ teardown() { mm_test_teardown; }
   [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b" ]
 }
 
+@test "history reads the rotated log before the current one" {
+  mkdir -p "$XDG_STATE_HOME/marmot"
+  printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t/tmp/a\t1\t' >"$XDG_STATE_HOME/marmot/operations.log.old"
+  printf '%s\n' $'2026-10-13T10:00:00+00:00\tclean\tremove\t/tmp/b\t1\t' >"$XDG_STATE_HOME/marmot/operations.log"
+  run mm history --json
+  [ "$status" -eq 0 ]
+  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/a,/tmp/b" ]
+  run mm history -l 1 --json
+  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b" ]
+}
+
 @test "history --json without jq says jq is required" {
   mkdir -p "$XDG_STATE_HOME/marmot" "$SB/bin"
   printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t/tmp/a\t1\t' >"$XDG_STATE_HOME/marmot/operations.log"

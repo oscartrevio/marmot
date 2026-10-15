@@ -16,6 +16,12 @@ Shows what marmot removed, moved to the Trash, refused or failed, newest last (r
 EOF
 }
 
+# _history_rows LIMIT LOG... — the rows of the logs in order, only the newest LIMIT unless 0.
+_history_rows() {
+  local limit=$1; shift
+  if (( limit > 0 )); then cat -- "$@" | tail -n "$limit"; else cat -- "$@"; fi
+}
+
 mm_cmd_main() {
   local limit=30 json=0
   while (( $# )); do
@@ -29,9 +35,11 @@ mm_cmd_main() {
     shift
   done
   (( json )) && ! command -v jq >/dev/null && mm_die "jq is required for --json"
-  [[ -s "$MM_LOG_FILE" ]] || { echo "No operations recorded yet ($MM_LOG_FILE)."; return 0; }
+  local f; local -a logs=()
+  for f in "$MM_LOG_FILE.old" "$MM_LOG_FILE"; do [[ -s "$f" ]] && logs+=("$f"); done
+  (( ${#logs[@]} )) || { echo "No operations recorded yet ($MM_LOG_FILE)."; return 0; }
 
-  local src=(cat "$MM_LOG_FILE"); (( limit > 0 )) && src=(tail -n "$limit" "$MM_LOG_FILE")
+  local src=(_history_rows "$limit" "${logs[@]}")
   if (( json )); then
     "${src[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t")
       | {time: .[0], command: .[1], action: .[2], target: .[3], bytes: ((.[4] // "0") | tonumber? // 0),
@@ -54,7 +62,7 @@ mm_cmd_main() {
   done < <("${src[@]}")
   local removed trashed
   read -r removed trashed < <(awk -F'\t' '$3 == "remove" { r += $5 } $3 == "trash" { t += $5 }
-    END { printf "%.0f %.0f\n", r, t }' "$MM_LOG_FILE")
+    END { printf "%.0f %.0f\n", r, t }' "${logs[@]}")
   printf '\nAll-time: %s removed, %s moved to Trash (restore: trash-restore), %s log rows\n' \
-    "$(mm_human "$removed")" "$(mm_human "$trashed")" "$(wc -l <"$MM_LOG_FILE")"
+    "$(mm_human "$removed")" "$(mm_human "$trashed")" "$(cat -- "${logs[@]}" | wc -l)"
 }

@@ -276,6 +276,20 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   [ "$(awk -F'\t' '{ print NF }' "$XDG_STATE_HOME/marmot/operations.log")" -eq 6 ]
 }
 
+@test "the operations log moves to operations.log.old once it is past MM_LOG_MAX_BYTES" {
+  local log="$XDG_STATE_HOME/marmot/operations.log"
+  MM_DRY_RUN=0 mm_log remove "$SB/a" 1
+  MM_DRY_RUN=0 mm_log remove "$SB/b" 1
+  MM_LOG_MAX_BYTES=$(stat -c %s "$log") MM_DRY_RUN=0 mm_log remove "$SB/c" 1   # at the limit: kept
+  [ ! -e "$log.old" ]
+  MM_LOG_MAX_BYTES=$(( $(stat -c %s "$log") - 1 )) MM_DRY_RUN=0 mm_log remove "$SB/d" 1
+  [ "$(cut -f4 "$log.old" | tr '\n' ,)" = "$SB/a,$SB/b,$SB/c," ]
+  [ "$(cut -f4 "$log")" = "$SB/d" ]
+  MM_LOG_MAX_BYTES=1 MM_DRY_RUN=0 mm_log remove "$SB/e" 1                       # replaces the older .old
+  [ "$(cut -f4 "$log.old")" = "$SB/d" ]
+  [ "$(cut -f4 "$log")" = "$SB/e" ]
+}
+
 @test "sizes above 2 GiB come back as exact integers" {
   mm_test_fake du 'printf "3000000001\t%s\n3000000001\ttotal\n" "$4"'
   mm_test_fake df 'printf "Avail\n5000000003\n"'
