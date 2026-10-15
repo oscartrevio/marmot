@@ -15,6 +15,7 @@ All notable changes to marmot are recorded here. The format follows
   folder containing them; refusals name the source.
 - `mm clean` lists the biggest folders in `~/.cache` that no catalog row covers, never deleting
   them, with the catalog row that would.
+- `SECURITY.md`, `CONTRIBUTING.md` and `AGENTS.md`.
 
 ### Changed
 
