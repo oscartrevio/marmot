@@ -246,7 +246,7 @@ mm_catalog_load() {
   MM_CAT_REJECTED=()
   _mm_cat_parse builtin <<<"$MM_CATALOG_TABLE"
   local user="$MM_CONFIG_DIR/catalog" i
-  [[ -f "$user" && -r "$user" ]] && _mm_cat_parse "${user/#$HOME/\~}" <"$user"
+  if [[ -f "$user" && -r "$user" ]]; then mm_tilde "$user"; _mm_cat_parse "$REPLY" <"$user"; fi
   for i in "${!MM_AGENT_NAME[@]}"; do
     [[ -n "${MM_AGENT_VERSIONS[$i]}" ]] || continue
     _mm_cat_add versions "${MM_AGENT_NAME[$i]}" "${MM_AGENT_VERSIONS[$i]}" "" "${MM_AGENT_ACTIVE[$i]}" ""

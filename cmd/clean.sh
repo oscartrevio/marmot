@@ -548,10 +548,10 @@ _clean_agent_logs() {
     for dir in ${MM_AGENT_LOGS[$i]}; do
       [[ -d "$dir" ]] || continue
       if ! root=$(realpath -e -- "$dir" 2>/dev/null) || ! mm_agent_dir "$root"; then
-        mm_skip "${dir/#$HOME/\~}" "outside your home folder"; continue
+        mm_tilde "$dir"; mm_skip "$REPLY" "outside your home folder"; continue
       fi
       for s in "${sess[@]}"; do
-        [[ "$root" == "$s" || "$root" == "$s"/* ]] && { mm_skip "${dir/#$HOME/\~}" "inside a session folder"; continue 2; }
+        [[ "$root" == "$s" || "$root" == "$s"/* ]] && { mm_tilde "$dir"; mm_skip "$REPLY" "inside a session folder"; continue 2; }
       done
       while IFS= read -r -d '' rec; do
         t=${rec%% *} path=${rec#* }
@@ -600,7 +600,7 @@ _clean_trash_dev() {
 _clean_agent_root() {
   _CLEAN_ROOT=$(realpath -e -- "$1" 2>/dev/null) && mm_agent_dir "$_CLEAN_ROOT" || return 1
   if [[ "$(stat -c %d -- "$_CLEAN_ROOT" 2>/dev/null)" != "$2" ]]; then
-    mm_skip "${1/#$HOME/\~}" "Trash is on another filesystem"; return 1
+    mm_tilde "$1"; mm_skip "$REPLY" "Trash is on another filesystem"; return 1
   fi
 }
 
@@ -712,7 +712,7 @@ _clean_cloud_log_dir() {
   [[ -d "$dir" ]] || return 0
   # The carve-out in lib/core.sh only covers canonical paths; a link here could point anywhere.
   if [[ "$(realpath -e -- "$dir" 2>/dev/null)" != "$dir" ]]; then
-    mm_skip "$label" "${dir/#$HOME/\~} is a symlink or not a canonical path"; return 0
+    mm_tilde "$dir"; mm_skip "$label" "$REPLY is a symlink or not a canonical path"; return 0
   fi
   cutoff=$(( $(date +%s) - _CLEAN_LOG_DAYS * 86400 ))
   while IFS= read -r -d '' e; do
@@ -836,7 +836,7 @@ _clean_nix_enabled() {
 
 _clean_nix() {
   local label="nix store" busy log out freed
-  if ! _clean_nix_enabled; then mm_skip "$label" "opt-in: nix_gc = on in ${MM_CONFIG_FILE/#$HOME/\~}"; return; fi
+  if ! _clean_nix_enabled; then mm_tilde "$MM_CONFIG_FILE"; mm_skip "$label" "opt-in: nix_gc = on in $REPLY"; return; fi
   if busy=$(_clean_busy "nix nix-build nix-shell nix-env nix-store nix-instantiate nix-collect-garbage"); then
     mm_skip "$label" "$busy busy"; return
   fi
@@ -881,7 +881,7 @@ _clean_browser_profiles() {
 # _clean_browser_profile PROFILE — permanently remove the cache folders of PROFILE/Default.
 _clean_browser_profile() {
   local profile="$1" label leaf why n=0 b=0 kept=0 fail=0
-  label="Browser profile caches (${profile/#$HOME/\~})"
+  mm_tilde "$profile"; label="Browser profile caches ($REPLY)"
   if why=$(_clean_profile_open "$profile"); then mm_skip "$label" "$why"; return 0; fi
   for leaf in "${_CLEAN_CHROMIUM_CACHES[@]}"; do
     [[ -d "$profile/Default/$leaf" && ! -L "$profile/Default/$leaf" ]] || continue
@@ -1184,7 +1184,8 @@ _clean_user_crash_reports() {
   done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0 2>/dev/null)
   if (( ${#old[@]} == 0 )); then mm_ok "Your crash reports" "nothing older than $_CLEAN_OLD_DAYS days"; return 0; fi
   b=$(mm_size "${old[@]}")
-  mm_act "Your crash reports: ${#old[@]} older than $_CLEAN_OLD_DAYS days, $(mm_human "$b") (${dir/#$HOME/\~})"
+  mm_tilde "$dir"
+  mm_act "Your crash reports: ${#old[@]} older than $_CLEAN_OLD_DAYS days, $(mm_human "$b") ($REPLY)"
   _clean_ask "Your crash reports" "Permanently delete ${#old[@]} crash reports older than $_CLEAN_OLD_DAYS days ($(mm_human "$b"))?" || return 0
   for e in "${old[@]}"; do
     mm_rm "$e" "$dir"
@@ -1616,7 +1617,7 @@ _clean_agent_usage() {
 # Coding-agent state (settings, credentials, session transcripts) is never cleaned: report its size
 # and when its sessions were last written.
 _clean_review_agents() {
-  local i p size ssize newest detail added=0 last
+  local i p size ssize newest detail added=0 last where
   local -a state sess
   for i in "${!MM_AGENT_NAME[@]}"; do
     state=() sess=()
@@ -1631,12 +1632,15 @@ _clean_review_agents() {
       detail+=", sessions $(mm_human "${ssize:-0}")"
       [[ "${newest:--}" != - ]] && detail+=", last active $(_clean_ago "$newest")"
     fi
-    _clean_review "${MM_AGENT_NAME[$i]} state" "$detail · ${state[*]/#$HOME/\~}"
+    where=""
+    for p in "${state[@]}"; do mm_tilde "$p"; where+="${where:+ }$REPLY"; done
+    _clean_review "${MM_AGENT_NAME[$i]} state" "$detail · $where"
     added=1
   done
   if (( added )); then   # one hint under the last agent row
     last=${_CLEAN_REVIEW[-1]}
-    _CLEAN_REVIEW[-1]="${last%$'\t'*}"$'\t'"agent settings and sessions: opt in to session retention with mm clean --sessions DAYS or sessions_keep_days=DAYS in ${MM_CONFIG_FILE/#$HOME/\~}"
+    mm_tilde "$MM_CONFIG_FILE"
+    _CLEAN_REVIEW[-1]="${last%$'\t'*}"$'\t'"agent settings and sessions: opt in to session retention with mm clean --sessions DAYS or sessions_keep_days=DAYS in $REPLY"
   fi
 }
 
@@ -1656,7 +1660,8 @@ _clean_review_catalog() {
       n=$(find "$dir" -mindepth 1 -maxdepth 1 ! -name '.*' -printf x 2>/dev/null | wc -c)
       detail+=", $n installed"
     fi
-    _clean_review "${MM_CAT_LABEL[$i]}" "$detail · ${dir/#$HOME/\~}" "${MM_CAT_HINT[$i]}"
+    mm_tilde "$dir"
+    _clean_review "${MM_CAT_LABEL[$i]}" "$detail · $REPLY" "${MM_CAT_HINT[$i]}"
   done
 }
 
@@ -1665,7 +1670,7 @@ _clean_review_catalog() {
 # listed so the user can add a catalog row for the tool that owns one.
 _CLEAN_UNKNOWN_MIN=$((50 * 1048576))
 _clean_review_unknown() {
-  local cache i p rel size list="" n=0
+  local cache i p rel size list="" n=0 where
   local -a known=() cand=()
   local -A cov=()
   cache=$(mm_catalog_expand %CACHE%)
@@ -1691,8 +1696,10 @@ _clean_review_unknown() {
     list+="${list:+, }${p##*/} $(mm_human "$size")"; n=$((n + 1))
   done < <(timeout 60 du -0 -sB1 --one-file-system -- "${cand[@]}" 2>/dev/null | sort -z -rn)
   (( n )) || return 0
-  _clean_review "Other cache folders" "$list · ${cache/#$HOME/\~}" \
-    "never cleaned by marmot; to clean one, add a row to ${MM_CONFIG_DIR/#$HOME/\~}/catalog (cache|<label>|<folder>|<process>)"
+  mm_tilde "$cache"; where=$REPLY
+  mm_tilde "$MM_CONFIG_DIR"
+  _clean_review "Other cache folders" "$list · $where" \
+    "never cleaned by marmot; to clean one, add a row to $REPLY/catalog (cache|<label>|<folder>|<process>)"
 }
 
 # Shared temp folders are never swept (automation-browser leftovers aside, see above): other

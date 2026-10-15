@@ -102,6 +102,13 @@ mm_human() {
   }'
 }
 
+# mm_tilde PATH — PATH with a leading $HOME shown as ~, in REPLY. No subshell: status renders
+# call it for every row.
+mm_tilde() {
+  REPLY=$1
+  if [[ "$REPLY" == "$HOME" || "$REPLY" == "$HOME"/* ]]; then REPLY="~${REPLY#"$HOME"}"; fi
+}
+
 # Every awk that hands a number back to bash prints it with printf "%.0f": mawk 1.3.4-20200120
 # (Debian 12, Ubuntu 22.04) prints integers above 2^31-1 as 2.14748e+09 and clamps %d to
 # 2147483647, which bash arithmetic rejects or miscounts. %.0f is exact up to 2^53.

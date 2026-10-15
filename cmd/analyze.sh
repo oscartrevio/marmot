@@ -130,8 +130,9 @@ _analyze_render() {
     note=""
     [[ "$label" == Old\ Downloads* ]] && note="  ${C_DIM}>3mo${C_RESET}"
     [[ "$access" == keep ]] && note="  ${C_DIM}report only${C_RESET}"
+    mm_tilde "$target"
     printf ' %s%2d. %s %5s%%  |  %-22s %9s  %s%s%s%s\n' "$mark" "$n" "$(_analyze_bar "$bytes" "$max")" \
-      "$pct" "$label" "$size" "$C_DIM" "${target/#$HOME/\~}" "$C_RESET" "$note"
+      "$pct" "$label" "$size" "$C_DIM" "$REPLY" "$C_RESET" "$note"
   done
 }
 
@@ -186,7 +187,8 @@ _analyze_trash_offer() {
   local root=${1%/} line rel bytes picks=() rows=()
   [[ "$MM_TTY" == 1 ]] || return 0
   printf '\n'
-  mm_confirm "Move something under ${root/#$HOME/\~} to the Trash?" || return 0
+  mm_tilde "$root"
+  mm_confirm "Move something under $REPLY to the Trash?" || return 0
   mapfile -t rows < <(_analyze_candidates "$root")
   (( ${#rows[@]} )) || { mm_info "Nothing to pick under $root"; return 0; }
   mapfile -t picks < <(for line in "${rows[@]}"; do
