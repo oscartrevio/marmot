@@ -1574,13 +1574,6 @@ _status_age() {
   fi
 }
 
-# _status_tilde VAR PATH — PATH with $HOME shown as ~.
-_status_tilde() {
-  local __p=$2
-  [[ "$__p" == "$HOME" || "$__p" == "$HOME"/* ]] && __p="~${__p#"$HOME"}"
-  printf -v "$1" '%s' "$__p"
-}
-
 # _status_mid VAR TEXT WIDTH — TEXT cut in the middle to WIDTH chars ("~/devel…/handle/esi"): the
 # start says where, the end says which.
 _status_mid() {
@@ -1612,7 +1605,7 @@ _status_agent_rows() {
   local fw=8 aw=6 cw=4
   for e in "${ST_AGENTS[@]}"; do
     IFS=$'\t' read -r pid agent proc age kb orphan cpu busy cwd <<<"$e"
-    _status_tilde cwd "${cwd:-?}"
+    mm_tilde "${cwd:-?}"; cwd=$REPLY
     ((${#proc} > nw)) && nw=${#proc}
     ((${#cwd} > fw)) && fw=${#cwd}
     _status_age a "$age"
@@ -1626,7 +1619,7 @@ _status_agent_rows() {
   ((pw < 8)) && pw=8
   for e in "${ST_AGENTS[@]}"; do
     IFS=$'\t' read -r pid agent proc age kb orphan cpu busy cwd <<<"$e"
-    _status_tilde cwd "${cwd:-?}"
+    mm_tilde "${cwd:-?}"; cwd=$REPLY
     if ((orphan)); then orphans+=("$proc $pid in deleted $cwd"); continue; fi
     if ((shown >= limit)); then more=$((more + 1)); ((busy)) && moreidle=0; continue; fi
     shown=$((shown + 1))
@@ -1798,7 +1791,7 @@ _status_panel_sys() {
     [[ "$kind" == lingering ]] || continue
     ((n++ < nd)) || break
     _status_age d "$age"
-    _status_tilde cwd "$cwd"
+    mm_tilde "$cwd"; cwd=$REPLY
     _status_trunc t "$name $pid · $d · cwd deleted: $cwd" $((w - 2))
     _status_row "" "$C_YELLOW!$C_RESET $t"
   done
@@ -2214,7 +2207,7 @@ _status_json() {
 # plain "key: value" lines and short tables, no escape sequences, bars or sparklines. Problems
 # come first, each with the marmot or system command that addresses it (shown, never run).
 _status_agent_text() {
-  local C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN="" C_RESET=""
+  local C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
   local e pid agent proc age kb orphan cpu busy cwd name kind t a m sz us av it iu p n i up
   local -a probs=() rows=()
 
@@ -2223,7 +2216,7 @@ _status_agent_text() {
   for e in "${ST_CHK_BAD[@]}"; do probs+=("${e%%$'\t'*}: ${e#*$'\t'}"); done
   for e in "${ST_ORPHANS[@]}"; do
     IFS=$'\t' read -r pid name age cwd kind <<<"$e"
-    _status_tilde cwd "$cwd"
+    mm_tilde "$cwd"; cwd=$REPLY
     t="orphaned dev server"
     [[ "$kind" == agent ]] && t="orphaned agent"
     probs+=("$t $name (pid $pid) in deleted $cwd: mm optimize")
@@ -2268,7 +2261,7 @@ _status_agent_text() {
     for e in "${ST_AGENTS[@]}"; do
       IFS=$'\t' read -r pid agent proc age kb orphan cpu busy cwd <<<"$e"
       ((n++ < 20)) || continue
-      _status_tilde cwd "${cwd:-?}"
+      mm_tilde "${cwd:-?}"; cwd=$REPLY
       ((orphan)) && cwd+=" (deleted)"
       _status_age a "$age"
       _status_mem kb "$kb"

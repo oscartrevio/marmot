@@ -151,8 +151,8 @@ report|Volta Node versions|$VOLTA_HOME/tools/image/node||count|volta list all, t
 report|Volta Node versions|~/.volta/tools/image/node||count|volta list all, then remove unused versions
 '
 
-# Parsed rows, index-aligned. ORIGIN is "builtin", "user:<line>" or "agent".
-MM_CAT_KIND=() MM_CAT_LABEL=() MM_CAT_PATH=() MM_CAT_BUSY=() MM_CAT_SPEC=() MM_CAT_HINT=() MM_CAT_ORIGIN=()
+# Parsed rows, index-aligned.
+MM_CAT_KIND=() MM_CAT_LABEL=() MM_CAT_PATH=() MM_CAT_BUSY=() MM_CAT_SPEC=() MM_CAT_HINT=()
 MM_CAT_REJECTED=()   # "<file>:<line>: <reason>" for user rows that were not accepted
 
 # _mm_cat_home_dir VAR DEFAULT — $VAR when it is an absolute path strictly inside $HOME, else DEFAULT.
@@ -182,10 +182,10 @@ mm_catalog_expand() {
   printf '%s' "${p%/}"
 }
 
-# _mm_cat_add KIND LABEL PATH BUSY SPEC HINT ORIGIN
+# _mm_cat_add KIND LABEL PATH BUSY SPEC HINT
 _mm_cat_add() {
   MM_CAT_KIND+=("$1") MM_CAT_LABEL+=("$2") MM_CAT_PATH+=("$3") MM_CAT_BUSY+=("$4")
-  MM_CAT_SPEC+=("$5") MM_CAT_HINT+=("$6") MM_CAT_ORIGIN+=("$7")
+  MM_CAT_SPEC+=("$5") MM_CAT_HINT+=("$6")
 }
 
 # _mm_cat_trim STRING — strip surrounding whitespace.
@@ -202,7 +202,7 @@ _mm_cat_glob() {
     IFS=/ read -r -a ms <<<"$m"
     tag=""
     for i in "${!segs[@]}"; do [[ "${segs[$i]}" == *'*'* ]] && tag+="${tag:+/}${ms[$i]}"; done
-    _mm_cat_add "$1" "$2${tag:+ ($tag)}" "$m" "$4" "$5" "$6" builtin
+    _mm_cat_add "$1" "$2${tag:+ ($tag)}" "$m" "$4" "$5" "$6"
   done < <(compgen -G "$3" | LC_ALL=C sort)
 }
 
@@ -229,12 +229,12 @@ _mm_cat_parse() {
       if [[ "$p" != "$HOME"/?* || "$real" != "$HOME"/?* ]]; then
         MM_CAT_REJECTED+=("$where: '$path' is not inside your home folder"); continue
       fi
-      _mm_cat_add cache "$label" "$p" "$busy" "" "" "$origin:$n"
+      _mm_cat_add cache "$label" "$p" "$busy" "" ""
       continue
     fi
     p=$(mm_catalog_expand "$path") || continue
     if [[ "$p" == *'*'* ]]; then _mm_cat_glob "$kind" "$label" "$p" "$busy" "$spec" "$hint"; continue; fi
-    _mm_cat_add "$kind" "$label" "$p" "$busy" "$spec" "$hint" builtin
+    _mm_cat_add "$kind" "$label" "$p" "$busy" "$spec" "$hint"
   done
 }
 
@@ -242,13 +242,13 @@ _mm_cat_parse() {
 # agent in lib/agents.sh that keeps one directory per installed version (kind "versions":
 # path = versions dir, spec = active-version symlink).
 mm_catalog_load() {
-  MM_CAT_KIND=() MM_CAT_LABEL=() MM_CAT_PATH=() MM_CAT_BUSY=() MM_CAT_SPEC=() MM_CAT_HINT=() MM_CAT_ORIGIN=()
+  MM_CAT_KIND=() MM_CAT_LABEL=() MM_CAT_PATH=() MM_CAT_BUSY=() MM_CAT_SPEC=() MM_CAT_HINT=()
   MM_CAT_REJECTED=()
   _mm_cat_parse builtin <<<"$MM_CATALOG_TABLE"
   local user="$MM_CONFIG_DIR/catalog" i
-  [[ -f "$user" && -r "$user" ]] && _mm_cat_parse "${user/#$HOME/\~}" <"$user"
+  if [[ -f "$user" && -r "$user" ]]; then mm_tilde "$user"; _mm_cat_parse "$REPLY" <"$user"; fi
   for i in "${!MM_AGENT_NAME[@]}"; do
     [[ -n "${MM_AGENT_VERSIONS[$i]}" ]] || continue
-    _mm_cat_add versions "${MM_AGENT_NAME[$i]}" "${MM_AGENT_VERSIONS[$i]}" "" "${MM_AGENT_ACTIVE[$i]}" "" agent
+    _mm_cat_add versions "${MM_AGENT_NAME[$i]}" "${MM_AGENT_VERSIONS[$i]}" "" "${MM_AGENT_ACTIVE[$i]}" ""
   done
 }

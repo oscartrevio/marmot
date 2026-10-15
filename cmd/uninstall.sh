@@ -47,8 +47,6 @@ _uninstall_add() { # SRC NAME BYTES EPOCH PATH NOTE HIDDEN
   _UN_PATH+=("$5") _UN_NOTE+=("$6") _UN_HIDDEN+=("${7:-0}")
 }
 
-_uninstall_tilde() { [[ "$1" == "$HOME"/* ]] && printf '~%s' "${1#"$HOME"}" || printf '%s' "$1"; }
-
 # _uninstall_generic NAME — 0 for names too generic to tie a ~/.config/NAME-style directory to one
 # package (after Mole's _mole_uninstall_is_common_app_name), plus home-layout names.
 _uninstall_generic() {
@@ -300,7 +298,7 @@ _uninstall_used_by() {
     done
     target=$f
     [[ -L "$f" ]] && { target=$(readlink -f -- "$f" 2>/dev/null) || continue; }
-    [[ "$target" == "$p" || "$target" == "$p"/* ]] && { printf '%s' "$(_uninstall_tilde "$f")"; return 0; }
+    [[ "$target" == "$p" || "$target" == "$p"/* ]] && { mm_tilde "$f"; printf '%s' "$REPLY"; return 0; }
   done
   return 1
 }
@@ -338,7 +336,7 @@ _uninstall_leftover_reason() {
   printf '%s' "$r"
 }
 
-_uninstall_kept() { printf '    %s◎%s %s %s· kept (%s)%s\n' "$C_DIM" "$C_RESET" "$(_uninstall_tilde "$1")" "$C_DIM" "$2" "$C_RESET"; }
+_uninstall_kept() { mm_tilde "$1"; printf '    %s◎%s %s %s· kept (%s)%s\n' "$C_DIM" "$C_RESET" "$REPLY" "$C_DIM" "$2" "$C_RESET"; }
 
 # _uninstall_remove_leftovers NAME SOURCE — move every leftover no keep rule protects to the Trash
 # (mm_rm --trash, ALLOWED_ROOT=$HOME), printing one ✓/◎ line each. Whitelist, in-use and mount
@@ -350,9 +348,9 @@ _uninstall_remove_leftovers() {
     [[ -n "$reason" ]] && { _uninstall_kept "$p" "$reason"; continue; }
     mm_rm --trash "$p" "$HOME"; rc=$?
     case $rc in
-      0) printf '  '; mm_ok "$(_uninstall_tilde "$p")" "$(mm_human "$MM_LAST_BYTES") to Trash" ;;
+      0) mm_tilde "$p"; printf '  '; mm_ok "$REPLY" "$(mm_human "$MM_LAST_BYTES") to Trash" ;;
       1) _uninstall_kept "$p" "$MM_SKIP_REASON" ;;
-      *) mm_err "$(_uninstall_tilde "$p"): ${MM_SKIP_REASON:-move to Trash failed}" ;;
+      *) mm_tilde "$p"; mm_err "$REPLY: ${MM_SKIP_REASON:-move to Trash failed}" ;;
     esac
   done < <(_uninstall_leftovers "$1" "$2")
 }
@@ -657,22 +655,23 @@ _uninstall_apply() {
     case "${_UN_SRC[i]}" in
       apt)  lines+=("$C_GREEN✓$C_RESET apt package ${_UN_NAME[i]} (purge + config files)") ;;
       snap) lines+=("$C_GREEN✓$C_RESET snap ${_UN_NAME[i]} (all revisions, snapshots purged)") ;;
-      npm|bun|pipx) lines+=("$C_GREEN✓$C_RESET $(_uninstall_tilde "${_UN_PATH[i]}") (${_UN_SRC[i]} global)") ;;
-      bin)  lines+=("$C_GREEN✓$C_RESET $(_uninstall_tilde "${_UN_PATH[i]}") $C_DIM(to Trash)$C_RESET") ;;
+      npm|bun|pipx) mm_tilde "${_UN_PATH[i]}"; lines+=("$C_GREEN✓$C_RESET $REPLY (${_UN_SRC[i]} global)") ;;
+      bin)  mm_tilde "${_UN_PATH[i]}"; lines+=("$C_GREEN✓$C_RESET $REPLY $C_DIM(to Trash)$C_RESET") ;;
     esac
     for p in "${lo[@]}"; do
       if [[ -n "$shared" ]]; then reason="${_UN_NAME[i]} stays installed via $shared"
       else reason=$(_uninstall_leftover_reason "$p"); fi
+      mm_tilde "$p"
       if [[ -z "$reason" ]]; then
         lbytes=$(mm_size "$p"); item_bytes=$(( item_bytes + lbytes )); trash_bytes=$(( trash_bytes + lbytes ))
-        lines+=("$C_GREEN✓$C_RESET $(_uninstall_tilde "$p") $C_DIM$(mm_human "$lbytes") to Trash$C_RESET")
+        lines+=("$C_GREEN✓$C_RESET $REPLY $C_DIM$(mm_human "$lbytes") to Trash$C_RESET")
       else
-        lines+=("$C_DIM◎$C_RESET $(_uninstall_tilde "$p") $C_DIM· kept ($reason)$C_RESET")
+        lines+=("$C_DIM◎$C_RESET $REPLY $C_DIM· kept ($reason)$C_RESET")
       fi
     done
     printf '\n%s✓%s %s, %s\n' "$C_GREEN" "$C_RESET" "${_UN_NAME[i]}" "$(mm_human "$item_bytes")"
     while IFS= read -r p; do
-      [[ -n "$p" ]] && lines+=("$C_DIM◎$C_RESET $(_uninstall_tilde "$p") $C_DIM· kept ($MM_UN_AGENT_KEPT)$C_RESET")
+      [[ -n "$p" ]] && { mm_tilde "$p"; lines+=("$C_DIM◎$C_RESET $REPLY $C_DIM· kept ($MM_UN_AGENT_KEPT)$C_RESET"); }
     done < <(_uninstall_agent_extra "$i")
     for p in "${lines[@]}"; do printf '  %s\n' "$p"; done
   done

@@ -141,7 +141,8 @@ _schedule_run() {
     _clean_sessions "$_CLEAN_KEEP_DAYS" config
   else
     mm_section "Agent sessions"
-    mm_skip "Agent sessions" "kept: no sessions_keep_days in ${MM_CONFIG_FILE/#$HOME/\~}"
+    mm_tilde "$MM_CONFIG_FILE"
+    mm_skip "Agent sessions" "kept: no sessions_keep_days in $REPLY"
   fi
   _clean_browsers
   _clean_editors
@@ -162,10 +163,11 @@ _schedule_run() {
   delta=$((free1 - free0)); (( delta < 0 )) && { sign=-; delta=$((-delta)); }
   trap - EXIT
   _schedule_record "$_SCHEDULE_STARTED" "$_SCHEDULE_T0" "$total" "$MM_TRASHED" "$items"
+  mm_tilde "$MM_SCHEDULE_LAST"
   mm_banner "Scheduled cleanup complete" \
     "Space freed: $(mm_human "$total")$trash | Items: $items" \
     "$notes" \
-    "Free space: $(mm_human "$free1") ($sign$(mm_human "$delta")) | Summary: ${MM_SCHEDULE_LAST/#$HOME/\~}"
+    "Free space: $(mm_human "$free1") ($sign$(mm_human "$delta")) | Summary: $REPLY"
 }
 
 # ---------------------------------------------------------------- enable, disable, status
@@ -394,9 +396,8 @@ _schedule_status() {
 
 # _schedule_last_line — one line about the last run (after mm_schedule_last).
 _schedule_last_line() {
-  local ago=$(( $(date +%s) - MM_LAST_EPOCH )) a
-  if (( ago < 3600 )); then a="$(( ago / 60 ))m ago"; elif (( ago < 86400 )); then a="$(( ago / 3600 ))h ago"; else a="$(( ago / 86400 ))d ago"; fi
-  printf '%s (%s, %s) · took %ss · freed %s' "${MM_LAST_AT/T/ }" "$a" "$MM_LAST_TRIGGER" "$MM_LAST_DURATION" "$(mm_human "$MM_LAST_FREED")"
+  printf '%s (%s ago, %s) · took %ss · freed %s' "${MM_LAST_AT/T/ }" "$(mm_ago $(( $(date +%s) - MM_LAST_EPOCH )))" \
+    "$MM_LAST_TRIGGER" "$MM_LAST_DURATION" "$(mm_human "$MM_LAST_FREED")"
   (( MM_LAST_TRASHED )) && printf ' · %s to Trash' "$(mm_human "$MM_LAST_TRASHED")"
   printf ' · %s items · %s skipped · %s errors' "$MM_LAST_ITEMS" "$MM_LAST_SKIPPED" "$MM_LAST_ERRORS"
 }

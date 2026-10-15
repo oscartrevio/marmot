@@ -483,8 +483,6 @@ _purge_idle_label() {
   if (( $1 < 86400 )); then echo "$(( $1 / 3600 ))h"; else _purge_age $(( $1 / 86400 )); fi
 }
 
-_purge_tilde() { printf '%s' "${1/#"$HOME"/"~"}"; }
-
 # _purge_clock — a monotonic-enough stamp in microseconds, for the scan timer.
 _purge_clock() { printf '%s' "${EPOCHREALTIME//[!0-9]/}"; }
 
@@ -775,12 +773,13 @@ _purge_worktrees() {
     if [[ "$_WT_MERGE" == unmerged ]]; then desc+=" · unmerged (branch kept)"; else desc+=" · $_WT_MERGE"; fi
     case "$_WT_STATE" in
       active) active=$((active + 1)) ;;
-      keep) _purge_kept "$(_purge_tilde "${_WT_PATH[$i]}") · $desc" "$_WT_WHY" ;;
+      keep) mm_tilde "${_WT_PATH[$i]}"; _purge_kept "$REPLY · $desc" "$_WT_WHY" ;;
       offer)
         read -r sz fr < <(mm_size_frees "${_WT_PATH[$i]}")
         size[$i]=${fr:-0} pn=0
         _purge_pnpm_managed "${_WT_PATH[$i]}" && { pn=1 pnpm[$i]=1; _PURGE_WT_PNPM+=("${_WT_PATH[$i]}"); }
-        label[$i]="$(_purge_tilde "${_WT_PATH[$i]}") · $desc · idle $(_purge_idle_label "$_WT_IDLE") · $(_purge_size_label "${sz:-0}" "${size[$i]}" "$pn")"
+        mm_tilde "${_WT_PATH[$i]}"
+        label[$i]="$REPLY · $desc · idle $(_purge_idle_label "$_WT_IDLE") · $(_purge_size_label "${sz:-0}" "${size[$i]}" "$pn")"
         printf '  %s●%s %s\n' "$C_YELLOW" "$C_RESET" "${label[$i]}"
         offer+=("$i")
         _PURGE_WT_OFFERED=$((_PURGE_WT_OFFERED + 1)) _PURGE_WT_OFFER_BYTES=$((_PURGE_WT_OFFER_BYTES + size[$i]))
@@ -800,7 +799,8 @@ _purge_worktrees() {
 
   _PURGE_PROMPTED=1
   if (( ${#offer[@]} == 1 )); then
-    mm_confirm "Remove worktree $(_purge_tilde "${_WT_PATH[${offer[0]}]}")? (git worktree remove; branch kept)" && sel=("${offer[0]}")
+    mm_tilde "${_WT_PATH[${offer[0]}]}"
+    mm_confirm "Remove worktree $REPLY? (git worktree remove; branch kept)" && sel=("${offer[0]}")
   else
     for i in "${offer[@]}"; do lines+=("$i  ${label[$i]}"); done
     while IFS= read -r line; do
@@ -816,9 +816,9 @@ _purge_worktrees() {
   local -A pruned=()
   for i in "${sel[@]}"; do
     w="${_WT_PATH[$i]}" m="${_WT_MAIN[$i]}" c="${_WT_COMMON[$i]}"
-    if mm_in_use "$w"; then mm_skip "$(_purge_tilde "$w")" "$(mm_inuse_why "$w" || echo "in use")"; continue; fi
+    if mm_in_use "$w"; then mm_tilde "$w"; mm_skip "$REPLY" "$(mm_inuse_why "$w" || echo "in use")"; continue; fi
     rc=0; _purge_wt_clean "$w" || rc=$?
-    (( rc == 0 )) || { _purge_kept "$(_purge_tilde "$w")" "changed since the scan"; continue; }
+    (( rc == 0 )) || { mm_tilde "$w"; _purge_kept "$REPLY" "changed since the scan"; continue; }
     if [[ -d "$m" ]]; then
       mm_run "remove worktree $w" timeout 120 git -c core.fsmonitor=false -C "$m" worktree remove -- "$w"; rc=$?
     else
@@ -826,7 +826,8 @@ _purge_worktrees() {
     fi
     (( rc == 0 )) || continue
     mm_log worktree "$w" "${size[$i]}" "${_WT_BRANCH[$i]:-detached}"
-    mm_ok "$(_purge_tilde "$w")" "removed, freed $(mm_human "${size[$i]}")${_WT_BRANCH[$i]:+, branch ${_WT_BRANCH[$i]} kept}"
+    mm_tilde "$w"
+    mm_ok "$REPLY" "removed, freed $(mm_human "${size[$i]}")${_WT_BRANCH[$i]:+, branch ${_WT_BRANCH[$i]} kept}"
     _PURGE_WT_DONE=$((_PURGE_WT_DONE + 1)) _PURGE_WT_BYTES=$((_PURGE_WT_BYTES + size[$i]))
     [[ -n "${pnpm[$i]:-}" ]] && _PURGE_PNPM_PATHS+=("$w")
     pruned[$c]=1
@@ -900,7 +901,8 @@ _purge_run() {
       if (( ${#roots[@]} == 0 )); then
         [[ "$_PURGE_MODE" == scheduled ]] || mm_die "none of the roots in $MM_PURGE_PATHS_FILE exist (mm purge --paths)"
         mm_section "Stale build artifacts"
-        mm_skip "Build artifacts" "none of the roots in $(_purge_tilde "$MM_PURGE_PATHS_FILE") exist"
+        mm_tilde "$MM_PURGE_PATHS_FILE"
+        mm_skip "Build artifacts" "none of the roots in $REPLY exist"
         return 0
       fi
       where="file"
@@ -913,7 +915,7 @@ _purge_run() {
 
   local free_before; free_before=$(mm_free_bytes /)
   if [[ "$_PURGE_MODE" == scheduled ]]; then mm_section "Stale build artifacts"; else mm_header "Purge Project Artifacts"; fi
-  for r in "${missing[@]}"; do mm_skip "$(_purge_tilde "$r")" "not found"; done
+  for r in "${missing[@]}"; do mm_tilde "$r"; mm_skip "$REPLY" "not found"; done
 
   # ---- scan: artifacts, repositories, worktrees
   local t0; t0=$(_purge_clock)
@@ -953,9 +955,9 @@ _purge_run() {
     fi
   fi
   local dt=$(( ( $(_purge_clock) - t0 ) / 100000 ))
-  local shown=() ; for r in "${roots[@]:0:${#roots[@]}-${#extra[@]}}"; do shown+=("$(_purge_tilde "$r")"); done
+  local shown=() ; for r in "${roots[@]:0:${#roots[@]}-${#extra[@]}}"; do mm_tilde "$r"; shown+=("$REPLY"); done
   mm_info "${C_DIM}Scanned ${shown[*]}${extra[*]:+ + ${#extra[@]} worktree dirs elsewhere} in $((dt / 10)).$((dt % 10))s · artifacts idle > ${days}d are stale${C_RESET}"
-  for r in "${timed[@]}"; do mm_warn "Scan of $(_purge_tilde "$r") stopped after ${_PURGE_SCAN_TIMEOUT}s: results are partial"; done
+  for r in "${timed[@]}"; do mm_tilde "$r"; mm_warn "Scan of $REPLY stopped after ${_PURGE_SCAN_TIMEOUT}s: results are partial"; done
 
   # ---- finished and abandoned worktrees (before artifacts: removing one takes its artifacts with it)
   _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=() _PURGE_GH=""
@@ -1011,7 +1013,8 @@ _purge_run() {
   if (( ${#skip_n[@]} )); then
     mm_section "In use"
     while IFS= read -r key; do
-      mm_skip "$(_purge_tilde "$key") · ${skip_n[$key]} artifact$( (( skip_n[$key] > 1 )) && echo s) (${skip_names[$key]})" "$(mm_inuse_why "$key" || echo "in use")"
+      mm_tilde "$key"
+      mm_skip "$REPLY · ${skip_n[$key]} artifact$( (( skip_n[$key] > 1 )) && echo s) (${skip_names[$key]})" "$(mm_inuse_why "$key" || echo "in use")"
     done < <(printf '%s\n' "${!skip_n[@]}" | sort)
   fi
 
@@ -1040,7 +1043,7 @@ _purge_run() {
 
   if (( ${#kept_out[@]} )); then
     mm_section "Kept"
-    for rec in "${kept_out[@]}"; do _purge_kept "$(_purge_tilde "${rec%%$'\t'*}")" "${rec#*$'\t'}"; done
+    for rec in "${kept_out[@]}"; do mm_tilde "${rec%%$'\t'*}"; _purge_kept "$REPLY" "${rec#*$'\t'}"; done
   fi
   if (( ${#cand[@]} == 0 )); then
     printf '\n'
@@ -1093,7 +1096,8 @@ _purge_run() {
   local -A row_of=()
   for i in "${order[@]}"; do
     sz=${size[${arts[$i]}]:-0} fr=${frees[${arts[$i]}]:-0}
-    printf -v row '%9s  %9s  %5s  %s' "$(mm_human "$sz")" "$(mm_human "$fr")" "$(_purge_age "${idle[i]}")" "$(_purge_tilde "${arts[$i]}")"
+    mm_tilde "${arts[$i]}"
+    printf -v row '%9s  %9s  %5s  %s' "$(mm_human "$sz")" "$(mm_human "$fr")" "$(_purge_age "${idle[i]}")" "$REPLY"
     _purge_to_trash "${arts[$i]}" && row+=" (to Trash)"
     if (( fr < sz )); then
       shared=1; (( pnpm_art[i] )) && row+=" (rest in the pnpm store)"
@@ -1173,19 +1177,20 @@ _purge_run() {
   for i in "${sel[@]}"; do
     art="${arts[$i]}" proj="${projs[$i]}" g="${gits[$i]}"
     if [[ -n "${busy[$proj]:-}" || ( -n "$g" && -n "${busy[$g]:-}" ) ]]; then
-      mm_skip "$(_purge_tilde "$art")" "$(mm_inuse_why "${g:-$proj}" || echo "in use")"
+      mm_tilde "$art"; mm_skip "$REPLY" "$(mm_inuse_why "${g:-$proj}" || echo "in use")"
       MM_SKIPPED=$((MM_SKIPPED + 1))
       continue
     fi
     how=(); _purge_to_trash "$art" && how=(--trash)
     keep_state=1; [[ -n "$g" && -n "${agent_wt[$g]:-}" ]] && keep_state=0
     rc=0; MM_KEEP_AGENT_STATE=$keep_state mm_rm "${how[@]}" "$art" "$proj" || rc=$?
+    mm_tilde "$art"
     case "$rc" in
-      0) mm_ok "$(_purge_tilde "$art")" "$(mm_human "$MM_LAST_BYTES")${how:+ → Trash}"; done_proj[${g:-$proj}]=1
+      0) mm_ok "$REPLY" "$(mm_human "$MM_LAST_BYTES")${how:+ → Trash}"; done_proj[${g:-$proj}]=1
          (( pnpm_art[i] )) && _PURGE_PNPM_PATHS+=("$art")
          (( ${#how[@]} )) || freed_paths+=("$art") ;;
-      1) mm_skip "$(_purge_tilde "$art")" "$MM_SKIP_REASON" ;;
-      *) mm_err "$(_purge_tilde "$art") · $MM_SKIP_REASON" ;;
+      1) mm_skip "$REPLY" "$MM_SKIP_REASON" ;;
+      *) mm_err "$REPLY · $MM_SKIP_REASON" ;;
     esac
   done
   # Items hard-linked only among themselves (a project's .pnpm-store and its node_modules, cp -al

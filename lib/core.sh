@@ -46,9 +46,9 @@ fi
 
 if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
   C_BOLD=$'\e[1m' C_DIM=$'\e[2m' C_RED=$'\e[31m' C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m'
-  C_BLUE=$'\e[34m' C_MAGENTA=$'\e[35m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
+  C_BLUE=$'\e[34m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
 else
-  C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN="" C_RESET=""
+  C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
 fi
 MM_RULE="======================================================================"
 
@@ -81,19 +81,6 @@ mm_banner() {
   printf '%s\n' "$MM_RULE"
 }
 
-# mm_bar PERCENT [WIDTH] — "█████░░░░" colored by threshold (>=90 red, >=75 yellow).
-mm_bar() {
-  local pct=${1%.*} width=${2:-20} fill color
-  (( pct < 0 )) && pct=0; (( pct > 100 )) && pct=100
-  fill=$(( (pct * width + 50) / 100 ))
-  if (( pct >= 90 )); then color=$C_RED; elif (( pct >= 75 )); then color=$C_YELLOW; else color=$C_GREEN; fi
-  printf '%s' "$color"
-  local i; for ((i = 0; i < fill; i++)); do printf '█'; done
-  printf '%s' "$C_DIM"
-  for ((i = fill; i < width; i++)); do printf '░'; done
-  printf '%s' "$C_RESET"
-}
-
 # mm_confirm QUESTION — y/N prompt on the terminal. There is no auto-accept: without a terminal
 # (cron, pipes, scripts) every confirmation declines, so unattended runs never escalate.
 mm_confirm() {
@@ -113,6 +100,20 @@ mm_human() {
     while (b >= 1000 && i < 5) { b /= 1024; i++ }
     if (i == 1) printf "%dB", b; else if (i == 2) printf "%dKB", b; else printf "%.1f%s", b, u[i]
   }'
+}
+
+# mm_ago SECONDS — a span as one unit: "16m" under an hour, "16h" under two days, else "3d".
+mm_ago() {
+  if (( $1 < 3600 )); then printf '%dm' $(( $1 / 60 ))
+  elif (( $1 < 172800 )); then printf '%dh' $(( $1 / 3600 ))
+  else printf '%dd' $(( $1 / 86400 )); fi
+}
+
+# mm_tilde PATH — PATH with a leading $HOME shown as ~, in REPLY. No subshell: status renders
+# call it for every row.
+mm_tilde() {
+  REPLY=$1
+  if [[ "$REPLY" == "$HOME" || "$REPLY" == "$HOME"/* ]]; then REPLY="~${REPLY#"$HOME"}"; fi
 }
 
 # Every awk that hands a number back to bash prints it with printf "%.0f": mawk 1.3.4-20200120
