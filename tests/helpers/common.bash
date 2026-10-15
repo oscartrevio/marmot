@@ -14,7 +14,7 @@
 
 MM_SRC="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 MM_TEST_STUBBED=(sudo apt apt-get apt-mark snap docker systemctl journalctl swapon swapoff mount umount
-  resolvectl fstrim npm npx pnpm yarn bun pip pip3 pipx ncdu fzf pkill killall reboot shutdown
+  resolvectl fstrim npm npx pnpm yarn bun uv uvx go pip pip3 pipx ncdu fzf pkill killall reboot shutdown
   trash-put trash-empty gio tmux gh)
 
 mm_test_setup() {
@@ -33,6 +33,9 @@ mm_test_setup() {
   export GIT_CONFIG_GLOBAL="$sandbox/gitconfig" GIT_CONFIG_NOSYSTEM=1
   printf '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n' >"$GIT_CONFIG_GLOBAL"
   unset MM_CONFIG_DIR MM_CONFIG_FILE MM_STATE_DIR MM_WHITELIST_FILE MM_PURGE_PATHS_FILE MM_LOG_FILE MM_DRY_RUN MM_DEBUG
+  # Tool caches and the host's gcloud/Azure config folders located through the environment would
+  # point outside the sandbox (lib/core.sh carve-outs).
+  unset UV_CACHE_DIR GOPATH GOMODCACHE GOFLAGS GOPROXY GOTOOLCHAIN CLOUDSDK_CONFIG AZURE_CONFIG_DIR
   export MM_TTY=0 NO_COLOR=1 LC_ALL=C.UTF-8
   export MM_TEST_UNSTUBBED_LOG="$sandbox/unstubbed.log"
   : >"$MM_TEST_UNSTUBBED_LOG"
