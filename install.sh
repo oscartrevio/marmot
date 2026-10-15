@@ -7,6 +7,8 @@
 #
 # Installs to ${MARMOT_PREFIX:-~/.local/share/marmot} and links `mm` and `marmot` into
 # ${MARMOT_BIN:-~/.local/bin}. Running it from the install directory itself only (re)creates links.
+# The copy notes where it came from in .install-source (this folder, its git commit, the launcher
+# folder): `mm update` pulls and reinstalls from there, `mm --version` shows the commit.
 set -euo pipefail
 
 src=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
@@ -52,8 +54,27 @@ check() {
   (( ${#opt[@]} == 0 )) || say "Optional, recommended: sudo apt-get install fzf ncdu jq trash-cli   # ${opt[*]}"
 }
 
+# record_source — write $prefix/.install-source: plain key=value lines (read, never sourced).
+# commit is empty when this folder is not the top of a git checkout (a tarball or a copy).
+record_source() {
+  local commit="" describe="" bin
+  bin=$(cd "$bindir" && pwd)
+  if [[ "$(git -C "$src" rev-parse --show-toplevel 2>/dev/null)" == "$src" ]]; then
+    commit=$(git -C "$src" rev-parse -q --verify HEAD 2>/dev/null) || commit=""
+    if [[ -n "$commit" ]]; then describe=$(git -C "$src" describe --tags --always --dirty 2>/dev/null) || describe=""; fi
+  fi
+  if [[ "$src$bin" == *$'\n'* ]]; then
+    warn "not recording the source folder (its path has a newline): mm update will not work"
+    return 0
+  fi
+  printf 'source=%s\ncommit=%s\ndescribe=%s\nbin=%s\n' "$src" "$commit" "$describe" "$bin" >"$prefix/.install-source"
+  if [[ -n "$commit" ]]; then say "recorded source $src at ${commit:0:7} (for mm update)"
+  else say "recorded source $src (not a git checkout: mm update needs a git clone)"; fi
+}
+
 install() {
   check
+  local copied=0
   if [[ "$(readlink -f "$prefix" 2>/dev/null)" != "$src" ]]; then
     if [[ -e "$prefix" ]]; then
       _is_marmot_tree "$prefix" || die "$prefix exists and is not a marmot install; set MARMOT_PREFIX."
@@ -64,8 +85,10 @@ install() {
     # --uninstall). Tests and git metadata stay in the checkout.
     cp -R -- "$src/marmot" "$src/install.sh" "$src/lib" "$src/cmd" "$src/completion" "$prefix/"
     say "installed to $prefix"
+    copied=1
   fi
   mkdir -p "$bindir"
+  if (( copied )); then record_source; fi
   ln -sfn "$prefix/marmot" "$bindir/mm"
   ln -sfn "$prefix/marmot" "$bindir/marmot"
   say "linked $bindir/mm and $bindir/marmot"
@@ -81,6 +104,6 @@ install() {
 case "${1:-}" in
   "") install ;;
   --uninstall) uninstall ;;
-  -h|--help) sed -n '2,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown option: $1 (see --help)" ;;
 esac

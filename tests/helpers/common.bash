@@ -162,3 +162,19 @@ mm_test_pids() {
   done
   return 0
 }
+
+# mm_test_checkout DIR — make DIR a git checkout (branch main, one commit) of the marmot sources
+# under test, for install records and `mm update`. Commits use mm_test_git's identity.
+mm_test_checkout() {
+  mkdir -p "$1"
+  cp -R "$MM_SRC/marmot" "$MM_SRC/install.sh" "$MM_SRC/lib" "$MM_SRC/cmd" "$MM_SRC/completion" "$1/"
+  git -C "$1" init -q -b main
+  git -C "$1" add -A
+  mm_test_git "$1" commit -qm "marmot under test"
+}
+
+# mm_test_git DIR ARGS... — git in DIR with a test author.
+mm_test_git() {
+  local d=$1; shift
+  git -C "$d" -c user.name=marmot-test -c user.email=test@example.invalid "$@"
+}

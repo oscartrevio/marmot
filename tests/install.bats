@@ -71,11 +71,31 @@ teardown() { mm_test_teardown; }
 }
 
 @test "--uninstall never deletes a git checkout used as the install folder" {
-  mkdir -p "$(dirname "$MARMOT_PREFIX")"
-  cp -R "$MM_SRC" "$MARMOT_PREFIX"; mkdir -p "$MARMOT_PREFIX/.git"
+  mm_test_checkout "$MARMOT_PREFIX"
   "$MARMOT_PREFIX/install.sh" >/dev/null
   run "$MARMOT_PREFIX/install.sh" --uninstall
   [ "$status" -eq 0 ]
   [ ! -e "$MARMOT_BIN/mm" ]
   [ -f "$MARMOT_PREFIX/marmot" ]
+}
+
+@test "records the source checkout, its commit and the launcher folder; --version shows the commit" {
+  mm_test_checkout "$SB/src"
+  local sha; sha=$(git -C "$SB/src" rev-parse HEAD)
+  "$SB/src/install.sh" >/dev/null
+  grep -qxF "source=$SB/src" "$MARMOT_PREFIX/.install-source"
+  grep -qxF "commit=$sha" "$MARMOT_PREFIX/.install-source"
+  grep -qxF "bin=$MARMOT_BIN" "$MARMOT_PREFIX/.install-source"
+  run "$MARMOT_BIN/mm" --version
+  [ "$status" -eq 0 ]
+  [[ "$output" =~ ^marmot\ [0-9.]+\ \(${sha:0:7}\)$ ]]
+}
+
+@test "a git checkout used as the install folder gets no record and stays clean" {
+  mm_test_checkout "$MARMOT_PREFIX"
+  "$MARMOT_PREFIX/install.sh" >/dev/null
+  [ ! -e "$MARMOT_PREFIX/.install-source" ]
+  [ -z "$(git -C "$MARMOT_PREFIX" status --porcelain)" ]
+  run "$MARMOT_BIN/mm" --version
+  [[ "$output" == *"($(git -C "$MARMOT_PREFIX" rev-parse --short=7 HEAD))" ]]
 }

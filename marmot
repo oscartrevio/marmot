@@ -6,7 +6,7 @@ MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=lib/core.sh
 . "$MM_HOME/lib/core.sh"
 
-MM_COMMANDS=(clean status analyze optimize purge uninstall schedule history)
+MM_COMMANDS=(clean status analyze optimize purge uninstall schedule history update)
 declare -A MM_DESC=(
   [clean]="Remove caches, old builds, logs, and package/Docker leftovers"
   [status]="Live system health dashboard (--once for a snapshot)"
@@ -16,6 +16,7 @@ declare -A MM_DESC=(
   [uninstall]="Remove apt/snap/global packages plus their leftovers"
   [schedule]="Run a safe cleanup on a timer (systemd user timer or cron)"
   [history]="Show what marmot has changed"
+  [update]="Update marmot from its git checkout (--check only reports)"
 )
 
 mm_usage() {
@@ -75,7 +76,10 @@ set -- "${args[@]+"${args[@]}"}"
 case "${1:-}" in
   "") mm_menu ;;
   -h|--help|help) mm_usage ;;
-  -v|--version) echo "marmot $MM_VERSION" ;;
+  -v|--version)
+    # shellcheck source=cmd/update.sh
+    . "$MM_HOME/cmd/update.sh"
+    _update_version ;;
   *)
     MM_CMD="$1"; shift
     [[ "$MM_CMD" == analyse ]] && MM_CMD=analyze
