@@ -144,6 +144,18 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [ ! -e "$SB/plain/target" ]
 }
 
+@test "an artifact whose size can't be measured is kept, never counted as 0" {
+  node_project "$SB/a"; node_project "$SB/b"; mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  eval "_real_size_frees() $(declare -f mm_size_frees | tail -n +2)"
+  export -f _real_size_frees
+  mm_size_frees() { [[ "$1" == */a/node_modules ]] && return 124; _real_size_frees "$@"; }
+  run mm_cmd_main --yes "$SB"
+  [ -f "$SB/a/node_modules/blob" ]
+  [[ "$output" == *"kept (size unknown)"* ]]
+  [ ! -e "$SB/b/node_modules" ]
+}
+
 @test "symlinked artifact is skipped and its target untouched" {
   mkdir -p "$SB/elsewhere/real"; touch "$SB/elsewhere/real/precious"
   node_project "$SB/p"; rm -r "$SB/p/node_modules"

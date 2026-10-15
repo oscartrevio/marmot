@@ -63,9 +63,10 @@ Usage: mm purge [DIR...] [options]
    bin/obj, bower_components, .nx/cache, .docusaurus, a project's .pnpm-store, and folders inside
    a project that tag themselves as caches with CACHEDIR.TAG). Projects idle longer
    than --days are selected by default. Never touched: projects with a running process inside
-   them, anything git tracks, anything whose git state can't be read, and artifacts holding a
-   nested git repository or a deploy keypair (*-keypair.json, e.g. Solana's target/deploy/).
-   Virtualenvs (venv, .venv) go to the Trash; everything else is deleted permanently.
+   them, anything git tracks, anything whose git state or size can't be read, and artifacts
+   holding a nested git repository or a deploy keypair (*-keypair.json, e.g. Solana's
+   target/deploy/). Virtualenvs (venv, .venv) go to the Trash; everything else is deleted
+   permanently.
 
 Sizes: FREES is what a delete really releases. Files hard-linked from elsewhere (pnpm's store)
 stay on disk, so after removing pnpm-installed node_modules or worktrees marmot runs
@@ -459,18 +460,18 @@ _purge_busy() {
 }
 
 # _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>holds<TAB>path" per artifact (see
-# mm_size_frees), 4 in parallel. holds is what makes the artifact never purged, from one find:
-# "git" when a .git entry exists anywhere inside (a nested repository), "keypair" when a
-# *-keypair.json file does (Solana/Anchor program keypairs in target/deploy/: losing one loses the
-# deploy authority).
+# mm_size_frees), 4 in parallel. size and frees are "?" when sizing failed or timed out (size
+# unknown). holds is what makes the artifact never purged, from one find: "git" when a .git entry
+# exists anywhere inside (a nested repository), "keypair" when a *-keypair.json file does
+# (Solana/Anchor program keypairs in target/deploy/: losing one loses the deploy authority).
 _purge_measure() {
   (
-    export -f mm_size_frees
+    export -f mm_size_frees; export MM_SIZE_SUDO
     printf '%s\0' "$@" | xargs -0 -P4 -n1 bash -c '
       g=$(find "$1" -xdev -mindepth 1 \( -name .git -o -type f -name "*-keypair.json" \) -print -quit 2>/dev/null)
       h=""; case "${g##*/}" in .git) h=git ;; ?*) h=keypair ;; esac
-      read -r s f < <(mm_size_frees "$1")
-      printf "%s\t%s\t%s\t%s\0" "${s:-0}" "${f:-0}" "$h" "$1"' _
+      if r=$(mm_size_frees "$1") && [[ "$r" =~ ^[0-9]+\ [0-9]+$ ]]; then s=${r% *} f=${r#* }; else s="?" f="?"; fi
+      printf "%s\t%s\t%s\t%s\0" "$s" "$f" "$h" "$1"' _
   )
 }
 
@@ -779,11 +780,14 @@ _purge_worktrees() {
       active) active=$((active + 1)) ;;
       keep) mm_tilde "${_WT_PATH[$i]}"; _purge_kept "$REPLY · $desc" "$_WT_WHY" ;;
       offer)
-        read -r sz fr < <(mm_size_frees "${_WT_PATH[$i]}")
-        size[$i]=${fr:-0} pn=0
+        if ! { sz=$(mm_size_frees "${_WT_PATH[$i]}") && [[ "$sz" =~ ^[0-9]+\ [0-9]+$ ]]; }; then
+          mm_tilde "${_WT_PATH[$i]}"; _purge_kept "$REPLY · $desc" "size unknown"; continue
+        fi
+        fr=${sz#* } sz=${sz% *}
+        size[$i]=$fr pn=0
         _purge_pnpm_managed "${_WT_PATH[$i]}" && { pn=1 pnpm[$i]=1; _PURGE_WT_PNPM+=("${_WT_PATH[$i]}"); }
         mm_tilde "${_WT_PATH[$i]}"
-        label[$i]="$REPLY · $desc · idle $(_purge_idle_label "$_WT_IDLE") · $(_purge_size_label "${sz:-0}" "${size[$i]}" "$pn")"
+        label[$i]="$REPLY · $desc · idle $(_purge_idle_label "$_WT_IDLE") · $(_purge_size_label "$sz" "${size[$i]}" "$pn")"
         printf '  %s●%s %s\n' "$C_YELLOW" "$C_RESET" "${label[$i]}"
         offer+=("$i")
         _PURGE_WT_OFFERED=$((_PURGE_WT_OFFERED + 1)) _PURGE_WT_OFFER_BYTES=$((_PURGE_WT_OFFER_BYTES + size[$i]))
@@ -1042,6 +1046,10 @@ _purge_run() {
       git) kept_out+=("$art"$'\t'"contains a git repository"); continue ;;
       keypair) kept_out+=("$art"$'\t'"holds a deploy keypair"); continue ;;
     esac
+    # unknown size (sizing failed or timed out, or no record) is never counted as 0
+    if [[ "${size[$art]:-?}" == "?" || "${frees[$art]:-?}" == "?" ]]; then
+      kept_out+=("$art"$'\t'"size unknown"); continue
+    fi
     keep_cand+=("$i")
   done
   cand=("${keep_cand[@]}")
@@ -1200,8 +1208,10 @@ _purge_run() {
   done
   # Items hard-linked only among themselves (a project's .pnpm-store and its node_modules, cp -al
   # copies) free those files once all of them are gone, as the real run's later deletes count:
-  # a dry run sizes what it would delete as one selection.
-  [[ "$MM_DRY_RUN" == 1 ]] && (( ${#freed_paths[@]} > 1 )) && MM_FREED=$(( freed0 + $(mm_frees "${freed_paths[@]}") ))
+  # a dry run sizes what it would delete as one selection (per-item sums stay if that sizing fails).
+  if [[ "$MM_DRY_RUN" == 1 ]] && (( ${#freed_paths[@]} > 1 )) && fb=$(mm_frees "${freed_paths[@]}") && [[ "$fb" =~ ^[0-9]+$ ]]; then
+    MM_FREED=$(( freed0 + fb ))
+  fi
   _purge_banner "$free_before" "${#done_proj[@]}"
 }
 
