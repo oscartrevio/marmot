@@ -574,3 +574,61 @@ refused_all() {
   refused_all "$k/cache" "$k/cache/oidc-login" "$k/cache/oidc-login/abc" "$k/cache/kubelogin/def.json"
   refused_all "$k/cache/discovery" "$k/cache/discovery/server.key"
 }
+
+# ---------------------------------------------------------------- containers
+
+# fake_cgroup DIR — a cgroup v2 mount stand-in for MM_TEST_CGROUP_FS. Its root stands for the cgroup
+# of this process and all its ancestors: the walk up from the real cgroup path passes over the
+# levels the fake lacks.
+fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; export MM_TEST_CGROUP_FS=$1; }
+
+@test "MM_CONTAINER=1 and MM_CONTAINER=0 override container detection" {
+  MM_CONTAINER=1 mm_in_container
+  run env MM_CONTAINER=0 bash -c '. "$1/lib/core.sh"; mm_in_container' _ "$MM_SRC"
+  [ "$status" -eq 1 ]
+}
+
+@test "cgroup limits: the tightest memory.max and cpu.max on the way up; 'max' means none" {
+  local cg="$SB/cg" rel
+  fake_cgroup "$cg"
+  echo max >"$cg/memory.max"; echo "max 100000" >"$cg/cpu.max"
+  mm_cgroup_limits
+  [ -z "$MM_CG_MEM_MAX" ]
+  [ -z "$MM_CG_CPU_MILLI" ]
+  echo 1073741824 >"$cg/memory.max"; echo "200000 100000" >"$cg/cpu.max"
+  # A tighter limit nearer this process (its own cgroup path inside the fake) wins.
+  rel=$(awk -F: '$1 == 0 { print $3 }' /proc/self/cgroup)
+  [[ "$rel" == /?* ]] || skip "no cgroup v2 path below the root"
+  mkdir -p "$cg$rel"
+  echo 536870912 >"$cg$rel/memory.max"; echo "50000 100000" >"$cg$rel/cpu.max"
+  mm_cgroup_limits
+  [ "$MM_CG_MEM_MAX" -eq 536870912 ]
+  [ "$MM_CG_MEM_DIR" = "$cg$rel" ]
+  [ "$MM_CG_CPU_MILLI" -eq 500 ]
+  echo "300000 100000" >"$cg$rel/cpu.max"
+  mm_cgroup_limits
+  [ "$MM_CG_CPU_MILLI" -eq 2000 ]
+  [ "$MM_CG_CPU_DIR" = "$cg" ]
+}
+
+@test "cgroup limits: a fake tree outside the test sandbox is ignored" {
+  fake_cgroup "$SB/cg"
+  echo 536870912 >"$SB/cg/memory.max"
+  mkdir -p "$SB/box"
+  BATS_TEST_TMPDIR="$SB/box" mm_cgroup_limits
+  [ -z "$MM_CG_MEM_MAX" ]
+  mm_cgroup_limits
+  [ "$MM_CG_MEM_MAX" -eq 536870912 ]
+}
+
+@test "the header line says container and shows the cgroup limits instead of the host's" {
+  fake_cgroup "$SB/cg"
+  echo 536870912 >"$SB/cg/memory.max"; echo "150000 100000" >"$SB/cg/cpu.max"
+  [ "$(mm_cg_cores 1500)" = 1.5 ]
+  [ "$(mm_cg_cores 2000)" = 2 ]
+  [ "$(mm_cg_cores 250)" = 0.25 ]
+  run env MM_CONTAINER=1 bash -c '. "$1/lib/core.sh"; mm_sysline' _ "$MM_SRC"
+  [[ "$output" == *" · container · 1.5 of $(nproc) cores · 512.0MB RAM limit | Free: "* ]]
+  run env MM_CONTAINER=0 bash -c '. "$1/lib/core.sh"; mm_sysline' _ "$MM_SRC"
+  [[ "$output" != *container* && "$output" == *" · $(nproc) cores · "*"GB RAM | Free: "* ]]
+}

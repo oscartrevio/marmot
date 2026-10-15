@@ -564,3 +564,59 @@ exit 0'
   run env MM_STATUS_LINGER_AGE=1d mm status --once
   [ "$status" -ne 0 ]
 }
+
+# fake_cgroup — a cgroup v2 stand-in (MM_TEST_CGROUP_FS) limiting this process to 512 MiB, 200 MiB of
+# it in use after reclaimable page cache, and 1.5 CPUs; its root stands for every ancestor cgroup.
+fake_cgroup() {
+  local cg="$SB/cg"
+  mkdir -p "$cg"
+  echo "cpu memory" >"$cg/cgroup.controllers"
+  echo 536870912 >"$cg/memory.max"
+  echo $((300 << 20)) >"$cg/memory.current"
+  printf 'anon 1\ninactive_file %d\n' $((100 << 20)) >"$cg/memory.stat"
+  echo "150000 100000" >"$cg/cpu.max"
+  echo "usage_usec 1000" >"$cg/cpu.stat"
+  export MM_TEST_CGROUP_FS=$cg
+}
+
+@test "container: memory and CPU follow the cgroup limits; reboot and kernel checks are left out" {
+  needs_jq
+  fake_cgroup
+  mm_test_fake dpkg-query 'printf "ii  linux-image-99.0.0-1-generic\n"'
+  # The cgroup burns 0.75 CPU (cpu.stat rewritten as time passes): half of its 1.5-CPU quota. The
+  # writer can stall on a loaded machine, so the check is a band: measured against the quota it is
+  # ~50%, measured against the host's cores it would be ~9%.
+  (while :; do
+    echo "usage_usec $((${EPOCHREALTIME/./} * 3 / 4))" >"$SB/cg/cpu.stat.new" && mv -f "$SB/cg/cpu.stat.new" "$SB/cg/cpu.stat"
+    sleep 0.01
+  done) &
+  MM_TEST_PIDS+=("$!")
+  status_json MM_CONTAINER=1
+  jq -e '
+    .container == { memory_limit_bytes: 536870912, cpu_limit_cores: 1.5 }
+    and .memory.total == 536870912 and .memory.used == 209715200
+    and .cpu.usage >= 25 and .cpu.usage <= 75
+    and .system.reboot_required == null and .system.kernel_update_pending == null
+    and (.health_reasons | map(select(startswith("load") or startswith("reboot"))) == [])
+  ' <<<"$JSON"
+  # Wide enough that health reasons (a host disk over 80% on CI runners) never cut the container
+  # details out of the header.
+  run env MM_CONTAINER=1 COLUMNS=400 mm status --once --view full
+  [ "$status" -eq 0 ]
+  [[ "${lines[0]}" == *" · container · "*"512 MB limit"* ]]
+  [[ "$output" == *"of 1.5-core limit"* && "$output" == *"(host, "* ]]
+  [[ "$output" != *"✓ kernel"* && "$output" != *"! kernel"* && "$output" != *"✓ reboot"* ]]
+  run env MM_CONTAINER=1 mm status --agent
+  grep -E "^machine: [^ ]+ · container · .* · 1\.5 of [0-9]+ cores · 512 MB RAM limit · " <<<"$output"
+  grep -E '^cpu: [0-9.]+% of a 1\.5-core limit · host load ' <<<"$output"
+  grep -E '^memory: 39% used of a 512 MB limit · ' <<<"$output"
+}
+
+@test "outside a container the cgroup limits change nothing" {
+  needs_jq
+  fake_cgroup
+  status_json
+  jq -e '.container == null and .memory.total != 536870912 and (.system.reboot_required | type == "boolean")' <<<"$JSON"
+  run mm status --once
+  [[ "${lines[0]}" != *container* ]]
+}

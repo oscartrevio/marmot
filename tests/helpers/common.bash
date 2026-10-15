@@ -39,6 +39,13 @@ mm_test_setup() {
     MISE_CACHE_DIR PYENV_ROOT RBENV_ROOT COMPOSER_CACHE_DIR HEX_HOME OPAMROOT \
     FIREBASE_EMULATORS_PATH PUB_CACHE TORCH_HOME WANDB_CACHE_DIR WANDB_DATA_DIR TF_PLUGIN_CACHE_DIR
   export MM_TTY=0 NO_COLOR=1 LC_ALL=C.UTF-8
+  # Tests run on hosts and inside CI containers alike: container awareness is off unless a test
+  # turns it on (MM_CONTAINER=1), and no outside Docker daemon setting leaks in.
+  export MM_CONTAINER=0
+  unset DOCKER_HOST DOCKER_CONTEXT MM_DOCKER_PRUNE MM_TEST_CGROUP_FS
+  # Purge discovery looks in /workspaces and /workspace under this stand-in for / instead
+  # (cmd/purge.sh honors it only inside $BATS_TEST_TMPDIR); it does not exist unless a test makes it.
+  export MM_TEST_WORKSPACE_PREFIX="$SB/fakeroot"
   export MM_TEST_UNSTUBBED_LOG="$sandbox/unstubbed.log"
   : >"$MM_TEST_UNSTUBBED_LOG"
   # The automation-browser sweep of /tmp runs in this folder instead (cmd/clean.sh honors the

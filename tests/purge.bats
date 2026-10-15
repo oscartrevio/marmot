@@ -307,6 +307,32 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   [ ! -e "$HOME/code/app/node_modules" ]
 }
 
+@test "discovery: your folders in /workspaces are scanned (each is a root); hidden ones are not" {
+  local ws="$SB/fakeroot/workspaces"
+  node_project "$ws/app"; node_project "$ws/.codespaces/tool"
+  mm_age "$SB/fakeroot" 30
+  run mm purge --dry-run
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Scanned ~ $ws/app "* ]]
+  [[ "$output" == *"$ws/app/node_modules"* && "$output" != *".codespaces"* ]]
+  run mm purge --yes
+  [ ! -e "$ws/app/node_modules" ]
+  [ -d "$ws/.codespaces/tool/node_modules" ]
+}
+
+@test "discovery: a repository mounted at /workspace itself is scanned; a DIR argument replaces discovery" {
+  local ws="$SB/fakeroot/workspace"
+  node_project "$ws"; printf 'node_modules/\n' >"$ws/.gitignore"
+  git_repo "$ws"
+  mm_age "$SB/fakeroot" 30
+  node_project "$SB/other"; mm_age "$SB/other" 30
+  run mm purge --yes "$SB/other"
+  [ -d "$ws/node_modules" ]
+  run mm purge --yes
+  [ ! -e "$ws/node_modules" ]
+  [ -f "$ws/package.json" ]
+}
+
 # ---------------------------------------------------------------- abandoned worktrees
 
 ago() { date -d "$1 days ago" -R; }

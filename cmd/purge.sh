@@ -3,8 +3,9 @@
 # rebuildable build artifacts (node_modules, .next, target, venvs...) from idle projects.
 #
 # Where it looks: DIR arguments; else the roots listed in purge_paths; else discovery: $HOME
-# (dot-dirs, ~/snap, the Go module cache, conda installs and site-packages skipped) plus every
-# git worktree registered to a repository found there, wherever it lives (agents keep them in
+# (dot-dirs, ~/snap, the Go module cache, conda installs and site-packages skipped), your folders
+# in /workspaces and /workspace (devcontainers, Codespaces, Gitpod, Coder), plus every git
+# worktree registered to a repository found there, wherever it lives (agents keep them in
 # ~/.cursor/worktrees, ~/.codex/worktrees, <repo>/.claude/worktrees, ...), plus the worktrees in
 # the agents' worktree dirs (lib/agents.sh) and the other worktrees of their repositories.
 
@@ -70,7 +71,8 @@ stay on disk, so after removing pnpm-installed node_modules or worktrees marmot 
 \`pnpm store prune\` (unless pnpm is running) and reports what that freed.
 
 Where it looks: the DIRs given; else the roots in $MM_PURGE_PATHS_FILE;
-else your home directory plus every git worktree registered to a repository found there or
+else your home directory and your folders in /workspaces and /workspace (devcontainers,
+Codespaces, Gitpod, Coder), plus every git worktree registered to a repository found there or
 found in a coding agent's worktree folder (~/.cursor/worktrees, ~/.t3/worktrees, ...).
 
 Options:
@@ -94,6 +96,42 @@ _purge_listed_roots() {
     [[ "$line" == "~"* ]] && line="$HOME${line:1}"
     printf '%s\n' "$line"
   done <"$MM_PURGE_PATHS_FILE"
+}
+
+# _purge_workspace_dirs — the workspace folders of dev containers and cloud dev environments,
+# NUL-separated: VS Code dev containers and Codespaces mount repositories under /workspaces,
+# Gitpod and Coder templates under /workspace. The test suite sets MM_TEST_WORKSPACE_PREFIX to a
+# folder standing in for /; that is honored only inside bats' per-test directory, and an unusable
+# one yields no folders (never the machine's own).
+_purge_workspace_dirs() {
+  local pre="" box
+  if [[ -n "${MM_TEST_WORKSPACE_PREFIX+x}" ]]; then
+    pre=$(realpath -e -- "$MM_TEST_WORKSPACE_PREFIX" 2>/dev/null) || return 0
+    box=$(realpath -e -- "${BATS_TEST_TMPDIR:-/nonexistent}" 2>/dev/null) || return 0
+    [[ "$pre" == "$box"/?* ]] || return 0
+  fi
+  printf '%s\0' "$pre/workspaces" "$pre/workspace"
+}
+
+# _purge_workspace_roots — discovery roots beyond $HOME, NUL-separated. A workspace folder you own
+# that is itself a repository (one repo mounted at /workspace) is a root; otherwise each folder
+# you own directly inside it is (Docker creates the mount point as root, the repositories inside
+# are yours, and each is usually its own mount, which the scan's -xdev would not enter from
+# above). Hidden folders (tool state such as Codespaces' .codespaces or Gitpod's caches) and
+# symlinks are left out, as dot-dirs are in $HOME.
+_purge_workspace_roots() {
+  local w d
+  while IFS= read -r -d '' w; do
+    [[ -d "$w" && ! -L "$w" ]] || continue
+    if [[ -O "$w" && -e "$w/.git" ]]; then
+      d=$(realpath -e -- "$w") && printf '%s\0' "$d"
+      continue
+    fi
+    for d in "$w"/*; do
+      [[ -d "$d" && ! -L "$d" && -O "$d" ]] && d=$(realpath -e -- "$d") && printf '%s\0' "$d"
+    done
+  done < <(_purge_workspace_dirs)
+  return 0
 }
 
 # _purge_in_dotdir PATH — 0 if PATH is a $HOME/.<name> dir or inside one.
@@ -766,6 +804,8 @@ mm_cmd_main() {
       where="file"
     else
       roots=("$HOME") where=discover
+      mapfile -d '' -t listed < <(_purge_workspace_roots)
+      for r in "${listed[@]}"; do _purge_covered "$r" "${roots[@]}" || roots+=("$r"); done
     fi
   fi
 

@@ -29,6 +29,19 @@ _optimize_ago() {
 # _optimize_meminfo KEY — value in bytes from /proc/meminfo.
 _optimize_meminfo() { awk -v k="$1:" '$1 == k { printf "%.0f\n", $2 * 1024; exit }' /proc/meminfo; }
 
+# _optimize_cg_memory — "AVAILABLE LIMIT" in bytes under the cgroup memory.max limit: what is left
+# of it after memory.current less reclaimable inactive_file. Fails without such a limit.
+_optimize_cg_memory() {
+  local cur inact
+  mm_cgroup_limits
+  [[ -n "$MM_CG_MEM_MAX" ]] || return 1
+  { read -r cur <"$MM_CG_MEM_DIR/memory.current"; } 2>/dev/null && [[ "$cur" =~ ^[0-9]+$ ]] || return 1
+  inact=$(awk '$1 == "inactive_file" { printf "%.0f\n", $2; exit }' "$MM_CG_MEM_DIR/memory.stat" 2>/dev/null)
+  cur=$(( cur - ${inact:-0} ))
+  (( cur < 0 )) && cur=0
+  echo "$(( MM_CG_MEM_MAX > cur ? MM_CG_MEM_MAX - cur : 0 )) $MM_CG_MEM_MAX"
+}
+
 # ---------------------------------------------------------------- diagnosis (read-only)
 
 # _optimize_cpu_ticks — "pid:starttime<TAB>utime+stime<TAB>comm" for every process.
@@ -44,13 +57,15 @@ _optimize_cpu_ticks() {
 
 _optimize_diagnose() {
   printf '\n%sPERFORMANCE DIAGNOSIS%s\n' "$C_BOLD" "$C_RESET"
-  local cores l1 l5 l15 _
+  # In a container load, pressure and swap are the whole host's: reported as such, never flagged.
+  local cores l1 l5 l15 _ host="" ctr=0
+  mm_in_container && ctr=1 host=" (host)"
   cores=$(nproc)
   read -r l1 l5 l15 _ </proc/loadavg
-  if awk -v l="$l1" -v c="$cores" 'BEGIN { exit !(l > c) }'; then
+  if (( !ctr )) && awk -v l="$l1" -v c="$cores" 'BEGIN { exit !(l > c) }'; then
     mm_warn "Load $l1 / $l5 / $l15 exceeds $cores cores"
   else
-    mm_ok "Load $l1 / $l5 / $l15" "$cores cores"
+    mm_ok "Load$host $l1 / $l5 / $l15" "$cores cores"
   fi
 
   # Pressure stall information: share of the last minute some task waited on the resource.
@@ -61,23 +76,28 @@ _optimize_diagnose() {
     psi+="${psi:+ · }$r ${v}%"
     awk -v v="$v" 'BEGIN { exit !(v > 10) }' && hot+="${hot:+ · }$r ${v}%"
   done
-  if [[ -n "$hot" ]]; then
+  if [[ -n "$hot" ]] && (( !ctr )); then
     mm_warn "Pressure (avg60) high: $hot · tasks stalled waiting on these resources"
   elif [[ -n "$psi" ]]; then
-    mm_ok "Pressure (avg60)" "$psi"
+    mm_ok "Pressure (avg60${host:+, host})" "$psi"
   fi
 
-  local swap_total swap_used avail
+  local swap_total swap_used avail total limit="" cga cgt
   swap_total=$(_optimize_meminfo SwapTotal)
   swap_used=$(( swap_total - $(_optimize_meminfo SwapFree) ))
-  avail=$(_optimize_meminfo MemAvailable)
-  mm_ok "Memory" "$(mm_human "$avail") available of $(mm_human "$(_optimize_meminfo MemTotal)")"
+  avail=$(_optimize_meminfo MemAvailable) total=$(_optimize_meminfo MemTotal)
+  # Under a cgroup memory limit: what is left of it (never more than the host has available).
+  if (( ctr )) && read -r cga cgt < <(_optimize_cg_memory); then
+    (( cga < avail )) && avail=$cga
+    total=$cgt limit=" (container limit)"
+  fi
+  mm_ok "Memory" "$(mm_human "$avail") available of $(mm_human "$total")$limit"
   if (( swap_total == 0 )); then
-    mm_ok "Swap" "none configured"
-  elif (( swap_used > _OPTIMIZE_GIB )); then
+    mm_ok "Swap$host" "none configured"
+  elif (( !ctr && swap_used > _OPTIMIZE_GIB )); then
     mm_warn "Swap · $(mm_human "$swap_used") of $(mm_human "$swap_total") used"
   else
-    mm_ok "Swap" "$(mm_human "$swap_used") of $(mm_human "$swap_total") used"
+    mm_ok "Swap$host" "$(mm_human "$swap_used") of $(mm_human "$swap_total") used"
   fi
 
   # Top CPU consumer sampled over ~1s (percent of one core).
@@ -289,6 +309,7 @@ _optimize_swap_total() { awk 'NR > 1 { t += $3 } END { printf "%.0f\n", t * 1024
 _optimize_swap() {
   mm_section "Memory"
   local total used avail need
+  if mm_in_container; then _optimize_skipped "Swap reset" "in a container: swap belongs to the host"; return; fi
   total=$(_optimize_meminfo SwapTotal)
   if (( total == 0 )); then _optimize_skipped "Swap reset" "no swap configured"; return; fi
   used=$(( total - $(_optimize_meminfo SwapFree) ))
@@ -744,7 +765,9 @@ _optimize_last_trim() {
 _optimize_disk() {
   mm_section "Disk"
   local last since
-  if ! command -v fstrim >/dev/null; then
+  if mm_in_container; then
+    _optimize_skipped "SSD TRIM" "in a container: the disk belongs to the host"
+  elif ! command -v fstrim >/dev/null; then
     _optimize_skipped "SSD TRIM" "fstrim not installed"
   elif last=$(_optimize_last_trim) && since=$(( $(date +%s) - last )) && (( since < 86400 )); then
     _optimize_unchanged "SSD TRIM" "fstrim.timer ran $(_optimize_ago "$since")"
@@ -778,6 +801,7 @@ _optimize_network() {
 _optimize_services() {
   mm_section "Services"
   local units=() user_units=() u
+  if [[ ! -d /run/systemd/system ]]; then _optimize_skipped "Systemd units" "systemd is not running"; return; fi
   mapfile -t units < <(systemctl --failed --no-legend --plain 2>/dev/null | awk 'NF { print $1 }')
   mapfile -t user_units < <(systemctl --user --failed --no-legend --plain 2>/dev/null | awk 'NF { print $1 }')
   if (( ${#units[@]} + ${#user_units[@]} == 0 )); then
@@ -791,6 +815,7 @@ _optimize_services() {
 _optimize_reboot() {
   mm_section "Reboot"
   local pending=() running newest
+  if mm_in_container; then _optimize_skipped "Reboot" "in a container: the kernel belongs to the host"; return; fi
   if [[ -f /var/run/reboot-required ]]; then
     if [[ -s /var/run/reboot-required.pkgs ]]; then mapfile -t pending < <(sort -u /var/run/reboot-required.pkgs)
     else pending=("(reboot-required flag)"); fi
@@ -826,11 +851,14 @@ Options:
   -n, --dry-run   Show what would be applied; runs nothing (not even apt-get update)
 
 Confirmations (upgrades, swap reset, SIGTERM, browsers) need a terminal; without one they are
-skipped.
+skipped. In a container the swap reset, TRIM and reboot check are skipped (swap, disk and kernel
+belong to the host), the diagnosis reports load, pressure and swap as the host's without flagging
+them, and memory against the cgroup limit when one is set.
 
 Environment:
   MM_OPTIMIZE_ORPHAN_AGE   minimum process age in seconds for orphaned processes and browsers
                            (default 3600)
+  MM_CONTAINER             1 or 0: treat this machine as a container or not (default: detected)
 EOF
 }
 
