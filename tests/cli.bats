@@ -47,26 +47,67 @@ teardown() { mm_test_teardown; }
   [ "$(jq -r '.[0].detail + "|" + .[2].detail + "|" + (.[1].bytes | tostring)' <<<"$output")" = "|in use|8192" ]
 }
 
-@test "history --limit/-l returns only the newest rows (-n stays the global --dry-run)" {
+@test "history --limit/-l returns only the newest runs (-n stays the global --dry-run)" {
   mkdir -p "$XDG_STATE_HOME/marmot"
-  printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t/tmp/a\t1\t' \
-    $'2026-10-12T11:00:00+00:00\tclean\tremove\t/tmp/b\t1\t' >"$XDG_STATE_HOME/marmot/operations.log"
+  printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t/tmp/a\t1\t\tR1' \
+    $'2026-10-12T11:00:00+00:00\tpurge\tremove\t/tmp/b\t1\t\tR2' \
+    $'2026-10-12T11:00:01+00:00\tpurge\tremove\t/tmp/c\t1\t\tR2' >"$XDG_STATE_HOME/marmot/operations.log"
   run mm history -l 1 --json
   [ "$status" -eq 0 ]
-  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b" ]
+  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b,/tmp/c" ]
   run mm history --limit 1 --json
-  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b" ]
+  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b,/tmp/c" ]
+  run mm history -l 1
+  [[ "$output" == *"/tmp/b"*"/tmp/c"* && "$output" != *"/tmp/a"* ]]
 }
 
-@test "history reads the rotated log before the current one" {
+@test "history groups rows by run: one line per run with its totals; old rows by command and time" {
   mkdir -p "$XDG_STATE_HOME/marmot"
-  printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t/tmp/a\t1\t' >"$XDG_STATE_HOME/marmot/operations.log.old"
-  printf '%s\n' $'2026-10-13T10:00:00+00:00\tclean\tremove\t/tmp/b\t1\t' >"$XDG_STATE_HOME/marmot/operations.log"
+  printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t/tmp/old1\t1' \
+    $'2026-10-12T10:00:05+00:00\tclean\tremove\t/tmp/old2\t1' \
+    $'2026-10-12T12:00:00+00:00\tclean\tremove\t/tmp/old3\t1' \
+    $'2026-10-13T10:00:00+00:00\tpurge\tremove\t/tmp/a\t2048\t\tR1' \
+    $'2026-10-13T10:00:01+00:00\tpurge\ttrash\t/tmp/v\t4096\t/t/v\tR1' \
+    $'2026-10-13T10:00:02+00:00\tpurge\trefused\t/tmp/b\t0\tin use\tR1' >"$XDG_STATE_HOME/marmot/operations.log"
+  run mm history
+  [ "$status" -eq 0 ]
+  [ "$(grep -c '^2026-' <<<"$output")" -eq 3 ]   # old1+old2, old3 (2 hours later), R1
+  grep -qx '2026-10-13 10:00:00+00:00  purge · 1 removed 2KB · 1 to Trash 4KB · 1 refused' <<<"$output"
+}
+
+@test "history reads the rotated operations.log.old before the current log" {
+  local log="$XDG_STATE_HOME/marmot/operations.log" i
+  mkdir -p "$XDG_STATE_HOME/marmot" "$SB/p/node_modules"
+  for i in $(seq 40); do printf '2026-10-01T10:00:00+00:00\tclean\tremove\t/tmp/before%s\t1\t\n' "$i"; done >"$log"
+  echo '{}' >"$SB/p/package.json"; mm_age "$SB" 30
+  MM_LOG_MAX_BYTES=$(( $(stat -c %s "$log") - 1 )) run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/p/node_modules" ]
+  grep -q /tmp/before40 "$log.old"
+  grep -q "$SB/p/node_modules" "$log"
+  run mm history --all --json
+  [ "$(jq -r 'map(select(.target | test("before|node_modules"))) | length' <<<"$output")" -eq 41 ]
+  run mm history --all
+  [[ "$output" == *"/tmp/before1"*"$SB/p/node_modules"* ]]
+}
+
+@test "rows from one invocation share a run id; another invocation gets its own" {
+  mkdir -p "$SB/one/a/node_modules" "$SB/one/b/node_modules" "$SB/two/c/node_modules"
+  local d; for d in one/a one/b two/c; do echo '{}' >"$SB/$d/package.json"; done
+  mm_age "$SB" 30
+  run mm purge --yes "$SB/one"
+  [ "$status" -eq 0 ]
+  run mm purge --yes "$SB/two"
+  [ "$status" -eq 0 ]
   run mm history --json
   [ "$status" -eq 0 ]
-  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/a,/tmp/b" ]
-  run mm history -l 1 --json
-  [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b" ]
+  local a b c
+  a=$(jq -r --arg p "$SB/one/a/node_modules" 'map(select(.target == $p)) | .[0].run' <<<"$output")
+  b=$(jq -r --arg p "$SB/one/b/node_modules" 'map(select(.target == $p)) | .[0].run' <<<"$output")
+  c=$(jq -r --arg p "$SB/two/c/node_modules" 'map(select(.target == $p)) | .[0].run' <<<"$output")
+  [ -n "$a" ] && [ "$a" != null ]
+  [ "$a" = "$b" ]
+  [ "$a" != "$c" ] && [ "$c" != null ]
 }
 
 @test "history --json without jq says jq is required" {

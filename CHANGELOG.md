@@ -19,6 +19,8 @@ All notable changes to marmot are recorded here. The format follows
 - `mm purge` keeps build folders holding a `*-keypair.json` (Solana/Anchor deploy keys).
 - The operations log rotates to `operations.log.old` past 5 MB (`MM_LOG_MAX_BYTES`); `mm history`
   reads both.
+- Every operations log row carries a run id; `mm history` groups rows by run with totals and
+  `--json` includes `run`.
 
 ### Changed
 
@@ -46,6 +48,7 @@ All notable changes to marmot are recorded here. The format follows
   whose activity can't be read, keeps its artifacts.
 - Sizes are measured with a time limit (`MM_SIZE_TIMEOUT`, 300 s). A size that times out or
   can't be measured is shown as unknown and the item is kept; it was counted as 0 before.
+- `mm history -l N` counts runs, not rows (default 10).
 
 ## 0.2.0
 

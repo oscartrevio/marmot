@@ -600,8 +600,9 @@ mm_config() {
 
 # mm_log ACTION TARGET [BYTES] [DETAIL] — append to the operations log (real runs only, never dry-run).
 # ACTION: remove | trash | refused | failed | run. DETAIL: refusal reason or Trash location.
-# A log past MM_LOG_MAX_BYTES (default 5 MB) is first renamed to operations.log.old, replacing the
-# previous one; mm history reads both.
+# Row: time, command, action, target, bytes, detail, run id (MM_RUN_ID, set once per marmot
+# invocation by the entry point). A log past MM_LOG_MAX_BYTES (default 5 MB) is first renamed to
+# operations.log.old, replacing the previous one; mm history reads both.
 mm_log() {
   [[ "$MM_DRY_RUN" == 1 ]] && return 0
   mkdir -p "$MM_STATE_DIR"
@@ -610,8 +611,8 @@ mm_log() {
     mv -f -- "$MM_LOG_FILE" "$MM_LOG_FILE.old"
   # Control characters (tab/newline in a file name) would break the TSV rows.
   local target="${2//[[:cntrl:]]/?}" detail="${4:-}"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$MM_CMD" "$1" "$target" "${3:-0}" \
-    "${detail//[[:cntrl:]]/?}" >>"$MM_LOG_FILE"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$MM_CMD" "$1" "$target" "${3:-0}" \
+    "${detail//[[:cntrl:]]/?}" "${MM_RUN_ID:-}" >>"$MM_LOG_FILE"
 }
 
 # ---------------------------------------------------------------- safe actions

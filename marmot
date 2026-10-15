@@ -73,6 +73,10 @@ for a in "$@"; do
   esac
 done
 set -- "${args[@]+"${args[@]}"}"
+# One id per invocation, on every operations-log row (mm history groups by it). Exported, so
+# child marmot and bash processes log under the same run.
+[[ -n "${MM_RUN_ID:-}" ]] || printf -v MM_RUN_ID '%(%Y%m%dT%H%M%S)T-%s' -1 "$$"
+export MM_RUN_ID
 
 case "${1:-}" in
   "") mm_menu ;;

@@ -273,7 +273,7 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
 @test "log rows stay one line per operation even for odd names" {
   MM_DRY_RUN=0 mm_log remove "$SB/a"$'\n'"b"$'\t'"c" 5 "why"$'\n'"not"
   [ "$(wc -l <"$XDG_STATE_HOME/marmot/operations.log")" -eq 1 ]
-  [ "$(awk -F'\t' '{ print NF }' "$XDG_STATE_HOME/marmot/operations.log")" -eq 6 ]
+  [ "$(awk -F'\t' '{ print NF }' "$XDG_STATE_HOME/marmot/operations.log")" -eq 7 ]
 }
 
 @test "the operations log moves to operations.log.old once it is past MM_LOG_MAX_BYTES" {

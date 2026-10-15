@@ -133,8 +133,9 @@ processes or anything that needs root. Results go to `~/.local/state/marmot/last
 
 ### mm history [-l N | --all] [--json]
 
-What marmot removed, moved to the Trash, refused or failed. The log is
-`~/.local/state/marmot/operations.log`; past 5 MB it moves to `operations.log.old` (both are read).
+What marmot removed, moved to the Trash, refused or failed, grouped by run with totals; `-l N`
+shows the newest N runs (10). The log is `~/.local/state/marmot/operations.log`; past 5 MB it
+moves to `operations.log.old` (both are read).
 
 ### mm update [--check]
 
