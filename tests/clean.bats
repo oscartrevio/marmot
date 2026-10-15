@@ -811,3 +811,96 @@ old_dirs() { touch -d '20 days ago' "$@"; }
   [ "$status" -eq 0 ]
   exist "$SB/elsewhere/old.log"
 }
+
+# ---------------------------------------------------------------- system logs and crash dumps
+
+# root_src — source clean with the log and crash roots under $SB and a sudo double that runs the
+# command as the test user.
+root_src() {
+  mm_test_fake sudo '[[ "$1" == -n ]] && shift; [[ "$1" == -k ]] && exit 0; exec "$@"'
+  src
+  _CLEAN_LOG_ROOT="$SB/var/log"
+  _CLEAN_CRASH_ROOTS=("$SB/var/crash" "$SB/coredump")
+}
+# file_aged PATH DAYS [KB] — a file of KB kilobytes (default 64) last written DAYS ago.
+file_aged() {
+  mkdir -p "$(dirname "$1")"
+  yes 'Oct  1 00:00:00 host daemon[1]: a log line' | head -c "$(( ${3:-64} * 1024 ))" >"$1"
+  touch -d "$2 days ago" "$1"
+}
+# blocks PATH... — allocated bytes of each PATH, summed.
+blocks() { local p s=0; for p; do s=$((s + $(stat -c %b "$p") * 512)); done; echo "$s"; }
+
+@test "rotated logs 7+ days old go; live logs, recent rotations and the journal stay; dry-run size matches" {
+  local l="$SB/var/log"
+  file_aged "$l/syslog.1" 9 512; file_aged "$l/syslog.2.gz" 9; file_aged "$l/apt/history.log.1.gz" 20
+  file_aged "$l/dpkg.log.old" 9; file_aged "$l/linked.1" 9
+  file_aged "$l/syslog" 30; file_aged "$l/auth.log" 30; file_aged "$l/kern.log.1" 2
+  file_aged "$l/journal/m/system@x.journal.gz" 30
+  mkdir -p "$SB/keep"; ln "$l/linked.1" "$SB/keep/linked"   # a second link outside: frees nothing
+  local want; want=$(blocks "$l/syslog.1" "$l/syslog.2.gz" "$l/apt/history.log.1.gz" "$l/dpkg.log.old")
+  root_src
+  mm_confirm() { return 0; }
+  MM_DRY_RUN=1 _clean_rotated_logs >/dev/null
+  [ "$_CLEAN_TOOL_BYTES" -eq "$want" ]
+  exist "$l/syslog.1" "$l/dpkg.log.old"
+  _CLEAN_TOOL_BYTES=0
+  _clean_rotated_logs >"$BATS_TEST_TMPDIR/out"
+  gone "$l/syslog.1" "$l/syslog.2.gz" "$l/apt/history.log.1.gz" "$l/dpkg.log.old" "$l/linked.1"
+  exist "$l/syslog" "$l/auth.log" "$l/kern.log.1" "$l/journal/m/system@x.journal.gz" "$SB/keep/linked"
+  [ "$_CLEAN_TOOL_BYTES" -eq "$want" ]
+  [ "$(mm_log_rows remove | grep -c "^$l/")" -eq 5 ]
+}
+
+@test "rotated logs: a file some process still has open is kept" {
+  local l="$SB/var/log" i
+  file_aged "$l/syslog.1" 9; file_aged "$l/syslog.2.gz" 9
+  mm_test_bg "$SB" tail -n 0 -f "$l/syslog.1"
+  for ((i = 0; i < 100; i++)); do
+    [[ -n "$(find /proc/[0-9]*/fd -lname "$l/syslog.1" -print -quit 2>/dev/null)" ]] && break
+    sleep 0.05
+  done
+  root_src
+  mm_confirm() { return 0; }
+  run _clean_rotated_logs
+  [ -e "$l/syslog.1" ]
+  gone "$l/syslog.2.gz"
+}
+
+@test "rotated logs and crash dumps: nothing is deleted without a terminal" {
+  file_aged "$SB/var/log/syslog.1" 9; file_aged "$SB/var/crash/_usr_bin_node.1000.crash" 9
+  mkdir -p "$XDG_DATA_HOME/apport/r1"; mm_age "$XDG_DATA_HOME/apport" 9
+  root_src; mm_inuse_refresh >/dev/null 2>&1
+  run _clean_rotated_logs
+  [[ "$output" == *"syslog.1"* ]]   # listed
+  run _clean_crash_dumps
+  run _clean_user_crash_reports
+  exist "$SB/var/log/syslog.1" "$SB/var/crash/_usr_bin_node.1000.crash" "$XDG_DATA_HOME/apport/r1"
+  [ -z "$(mm_log_rows remove)" ]
+}
+
+@test "rotated logs and crash dumps are skipped without sudo" {
+  [[ $EUID -ne 0 ]] || skip "root always has sudo"
+  file_aged "$SB/var/log/syslog.1" 9; file_aged "$SB/coredump/core.node.1000.zst" 9
+  src
+  _CLEAN_LOG_ROOT="$SB/var/log"; _CLEAN_CRASH_ROOTS=("$SB/coredump")
+  mm_confirm() { return 0; }
+  run _clean_system
+  [[ "$output" == *"skipped (needs sudo)"* ]]
+  exist "$SB/var/log/syslog.1" "$SB/coredump/core.node.1000.zst"
+}
+
+@test "crash dumps 7+ days old go (system and your apport reports); recent ones and lock files stay" {
+  local c="$SB/var/crash" d="$SB/coredump" a="$XDG_DATA_HOME/apport"
+  file_aged "$c/_usr_bin_node.1000.crash" 9; file_aged "$c/_usr_bin_node.1000.upload" 9
+  file_aged "$c/_usr_bin_python3.1000.crash" 1; file_aged "$c/.lock" 30
+  file_aged "$d/core.node.1000.abc.1.zst" 9 256; file_aged "$d/core.chrome.1000.abc.2.zst" 3
+  file_aged "$a/old/report" 9; file_aged "$a/fresh/report" 1; touch -d '9 days ago' "$a/old"
+  root_src; mm_inuse_refresh >/dev/null 2>&1
+  mm_confirm() { return 0; }
+  _clean_crash_dumps >/dev/null
+  _clean_user_crash_reports >/dev/null
+  gone "$c/_usr_bin_node.1000.crash" "$c/_usr_bin_node.1000.upload" "$d/core.node.1000.abc.1.zst" "$a/old"
+  exist "$c/_usr_bin_python3.1000.crash" "$c/.lock" "$d/core.chrome.1000.abc.2.zst" "$a/fresh/report"
+  [ ! -e "$XDG_DATA_HOME/Trash/files/old" ]   # permanent, not trashed
+}
