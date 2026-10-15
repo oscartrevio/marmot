@@ -6,8 +6,8 @@ Gemini CLI, Copilot CLI, opencode, Aider, ...), Node/Python/Go/Rust toolchains, 
 of git worktrees. Inspired by [Mole](https://github.com/tw93/Mole), which does this for Macs.
 
 ```text
-mm clean       caches, old browser builds, old agent CLI versions, temp files, apt/snap/journal,
-               old kernels, Docker leftovers, stale editor servers
+mm clean       caches, old browser builds, old agent CLI versions, apt/snap/journal, old kernels,
+               Docker leftovers, stale editor servers; reports /tmp and how the OS ages it
 mm purge       abandoned git worktrees, then node_modules/.next/target/venv... in idle projects
 mm status      live health dashboard, agent sessions first: CPU, memory, disk and inodes,
                network/VPN, your link's latency, lingering dev servers and ports, updates,
@@ -51,11 +51,14 @@ marmot deletes files, so it is built to refuse rather than guess:
   (`~/.aws`, `~/.kube`, `~/.docker`, `~/.netrc`, ...), `~/.config`, and the state of every known
   coding agent (settings, credentials, session transcripts; see `lib/agents.sh`). Agent sessions
   are only ever reported.
-- **Trash for anything personal.** Temp files, uninstall leftovers, Python virtualenvs and
-  whatever you pick in `mm analyze` go to the standard Trash (`~/.local/share/Trash`) and can be
-  restored with `trash-restore`. If the Trash is on another filesystem, the item is kept, never
-  deleted instead. `mm clean` empties only Trash items deleted more than 7 days ago, after asking.
+- **Trash for anything personal.** Uninstall leftovers, Python virtualenvs and whatever you
+  pick in `mm analyze` go to the standard Trash (`~/.local/share/Trash`) and can be restored
+  with `trash-restore`. If the Trash is on another filesystem, the item is kept, never deleted
+  instead. `mm clean` empties only Trash items deleted more than 7 days ago, after asking.
   Regenerable caches and build artifacts are deleted permanently.
+- **Shared temp is the OS's job.** `/tmp` and `/var/tmp` hold other programs' sockets, locks and
+  working files, so marmot never sweeps them; `mm clean` shows their size and the
+  systemd-tmpfiles age that applies (and the `tmpfiles.d` line to add when nothing ages them).
 - **Confirmations need a terminal.** Run without one (cron, pipes) and every step that asks is
   skipped. There is no global `--yes`; the only unattended deletion is `mm purge --yes`, which
   removes build artifacts of stale projects only.
