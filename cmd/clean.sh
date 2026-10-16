@@ -294,7 +294,9 @@ _clean_revisions_row() {
   done
   local note=", newest of ${#newest[@]} kept" uses=""
   (( refkept )) && { note+=", $refkept still used by installed projects"; uses=", $refkept used by installed projects"; }
-  if (( n + kept + fail == 0 )); then mm_ok "$label" "up to date (${#rels[@]} builds$uses)"; return 0; fi
+  if (( n + kept + fail == 0 )); then
+    mm_ok "$label" "up to date (${#rels[@]} build$( (( ${#rels[@]} == 1 )) || echo s)$uses)"; return 0
+  fi
   mm_ok "$label" "$(_clean_detail "$n" "old builds" "$b" "$kept" "$fail")$note"
 }
 
