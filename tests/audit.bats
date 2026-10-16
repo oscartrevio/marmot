@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# Source audits (adapted from tw93/Mole scripts/audit_destructive_sinks.py): every raw deletion
-# outside mm_rm must say why it is safe, so a new `rm -rf "$x"` cannot slip in unreviewed.
+# Source audits: every raw deletion outside mm_rm must say why it is safe, so a new `rm -rf "$x"`
+# cannot slip in unreviewed.
 
 setup() { load helpers/common; }
 

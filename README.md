@@ -2,7 +2,7 @@
 
 **Keep the machines your coding agents run on clean, fast and healthy.**
 
-[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Debian 12+ · Ubuntu 22.04+](https://img.shields.io/badge/Debian%2012%2B%20%C2%B7%20Ubuntu%2022.04%2B-informational)
 ![bash 5](https://img.shields.io/badge/bash-5-informational)
 
@@ -353,9 +353,10 @@ Report security problems privately as [SECURITY.md](SECURITY.md) describes.
 
 ## Acknowledgements
 
-marmot started as a Linux take on [Mole](https://github.com/tw93/Mole) by tw93, a cleanup tool for
-macOS. Parts of its deletion checks and test sandbox are adapted from Mole.
+Thanks to [Mole](https://github.com/tw93/Mole) by tw93, the cleanup tool for macOS. Its care
+about what is safe to delete set the bar for marmot, which brings that care to the Linux machines
+coding agents run on.
 
 ## License
 
-[GPL-3.0](LICENSE)
+[MIT](LICENSE)
