@@ -50,14 +50,17 @@ _uninstall_add() { # SRC NAME BYTES EPOCH PATH NOTE HIDDEN (BYTES empty: size un
 # _uninstall_human BYTES — mm_human, or "size unknown" for an empty BYTES.
 _uninstall_human() { if [[ -n "$1" ]]; then mm_human "$1"; else printf 'size unknown'; fi; }
 
-# _uninstall_generic NAME — 0 for names too generic to tie a ~/.config/NAME-style directory to one
-# package (after Mole's _mole_uninstall_is_common_app_name), plus home-layout names.
+# _uninstall_generic NAME — 0 for names too generic to tie a ~/.config/NAME-style folder to one
+# package: parts of Debian package names (foo-common, foo-utils, foo-daemon), folders the
+# freedesktop.org specs, the desktop and the home layout share (~/.config/autostart,
+# ~/.local/share/fonts, ~/.config/systemd, ~/bin), credentials, and marmot itself.
 _uninstall_generic() {
   case "${1,,}" in
-    app|apps|agent|cache|cli|config|core|data|desktop|helper|launcher|local|server|service|share|\
-    snap|state|store|sync|tool|tools|update|updater|util|utils|utility|daemon|backup|cloud|manager|\
-    monitor|client|worker|runner|driver|plugin|plugins|extension|widget|system|files|music|notes|\
-    bin|lib|etc|tmp|trash|ssh|gnupg|pki|keyrings|fonts|applications|systemd|mm|marmot) return 0 ;;
+    common|core|base|data|doc|docs|dev|devel|utils|util|tools|tool|bin|lib|libs|runtime|extra|\
+    extras|plugins|addons|modules|cli|client|server|daemon|app|apps|gui|desktop|\
+    applications|autostart|fonts|fontconfig|icons|themes|mime|menus|sounds|keyrings|pki|systemd|\
+    environment.d|dconf|pulse|pipewire|wireplumber|gtk-2.0|gtk-3.0|gtk-4.0|xdg-desktop-portal|\
+    trash|flatpak|snap|cache|config|local|share|state|tmp|temp|etc|src|ssh|gnupg|mm|marmot) return 0 ;;
   esac
   return 1
 }
