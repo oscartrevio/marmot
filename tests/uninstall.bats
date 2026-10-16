@@ -96,11 +96,11 @@ _trashed() { [[ -e "$XDG_DATA_HOME/Trash/files/$1" && -f "$XDG_DATA_HOME/Trash/i
 
 @test "a generic name keeps every name-only leftover" {
   local n
-  for n in agent cli server tools; do
+  for n in common cli server tools; do
     mkdir -p "$HOME/.cache/$n" "$HOME/.local/share/$n" "$HOME/.$n"
   done
   _load
-  for n in agent cli server tools; do
+  for n in common cli server tools; do
     run _uninstall_remove_leftovers "$n" apt
     [[ "$output" == *"generic name"* ]]
     [ -d "$HOME/.cache/$n" ]; [ -d "$HOME/.local/share/$n" ]; [ -d "$HOME/.$n" ]
