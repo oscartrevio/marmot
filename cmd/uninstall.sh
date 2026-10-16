@@ -637,7 +637,7 @@ _uninstall_apply() {
     fi
   fi
 
-  # 3. plan, Mole style
+  # 3. plan: what goes, with sizes and leftovers, and what is kept and why
   printf '\n%sFiles to be removed:%s\n' "$C_BOLD" "$C_RESET"
   local -a lo=()
   local shared reason lbytes item_bytes item_unknown free_bytes=0 trash_bytes=0 unknown=0
