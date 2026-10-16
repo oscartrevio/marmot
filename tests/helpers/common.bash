@@ -2,18 +2,18 @@
 # Shared bats setup for marmot. Load with `load helpers/common`, then call mm_test_setup in setup()
 # and mm_test_teardown in teardown().
 #
-# Isolation (adapted from tw93/Mole tests/helpers/common.bash):
+# Isolation:
 #   - HOME, XDG dirs, marmot config/state and the Trash live under $BATS_TEST_TMPDIR; setup refuses to
 #     continue unless HOME really is that sandbox.
-#   - Commands that change the real machine are replaced, first on PATH, by fail-loud stubs. A
-#     stub records `UNSTUBBED <cmd> <args>` and exits 97; teardown fails the test if any stub ran,
-#     so a forgotten mock is a red test, not a silent host-dependent pass. A test that needs one
-#     installs a double with mm_test_fake.
+#   - Every command in MM_TEST_GUARDED is, first on PATH, a link to one guard script that writes
+#     "<cmd> <args>" to $MM_TEST_HOST_CALLS and exits 86. Teardown fails the test when that file is
+#     not empty, so code that reaches the real machine turns a test red instead of passing on one
+#     host and failing on another. A test that needs the command installs a double: mm_test_fake.
 #   - `sudo -n true` answers "no" quietly, so marmot runs its unprivileged paths; so does
 #     `gh auth token` (logged out), so no test asks GitHub anything.
 
 MM_SRC="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
-MM_TEST_STUBBED=(sudo apt apt-get apt-mark snap docker systemctl journalctl swapon swapoff mount umount
+MM_TEST_GUARDED=(sudo apt apt-get apt-mark snap docker systemctl journalctl swapon swapoff mount umount
   resolvectl fstrim npm npx pnpm yarn bun uv uvx go pip pip3 pipx ncdu fzf pkill killall reboot shutdown
   trash-put trash-empty gio tmux gh mise conda brew nix-collect-garbage)
 
@@ -47,40 +47,43 @@ mm_test_setup() {
   # Purge discovery looks in /workspaces and /workspace under this stand-in for / instead
   # (cmd/purge.sh honors it only inside $BATS_TEST_TMPDIR); it does not exist unless a test makes it.
   export MM_TEST_WORKSPACE_PREFIX="$SB/fakeroot"
-  export MM_TEST_UNSTUBBED_LOG="$sandbox/unstubbed.log"
-  : >"$MM_TEST_UNSTUBBED_LOG"
+  export MM_TEST_HOST_CALLS="$sandbox/host-calls"
+  : >"$MM_TEST_HOST_CALLS"
   # The automation-browser sweep of /tmp runs in this folder instead (cmd/clean.sh honors the
   # override only inside $BATS_TEST_TMPDIR).
   export MM_TEST_TMP_ROOT="$SB/tmp"
   mkdir -p "$MM_TEST_TMP_ROOT"
-  mm_test_install_stubs
+  mm_test_guard_host
   MM_TEST_PIDS=()
 }
 
-mm_test_install_stubs() {
-  local d="$BATS_TEST_TMPDIR/stubs" c
-  mkdir -p "$d"
-  for c in "${MM_TEST_STUBBED[@]}"; do
-    cat >"$d/$c" <<EOF
+# mm_test_guard_host — put the guard (see the header) first on PATH, plus `mm` for this checkout.
+mm_test_guard_host() {
+  local bin="$BATS_TEST_TMPDIR/stubs" cmd
+  mkdir -p "$bin"
+  cat >"$bin/.guard" <<'GUARD'
 #!/usr/bin/env bash
-# fail-loud stub: tests must never run the real $c
-if [[ "$c" == sudo && ( "\$*" == "-n true" || "\$*" == "-k" ) ]]; then exit 1; fi
-if [[ "$c" == gh && "\$*" == "auth token" ]]; then exit 1; fi
-printf 'UNSTUBBED %s %s\n' "$c" "\$*" >>"\$MM_TEST_UNSTUBBED_LOG"
-echo "UNSTUBBED $c \$*" >&2
-exit 97
-EOF
-    chmod +x "$d/$c"
-  done
-  ln -sf "$MM_SRC/marmot" "$d/mm"
-  export PATH="$d:$PATH"
+cmd=${0##*/}
+case "$cmd $*" in
+  "sudo -n true" | "sudo -k" | "gh auth token") exit 1 ;;   # no sudo, logged out of GitHub
+esac
+echo "$cmd $*" >>"$MM_TEST_HOST_CALLS"
+echo "test reached the real machine: $cmd $*" >&2
+exit 86
+GUARD
+  chmod 755 "$bin/.guard"
+  for cmd in "${MM_TEST_GUARDED[@]}"; do ln -sfn .guard "$bin/$cmd"; done
+  ln -sfn "$MM_SRC/marmot" "$bin/mm"
+  export PATH="$bin:$PATH"
 }
 
-# mm_test_fake NAME [BODY] — replace NAME's stub with a double whose script is BODY (default:
-# succeed silently). Lasts for the current test only.
+# mm_test_fake NAME [SCRIPT] — for the rest of this test, NAME runs SCRIPT (bash; default: do
+# nothing and succeed) instead of the guard or the real command.
 mm_test_fake() {
-  printf '#!/usr/bin/env bash\n%s\n' "${2:-exit 0}" >"$BATS_TEST_TMPDIR/stubs/$1"
-  chmod +x "$BATS_TEST_TMPDIR/stubs/$1"
+  local f="$BATS_TEST_TMPDIR/stubs/$1"
+  rm -f -- "$f"
+  printf '#!/usr/bin/env bash\n%s\n' "${2:-:}" >"$f"
+  chmod 755 "$f"
 }
 
 # mm_test_bg DIR CMD... — start CMD in the background with cwd DIR; killed at teardown. Returns
@@ -104,9 +107,9 @@ mm_test_bg() {
 mm_test_teardown() {
   local p
   for p in "${MM_TEST_PIDS[@]}"; do kill "$p" 2>/dev/null; done
-  if [[ -s "$MM_TEST_UNSTUBBED_LOG" ]]; then
-    echo "commands ran unstubbed:" >&2
-    cat "$MM_TEST_UNSTUBBED_LOG" >&2
+  if [[ -s "$MM_TEST_HOST_CALLS" ]]; then
+    echo "the test reached the real machine:" >&2
+    cat "$MM_TEST_HOST_CALLS" >&2
     return 1
   fi
 }
