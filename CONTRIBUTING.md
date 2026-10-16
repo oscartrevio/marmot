@@ -68,5 +68,4 @@ it. It does not run the e2e scenario.
 
 ## License
 
-marmot is GPL-3.0; your contribution is licensed the same way. Parts are ported from
-[Mole](https://github.com/tw93/Mole); keep the attribution comments when you move that code.
+marmot is MIT-licensed; your contribution is licensed the same way.

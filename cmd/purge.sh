@@ -211,9 +211,9 @@ _purge_repo_of() {
 # 2 the probe failed or timed out. Absent: no repository owns it or it tracks nothing there.
 declare -A _PURGE_TRACKED=()
 
-# _purge_tracked_load ART... — fill _PURGE_TRACKED with one `git ls-files` per repository
-# (Mole's mole_path_has_git_tracked_files, batched). A file name holding a newline splits into
-# pieces whose first one still starts with the artifact: it can only add "tracked", never hide it.
+# _purge_tracked_load ART... — fill _PURGE_TRACKED with one `git ls-files` per repository. A file
+# name holding a newline splits into pieces whose first one still starts with the artifact: it can
+# only add "tracked", never hide it.
 _purge_tracked_load() {
   local art repo rel rc
   local -A rels=()
