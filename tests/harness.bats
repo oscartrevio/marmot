@@ -17,30 +17,30 @@ teardown() { mm_test_teardown; }
   [ "$MM_TTY" = 0 ]
 }
 
-@test "a stubbed command fails loudly and is recorded for teardown" {
+@test "a guarded command fails loudly and is recorded for teardown" {
   run apt-get install something
-  [ "$status" -eq 97 ]
-  grep -qx 'UNSTUBBED apt-get install something' "$MM_TEST_UNSTUBBED_LOG"
+  [ "$status" -eq 86 ]
+  grep -qx 'apt-get install something' "$MM_TEST_HOST_CALLS"
   run mm_test_teardown
   [ "$status" -ne 0 ]
-  : >"$MM_TEST_UNSTUBBED_LOG"   # let this test's own teardown pass
+  : >"$MM_TEST_HOST_CALLS"   # let this test's own teardown pass
 }
 
 @test "sudo -n true answers no quietly; any other sudo use is recorded" {
   run sudo -n true
   [ "$status" -eq 1 ]
-  [ ! -s "$MM_TEST_UNSTUBBED_LOG" ]
+  [ ! -s "$MM_TEST_HOST_CALLS" ]
   run sudo rm -rf /
-  [ "$status" -eq 97 ]
-  [ -s "$MM_TEST_UNSTUBBED_LOG" ]
-  : >"$MM_TEST_UNSTUBBED_LOG"
+  [ "$status" -eq 86 ]
+  [ -s "$MM_TEST_HOST_CALLS" ]
+  : >"$MM_TEST_HOST_CALLS"
 }
 
-@test "mm_test_fake replaces a stub for the current test only" {
+@test "mm_test_fake replaces a guarded command for the current test only" {
   mm_test_fake docker 'echo "fake $*"'
   run docker ps
   [ "$output" = "fake ps" ]
-  [ ! -s "$MM_TEST_UNSTUBBED_LOG" ]
+  [ ! -s "$MM_TEST_HOST_CALLS" ]
 }
 
 @test "background processes started with mm_test_bg are stopped at teardown" {

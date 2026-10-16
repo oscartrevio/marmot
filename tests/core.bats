@@ -374,7 +374,7 @@ $HOME/.cache/pip removable" ]
 
 @test "process checks read /proc and work without procps or psmisc" {
   local c
-  for c in pgrep pidof ps fuser uptime; do mm_test_fake "$c" "echo \"$c \$*\" >>'$BATS_TEST_TMPDIR/procps'; exit 97"; done
+  for c in pgrep pidof ps fuser uptime; do mm_test_fake "$c" "echo \"$c \$*\" >>'$BATS_TEST_TMPDIR/procps'; exit 86"; done
   mkdir -p "$SB/bin"
   printf 'sleep 30\n' >"$SB/bin/fake-tool.cjs"
   mm_test_bg "$SB" sleep 30
