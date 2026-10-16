@@ -116,7 +116,7 @@ _analyze_bar() {
   printf '%s%s%s' "$C_CYAN" "$bar" "$C_RESET"
 }
 
-# _analyze_render USED ROWS... — numbered Mole-style lines; percent is of used disk space.
+# _analyze_render USED ROWS... — numbered lines with a usage bar; percent is of used disk space.
 _analyze_render() {
   local used=$1; shift
   local max=0 row label bytes status target access n=0 size pct mark note

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# marmot: keep this Linux box clean, fast, and up to date. Inspired by tw93/Mole.
+# marmot: keep this Linux box clean, fast, and up to date.
 set -uo pipefail
 
 MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
