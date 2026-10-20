@@ -1152,21 +1152,39 @@ old_dirs() { touch -d '20 days ago' "$@"; }
 # ---------------------------------------------------------------- system logs and crash dumps
 
 # root_src — source clean with the log and crash roots under $SB, a sudo double that runs the
-# command as the test user, and a find double ($ROOT_FIND, also on PATH as find) that leaves out
-# the /proc/PID/fd folders of other accounts' processes: root reads them, the test user cannot,
-# and they hold none of the test's files. Folders that are gone stay in, so find still fails on
-# them like the real one.
+# command as the test user, and a find double ($ROOT_FIND, also on PATH as find) that stands in
+# for root's view of /proc. Root reads every process's open files; the test user only those of
+# processes the kernel lets it trace: owned by it, with the same user and group ids and no
+# capabilities. The double leaves the others out: they hold none of the test's files, and on a
+# CI runner some of them run as the test user with another group. Folders that are gone stay
+# in, so find still fails on them like the real one.
 root_src() {
-  local real; real=$(PATH=/usr/bin:/bin command -v find)
   mm_test_fake sudo '[[ "$1" == -n ]] && shift; [[ "$1" == -k ]] && exit 0; exec "$@"'
   ROOT_FIND="$BATS_TEST_TMPDIR/root-find"
-  cat >"$ROOT_FIND" <<EOF
-#!/usr/bin/env bash
-a=()
-for x; do [[ \$x == /proc/[0-9]*/fd && -e \$x && ! -r \$x ]] || a+=("\$x"); done
-[[ \${1:-} == /proc/[0-9]*/fd && \${a[0]:-} != /proc/[0-9]*/fd ]] && exit 0
-exec $real "\${a[@]}"
+  {
+    printf '#!/usr/bin/env bash\nreal=%q u=%q g=%q\n' "$(PATH=/usr/bin:/bin command -v find)" "$(id -u)" "$(id -g)"
+    cat <<'EOF'
+traceable() {
+  local k a b c d bad=0
+  [[ -O $1 ]] || return 1
+  while read -r k a b c d; do
+    case $k in
+      Uid:) [[ "$a $b $c $d" == "$u $u $u $u" ]] || bad=1 ;;
+      Gid:) [[ "$a $b $c $d" == "$g $g $g $g" ]] || bad=1 ;;
+      CapPrm:) [[ $a == 0000000000000000 ]] || bad=1 ;;
+    esac
+  done <"${1%/fd}/status"
+  (( ! bad ))
+}
+args=()
+for x; do
+  if [[ $x == /proc/[0-9]*/fd && -e $x ]] && ! traceable "$x" 2>/dev/null; then continue; fi
+  args+=("$x")
+done
+[[ ${1:-} == /proc/[0-9]*/fd && ${args[0]:-} != /proc/[0-9]*/fd ]] && exit 0
+exec "$real" "${args[@]}"
 EOF
+  } >"$ROOT_FIND"
   chmod +x "$ROOT_FIND"
   mm_test_fake find "exec '$ROOT_FIND' \"\$@\""
   src
