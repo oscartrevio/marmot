@@ -50,7 +50,7 @@ trash_item() {
 }
 
 # personal_home — a home full of personal data shaped like caches and build artifacts, plus two
-# regenerable controls (a stale node_modules, an old pip wheel). Everything is 40 days old except
+# regenerable controls (a stale node_modules, an old thumbnail). Everything is 40 days old except
 # where a case needs otherwise.
 personal_home() {
   local h="$HOME" x="$HOME/.npm/_npx/15b07286cbcc3329"
@@ -121,11 +121,13 @@ personal_home() {
   echo 'home = /usr/bin' >"$h/proj/ml/env/pyvenv.cfg"
   echo 'Signature: 8a477f597d28d172789f06886806bc55' >"$h/proj/ml/env/CACHEDIR.TAG"
   echo patched >"$h/proj/ml/env/lib/python3.11/site-packages/patched.py"
-  # Regenerable controls: a stale node_modules next to its package.json, an old pip wheel.
-  mkdir -p "$h/work/old/node_modules/dep" "$h/.cache/pip/wheels"
+  # Regenerable controls: a stale node_modules next to its package.json, an old thumbnail. Not a
+  # tool's cache: other test files start processes named after tools, and a cache whose tool
+  # runs is kept, so such a control would fail whenever those files run at the same time.
+  mkdir -p "$h/work/old/node_modules/dep" "$h/.cache/thumbnails/large"
   echo '{}' >"$h/work/old/package.json"
   head -c 1100000 /dev/urandom >"$h/work/old/node_modules/dep/index.js"
-  echo w >"$h/.cache/pip/wheels/w.whl"
+  echo png >"$h/.cache/thumbnails/large/0123456789abcdef0123456789abcdef.png"
 
   # Checksums first: reading a file refreshes its access time, which counts as use.
   sha256sum -- "${PERSONAL[@]}" >"$SUMS"
@@ -155,7 +157,7 @@ venv_kept() {
   [ "$status" -eq 0 ]
   intact
   venv_kept
-  gone "$HOME/work/old/node_modules" "$HOME/.cache/pip/wheels/w.whl"
+  gone "$HOME/work/old/node_modules" "$HOME/.cache/thumbnails/large/0123456789abcdef0123456789abcdef.png"
 }
 
 @test "mm purge --yes keeps personal data; a stale node_modules still goes" {
@@ -167,11 +169,11 @@ venv_kept() {
   gone "$HOME/work/old/node_modules"
 }
 
-@test "mm clean without a terminal keeps personal data; old cache entries still go" {
+@test "mm clean without a terminal keeps personal data; old thumbnails still go" {
   tools; personal_home
   run mm clean
   [ "$status" -eq 0 ]
   intact
   venv_kept
-  gone "$HOME/.cache/pip/wheels/w.whl"
+  gone "$HOME/.cache/thumbnails/large/0123456789abcdef0123456789abcdef.png"
 }
