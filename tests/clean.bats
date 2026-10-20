@@ -428,11 +428,14 @@ exec $real \"\$@\""
 }
 
 @test "catalog cache entries used in the last 7 days stay (an MCP server npx runs); older ones go" {
-  local x="$HOME/.npm/_npx"
+  local x="$HOME/.npm/_npx" e
   mkdir -p "$x/old/node_modules/a" "$x/read/node_modules/b" "$x/written/node_modules/c" "$x/nested/node_modules/d/dist"
   echo '{}' >"$x/old/package.json"; echo '{}' >"$x/read/package.json"; echo '{}' >"$x/written/package.json"
   echo '{}' >"$x/nested/package.json"; echo 'run()' >"$x/nested/node_modules/d/dist/index.js"
+  for e in old read written nested; do : >"$x/$e/node_modules/.package-lock.json"; done
   mm_age "$x" 30
+  # npm writes the lockfile last, so a cache entry nothing wrote into has no file newer than it.
+  for e in old read written nested; do touch -d '29 days ago' "$x/$e/node_modules/.package-lock.json"; done
   touch -a "$x/read/package.json"           # npx -y read it: only its access time moves
   echo '{"v":2}' >"$x/written/package.json"  # reinstalled today
   touch -a "$x/nested/node_modules/d/dist/index.js"  # a server loaded only a nested file
@@ -442,6 +445,72 @@ exec $real \"\$@\""
   gone "$x/old"
   exist "$x/read/node_modules/b" "$x/written/node_modules/c" "$x/nested/node_modules/d/dist/index.js"
   [[ "$output" == *"npx package cache"*"1 item"*"3 used in the last 7 days kept"* ]]
+}
+
+# caches_then_review — the catalog cache rows plus the "Kept for you to review" block.
+caches_then_review() { _clean_catalog_caches; _clean_review_print; }
+
+# npx_entry NAME — an npx cache entry: an installed package tree 30 days old, with npm's install
+# marker written last, the way a real `npx -y` install leaves it.
+npx_entry() {
+  local e="$HOME/.npm/_npx/$1"
+  mkdir -p "$e/node_modules/@modelcontextprotocol/server-memory/dist"
+  echo '{"_npx":{"packages":["@modelcontextprotocol/server-memory"]}}' >"$e/package.json"
+  echo 'run()' >"$e/node_modules/@modelcontextprotocol/server-memory/dist/index.js"
+  : >"$e/node_modules/.package-lock.json"
+  mm_age "$e" 30
+  touch -d '29 days ago' "$e/node_modules/.package-lock.json"
+}
+
+@test "npx: an entry a server wrote into after its install is kept and listed; a plain one goes" {
+  local x="$HOME/.npm/_npx" m="$HOME/.npm/_npx/mem/node_modules/@modelcontextprotocol/server-memory/dist"
+  npx_entry plain; npx_entry mem
+  echo '{"type":"entity","name":"Oscar"}' >"$m/memory.jsonl"   # the server's knowledge graph
+  touch -d '20 days ago' "$m/memory.jsonl" "$m"   # written 10 days after the install, not since
+  mkdir -p "$x/partial/node_modules/x"; echo i >"$x/partial/node_modules/x/index.js"
+  echo '{}' >"$x/partial/package.json"; mm_age "$x/partial" 30   # an install with no marker
+  catalog
+  _clean_busy() { return 1; }
+  run caches_then_review
+  [ "$status" -eq 0 ]
+  gone "$x/plain"
+  exist "$m/memory.jsonl" "$m/index.js" "$x/partial/node_modules/x/index.js"
+  [[ "$output" == *"files written after install"*"memory.jsonl"* ]]
+  [ -z "$(mm_log_rows remove | grep -E "^$x/(mem|partial)")" ]
+}
+
+@test "Deno's npm cache is kept and reported; its other caches are still emptied" {
+  local d="$HOME/.cache/deno"
+  mkdir -p "$d/npm/registry.npmjs.org/@modelcontextprotocol/server-memory/2.0.0/dist" "$d/gen/file" "$d/deps/https"
+  echo '{"name":"server-memory"}' >"$d/npm/registry.npmjs.org/@modelcontextprotocol/server-memory/2.0.0/package.json"
+  echo '{"type":"entity"}' >"$d/npm/registry.npmjs.org/@modelcontextprotocol/server-memory/2.0.0/dist/memory.jsonl"
+  echo c >"$d/gen/file/x.js"; echo h >"$d/deps/https/body"
+  mm_age "$d" 30
+  catalog
+  _clean_busy() { return 1; }
+  run caches_then_review
+  [ "$status" -eq 0 ]
+  exist "$d/npm/registry.npmjs.org/@modelcontextprotocol/server-memory/2.0.0/dist/memory.jsonl"
+  gone "$d/gen/file" "$d/deps/https"
+  [[ "$output" == *"Deno npm packages"* ]]
+  [ -z "$(mm_log_rows remove | grep -E "^$d/npm/")" ]
+}
+
+@test "opencode: a plugin that wrote into its own folder keeps the cache's node_modules" {
+  local c="$HOME/.cache/opencode"
+  mkdir -p "$c/node_modules/marmot-plugin"
+  : >"$c/node_modules/.package-lock.json"; echo p >"$c/node_modules/marmot-plugin/index.js"
+  echo '{}' >"$c/models.json"
+  mm_age "$c" 30
+  touch -d '29 days ago' "$c/node_modules/.package-lock.json"
+  echo '{"seen":1}' >"$c/node_modules/marmot-plugin/state.json"
+  touch -d '20 days ago' "$c/node_modules/marmot-plugin/state.json" "$c/node_modules/marmot-plugin"
+  catalog
+  _clean_busy() { return 1; }
+  run caches_then_review
+  [ "$status" -eq 0 ]
+  exist "$c/node_modules/marmot-plugin/state.json" "$c/node_modules/marmot-plugin/index.js"
+  gone "$c/models.json"
 }
 
 @test "a big cache folder no catalog row knows is listed for review and kept" {
@@ -1180,12 +1249,14 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   echo n >"$h/.gem/ruby/3.2.0/cache/notes.txt"
   echo l >"$h/.gradle/daemon/8.5/daemon-4242.out.log"; echo r >"$h/.gradle/daemon/8.5/registry.bin"
   echo m >"$h/.cache/opencode/node_modules/ai/index.js"; echo j >"$h/.cache/opencode/models.json"
+  : >"$h/.cache/opencode/node_modules/.package-lock.json"   # the plugin install, nothing written into it since
   echo s >"$h/.cache/opencode/snapshots/s1/f"
   echo l >"$h/.npm/_logs/2026-01-01T00_00_00_000Z-debug-0.log"; echo c >"$h/.cache/composer/files/acme/p.zip"
   echo z >"$h/.oh-my-zsh/cache/completions/_docker"; echo b >"$h/.android/build-cache/x/b"
   echo '{}' >"$h/.local/share/jupyter/runtime/kernel-1.json"; echo t >"$h/.hex/packages/hexpm/jason-1.4.1.tar"
   echo o >"$h/.opam/download-cache/sha256/ab"
   mm_age "$h" 30
+  touch -d '29 days ago' "$h/.cache/opencode/node_modules/.package-lock.json"
   catalog
   _clean_busy() { return 1; }   # isolate from tools running on the host
   run _clean_catalog_caches

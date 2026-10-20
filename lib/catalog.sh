@@ -12,7 +12,12 @@
 #                     tool:CMD (while CMD is installed the row is skipped and cmd/clean.sh runs
 #                     CMD's own clean instead) or space-separated name globs for the entries
 #                     directly inside: GLOB keeps only matching entries as candidates, !GLOB
-#                     leaves matching ones alone (e.g. "*.log", "!snapshot*").
+#                     leaves matching ones alone (e.g. "*.log", "!snapshot*"). A row whose
+#                     entries hold installed packages that run adds installed=MARKER, the file
+#                     the package manager writes last (npm: node_modules/.package-lock.json):
+#                     an entry with a file as new as or newer than that marker was written into
+#                     after it was installed and is kept for review, and so is an install whose
+#                     marker is missing (see cmd/clean.sh _clean_installed_hold).
 #          revisions  downloaded browser/tool builds: only the newest build per product is needed.
 #                     spec = DEPTH:REGEX[:refs=playwright][:marker=NAME][:files]. Entries DEPTH
 #                     levels below path are matched (relative path) against REGEX; group 1 is the
@@ -51,6 +56,10 @@
 #   ~/.kube/cache/oidc-login and other plugin       login token caches next to kubectl's
 #   caches                                          discovery/http caches
 #   every coding agent's state (lib/agents.sh)      settings, credentials, session transcripts
+#   %CACHE%/deno/npm                                packages Deno extracted and runs; Deno leaves
+#                                                   no mark of when an install finished, so a
+#                                                   package's own data cannot be told from it
+#                                                   (reported instead)
 # npm, pnpm, yarn, bun and uv (when installed) are cleaned through their own tools by
 # cmd/clean.sh, like the mise, conda and Homebrew caches and (opt-in) the nix store.
 #
@@ -59,7 +68,7 @@
 
 MM_CATALOG_TABLE='
 # ---- JavaScript / TypeScript
-cache|npx package cache|~/.npm/_npx|npm npm-cli.js npx npx-cli.js||
+cache|npx package cache|~/.npm/_npx|npm npm-cli.js npx npx-cli.js|installed=node_modules/.package-lock.json|
 cache|Corepack cache|%CACHE%/node/corepack|corepack pnpm yarn|!lastKnownGood.json|
 cache|TypeScript cache|%CACHE%/typescript|tsserver||
 cache|node-gyp headers|%CACHE%/node-gyp|node-gyp npm||
@@ -69,10 +78,10 @@ cache|Electron downloads|%CACHE%/electron|electron-builder electron-forge||
 cache|electron-builder cache|%CACHE%/electron-builder|electron-builder||
 cache|Deno module cache|%CACHE%/deno/deps|deno||
 cache|Deno compiled cache|%CACHE%/deno/gen|deno||
-cache|Deno npm cache|%CACHE%/deno/npm|deno||
+report|Deno npm packages|%CACHE%/deno/npm|||npm packages Deno extracted: a package that runs writes its own data in here and Deno records no install time, so they are kept; deno clean empties the whole Deno cache
 cache|npm logs|~/.npm/_logs|npm npm-cli.js npx npx-cli.js||
 cache|npm prebuilt binaries|~/.npm/_prebuilds|npm npm-cli.js npx npx-cli.js||
-cache|opencode cache|%CACHE%/opencode|opencode|!snapshot*|
+cache|opencode cache|%CACHE%/opencode|opencode|!snapshot* installed=node_modules/.package-lock.json|
 # ---- Python
 cache|uv cache|%CACHE%/uv|uv uvx|tool:uv|
 cache|pip cache|%CACHE%/pip|pip pip3||

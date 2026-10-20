@@ -126,18 +126,22 @@ _clean_detail() {
 
 # _clean_contents [--keep-recent] LABEL DIR [FILTER] — permanently empty a regenerable cache DIR
 # via mm_rm (ALLOWED_ROOT=DIR). FILTER: name globs for the entries (catalog cache spec; !GLOB =
-# leave alone). --keep-recent keeps entries used in the last _CLEAN_RECENT_DAYS days: anything
-# inside the entry, at any depth, modified, or a file inside it read, since then. A tool may only
-# read nested files (a cached package's node_modules/x/index.js), so the entry's own times are not
-# enough. Folder access times do not count: listing a folder, as this scan does, sets them.
+# leave alone), plus installed=MARKER, which keeps entries holding a package that was written
+# into after it was installed (see _clean_installed_hold). --keep-recent keeps entries used in the
+# last _CLEAN_RECENT_DAYS days: anything inside the entry, at any depth, modified, or a file
+# inside it read, since then. A tool may only read nested files (a cached package's
+# node_modules/x/index.js), so the entry's own times are not enough. Folder access times do not
+# count: listing a folder, as this scan does, sets them.
 _clean_contents() {
   local keep=0; [[ "$1" == --keep-recent ]] && { keep=1; shift; }
-  local label="$1" dir="$2" w rec since n=0 b=0 kept=0 fail=0 recent=0 note=""
+  local label="$1" dir="$2" w rec why since installed="" n=0 b=0 kept=0 fail=0 recent=0 held=0 note=""
   local -a toks=() sel=() inc=() pick=() young=(-false) depth=(-maxdepth 1)
   local -A used=()
   read -r -a toks <<<"${3:-}"
   for w in "${toks[@]}"; do
-    if [[ "$w" == '!'?* ]]; then sel+=(! -name "${w#!}"); else inc+=(-o -name "$w"); fi
+    if [[ "$w" == installed=?* ]]; then installed=${w#installed=}
+    elif [[ "$w" == '!'?* ]]; then sel+=(! -name "${w#!}")
+    else inc+=(-o -name "$w"); fi
   done
   (( ${#inc[@]} )) && sel+=(\( "${inc[@]:1}" \))
   [[ -d "$dir" ]] || return 0
@@ -157,6 +161,9 @@ _clean_contents() {
     \( "${young[@]}" \) -printf 'R%P\0' 2>/dev/null)
   for w in "${pick[@]}"; do
     if [[ -n "${used[$w]+x}" ]]; then recent=$((recent + 1)); continue; fi
+    if [[ -n "$installed" ]] && why=$(_clean_installed_hold "$dir/$w" "$installed"); then
+      held=$((held + 1)); _clean_review "$label" "$why"; continue
+    fi
     mm_rm "$dir/$w" "$dir"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
@@ -165,8 +172,62 @@ _clean_contents() {
     esac
   done
   (( recent )) && note=", $recent used in the last $_CLEAN_RECENT_DAYS days kept"
+  (( held )) && note+=", $held kept for you to review"
   if (( n + kept + fail == 0 )); then mm_ok "$label" "nothing to clean${note}"; return; fi
   mm_ok "$label" "$(_clean_detail "$n" items "$b" "$kept" "$fail")${note}"
+}
+
+# Packages are installed a few levels down at most: an npx entry keeps one node_modules, a tool
+# that versions its installs one per generation folder.
+_CLEAN_INSTALLED_DEPTH=5
+
+# _clean_installed_hold ENTRY MARKER — print why ENTRY must be kept and return 0; 1 when it holds
+# nothing but what its installs wrote. MARKER is the file a package manager writes when it has
+# finished installing into a folder (npm: node_modules/.package-lock.json). A package that runs
+# can write into its own folder (an MCP server's memory file, a plugin's state), and such a file
+# is newer than the marker, so the entry is kept and listed for review. An install whose marker
+# is missing, or that cannot be read, is kept too: nothing proves what is in it is regenerable.
+_clean_installed_hold() {
+  local entry="$1" marker="$2" base="${2%/*}" m pkg newest
+  local -a marks=()
+  mapfile -d '' -t marks < <(find "$entry" -maxdepth "$_CLEAN_INSTALLED_DEPTH" -type f \
+    -path "*/$marker" -print0 2>/dev/null)
+  if (( ${#marks[@]} == 0 )); then
+    [[ "$base" != "$marker" ]] || return 1
+    [[ "${entry##*/}" == "$base" || -n "$(find "$entry" -maxdepth "$_CLEAN_INSTALLED_DEPTH" \
+      -type d -name "$base" -print -quit 2>/dev/null)" ]] || return 1
+    mm_tilde "$entry"; printf 'an install without its %s: %s' "${marker##*/}" "$REPLY"
+    return 0
+  fi
+  for m in "${marks[@]}"; do
+    pkg=${m%"/$marker"}
+    if ! newest=$(_clean_written_after "$pkg" "$m"); then
+      mm_tilde "$pkg"; printf 'install cannot be checked: %s' "$REPLY"; return 0
+    fi
+    [[ -n "$newest" ]] || continue
+    mm_tilde "$newest"; printf 'files written after install: %s' "$REPLY"; return 0
+  done
+  return 1
+}
+
+# _clean_written_after DIR MARKER — print the newest regular file in DIR that is not older than
+# MARKER (nothing when every file is older, so the install is all there is). Fails when a time
+# cannot be read, so the caller keeps DIR. A file as old as the marker counts as written after it:
+# only a strictly older file proves it was there before the install finished.
+_clean_written_after() {
+  local mt cut out
+  mt=$(find "$2" -maxdepth 0 -printf '%T@' 2>/dev/null) && [[ -n "$mt" ]] || return 1
+  cut=$(awk -v t="$mt" 'BEGIN {
+    s = t; sub(/\..*/, "", s); f = t; sub(/^[0-9]*\.?/, "", f)
+    n = substr(f "000000000", 1, 9) + 0 - 1
+    if (n < 0) { n = 999999999; s = s - 1 }
+    printf "@%.0f.%09d\n", s, n
+  }') || return 1
+  out=$(find "$1" -type f ! -path "$(_clean_find_literal "$2")" -newermt "$cut" \
+    -printf '%T@\t%p\n' 2>/dev/null | sort -rn) || return 1
+  out=${out%%$'\n'*}
+  [[ -n "$out" ]] && printf '%s' "${out#*$'\t'}"
+  return 0
 }
 
 # _clean_busy "PROC..." — print the first listed process that is running (f:REGEX tokens match
