@@ -58,7 +58,10 @@ profile_home() {
   mm_age "$HOME/.cache/pip" 10
   mkdir -p "$HOME/.cache/pip/http-v2"; echo h >"$HOME/.cache/pip/http-v2/h"   # used today: kept
   blob "$SB/yarncache/blob"                                                  # a tool's own clean
+  # real builds carry Playwright's install marker; folders without it (MCP profiles) are not builds
   mkdir -p "$HOME/.cache/ms-playwright/chromium-1000" "$HOME/.cache/ms-playwright/chromium-1100"
+  touch "$HOME/.cache/ms-playwright/chromium-1000/INSTALLATION_COMPLETE" \
+    "$HOME/.cache/ms-playwright/chromium-1100/INSTALLATION_COMPLETE"
   local v="$HOME/.local/share/claude/versions"
   mkdir -p "$v" "$HOME/.local/bin"
   echo 1 >"$v/1.0.0"; echo 2 >"$v/1.0.1"; echo 3 >"$v/1.0.2"
