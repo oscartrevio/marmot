@@ -1750,12 +1750,19 @@ _clean_browser_tmp_root() {
   echo "$root"
 }
 
-# _clean_browser_live ROOT — 0 if a Playwright browser launched out of ROOT is running: some
-# process was started with a --user-data-dir of ROOT/playwright_chromiumdev_profile-*. Its
-# playwright-artifacts-* folder holds that run's downloads and traces, and nothing in it is open
-# or named on a command line, so a long idle run would otherwise look abandoned.
+# _clean_browser_live ROOT ENTRY... — 0 if a Playwright browser launched out of ROOT is running:
+# a process has something open in one of its profile folders (playwright_chromiumdev_profile-*,
+# how a live browser shows up, since it holds its own lock there), or was started with a
+# --user-data-dir in ROOT. That run's playwright-artifacts-* folder holds its downloads and
+# traces, and nothing in it is open or named on a command line, so a browser that sits idle for
+# two hours would otherwise look abandoned.
 _clean_browser_live() {
-  mm_proc_match "" "--user-data-dir[= ]$(_clean_ere_quote "$1")/playwright_chromiumdev_profile-"
+  local root="$1" e; shift
+  for e in "$@"; do
+    [[ "${e##*/}" == playwright_chromiumdev_profile-* ]] || continue
+    mm_in_use "$e" && return 0
+  done
+  mm_proc_match "" "--user-data-dir[= ]$(_clean_ere_quote "$root")/playwright_chromiumdev_profile-"
 }
 
 # _clean_browser_tmp ROOT — remove ROOT's automation-browser leftovers (above) via mm_rm, with ROOT
@@ -1774,7 +1781,7 @@ _clean_browser_tmp() {
   (( ${#found[@]} )) || return 0
   _clean_cat "Automation browsers"
   now=$(date +%s)
-  _clean_browser_live "$root" && live=1
+  _clean_browser_live "$root" "${found[@]}" && live=1
   for e in "${found[@]}"; do
     if (( live )) && [[ "${e##*/}" == playwright-artifacts-* ]]; then busy=$((busy + 1)); continue; fi
     newest=$(find "$e" -printf '%T@\n%C@\n' 2>/dev/null | awk '$1 > m { m = $1 } END { printf "%.0f\n", m }')

@@ -1303,12 +1303,25 @@ browser_tmp() { local n; for n; do blob "$MM_TEST_TMP_ROOT/$n/Default/Cache/data
   local t=$MM_TEST_TMP_ROOT
   browser_tmp playwright-artifacts-LIVE puppeteer_dev_chrome_profile-OLD
   echo invoice >"$t/playwright-artifacts-LIVE/6f1c2e7a-download"
-  # "; :" keeps bash from exec'ing sleep in place, which would drop the browser's arguments.
-  mm_test_bg "$SB" bash -c 'sleep 60; :' browser "--user-data-dir=$t/playwright_chromiumdev_profile-LIVE"
+  # A live browser holds its profile's lock open, and its command line names the profile.
+  mkdir -p "$t/playwright_chromiumdev_profile-LIVE"; echo lock >"$t/playwright_chromiumdev_profile-LIVE/LOCK"
+  mm_test_bg "$SB" bash -c 'exec 3<"$1"; sleep 60; :' browser "$t/playwright_chromiumdev_profile-LIVE/LOCK"
   mm_test_clock 1
+  mm_inuse_refresh >/dev/null 2>&1
   _clean_browser_tmp "$t" >/dev/null
   exist "$t/playwright-artifacts-LIVE/6f1c2e7a-download"
   gone "$t/puppeteer_dev_chrome_profile-OLD"
+}
+
+@test "browser temp: a browser named on a command line keeps the artifacts folders too" {
+  src
+  local t=$MM_TEST_TMP_ROOT
+  browser_tmp playwright-artifacts-LIVE
+  mm_test_bg "$SB" bash -c 'sleep 60; :' browser "--user-data-dir=$t/playwright_chromiumdev_profile-LIVE"
+  mm_test_clock 1
+  mm_inuse_refresh >/dev/null 2>&1
+  _clean_browser_tmp "$t" >/dev/null
+  exist "$t/playwright-artifacts-LIVE/Default/Cache/data_1"
 }
 
 @test "browser temp: another user's entries are never touched" {

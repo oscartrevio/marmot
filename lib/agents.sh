@@ -52,7 +52,7 @@
 # Logs dirs are listed only where the tool documents them (default locations; sources below), and
 # never at, inside or above a session dir. Left out: Claude Code (~/.claude/debug holds .txt files
 # and Claude Code sweeps it itself), Crush (logs per project in ./.crush/logs), Gemini CLI, Qwen
-# Code, Cursor Agent, Amp and Aider (no documented logs dir in the home folder).
+# Code, Cursor Agent, Amp, Aider and OpenHands (no documented logs dir in the home folder).
 #   Codex CLI   ~/.codex/log: codex-tui.log of earlier releases (current ones log only with log_dir)
 #               https://github.com/openai/codex/blob/ae110493973d5b72f60d42efe2fae91d51ca9c0e/codex-rs/tui/src/lib.rs#L414-L418
 #   Copilot CLI ~/.copilot/logs: process-<timestamp>-<pid>.log, plus logs/extensions/
@@ -65,6 +65,10 @@
 #               https://github.com/cline/cline/blob/789f79e46d3ba579717e8dc8be35fe28af935b06/apps/cli/README.md#L265
 #   oh-my-pi    ~/.omp/logs: omp.<date>.<pid>.log
 #               https://github.com/can1357/oh-my-pi/blob/d0362782e2107c3c49e5fa1cd05d1dd823697a3a/packages/utils/src/dirs.ts#L637-L657
+#   Kimi CLI    ~/.kimi/logs: kimi.log (and ~/.kimi-code/logs: kimi-code.log in the successor;
+#               a session's own log stays inside its session folder)
+#               https://github.com/MoonshotAI/kimi-cli/blob/main/docs/en/configuration/data-locations.md
+#               https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/configuration/data-locations.md
 MM_AGENTS_TABLE='
 Claude Code|claude|~/.claude ~/.claude.json|~/.claude/projects ~/.claude/sessions|~/.local/share/claude/versions|~/.local/bin/claude||||*.jsonl
 Codex CLI|codex|~/.codex|~/.codex/sessions|||~/.codex/worktrees|~/.codex/log
@@ -85,6 +89,8 @@ Claude Squad|cs claude-squad|~/.claude-squad||||~/.claude-squad/worktrees
 Crystal|crystal|~/.crystal||||
 Container Use|container-use cu|~/.config/container-use||||~/.config/container-use/worktrees
 uzi|uzi|~/.local/share/uzi||||~/.local/share/uzi/worktrees
+Kimi CLI|kimi|~/.kimi ~/.kimi-code|~/.kimi/sessions ~/.kimi/imported_sessions ~/.kimi-code/sessions||||~/.kimi/logs ~/.kimi-code/logs
+OpenHands|openhands|~/.openhands|~/.openhands/conversations
 '
 
 MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()

@@ -29,6 +29,22 @@ teardown() { mm_test_teardown; }
   [ -z "${MM_AGENT_HELPERS[c]}" ]
 }
 
+@test "Kimi CLI and OpenHands are known, so their state and conversations are protected" {
+  mm_core
+  mkdir -p "$HOME/.kimi/sessions/a1b2/0001" "$HOME/.kimi/credentials" "$HOME/.openhands/conversations/c1/events"
+  echo '{}' >"$HOME/.kimi/sessions/a1b2/0001/context.jsonl"
+  echo '{}' >"$HOME/.openhands/conversations/c1/events/event-0.json"
+  echo '{}' >"$HOME/.openhands/agent_settings.json"
+  mm_inuse_refresh
+  local p
+  for p in "$HOME/.kimi" "$HOME/.kimi/sessions/a1b2" "$HOME/.openhands" "$HOME/.openhands/conversations/c1"; do
+    MM_DRY_RUN=1 run mm_rm "$p" "$HOME"
+    [ "$status" -eq 1 ] || { echo "not refused: $p"; false; }
+  done
+  [ -e "$HOME/.kimi/sessions/a1b2/0001/context.jsonl" ]
+  [ -e "$HOME/.openhands/conversations/c1/events/event-0.json" ]
+}
+
 @test "every agent has a process name and at least one state path, all under HOME" {
   local i p
   for i in "${!MM_AGENT_NAME[@]}"; do
