@@ -757,6 +757,36 @@ sessions_run() {
   [ -z "$(mm_log_rows remove | grep -v -e "^$cl/projects/p2" -e "^$cx/sessions/2026")" ]
 }
 
+@test "retention never touches an agent's memory folder or files that are not transcripts" {
+  sessions_fixture
+  local p="$HOME/.claude/projects/p1"
+  mkdir -p "$p/memory"
+  printf -- '- [User role](user_role.md)\n' >"$p/memory/MEMORY.md"
+  printf -- 'Staff engineer, owns billing.\n' >"$p/memory/user_role.md"
+  echo '{}' >"$p/settings.json"
+  mm_age "$HOME/.claude" 90
+  run sessions_run 30
+  [ "$status" -eq 0 ]
+  exist "$p/memory/MEMORY.md" "$p/memory/user_role.md" "$p/settings.json"
+  gone "$p/old.jsonl"                                      # transcripts still move
+  [ ! -e "$XDG_DATA_HOME/Trash/files/MEMORY.md" ]
+}
+
+@test "retention keeps project files in agent worktrees and in git checkouts under agent state" {
+  sessions_fixture
+  local w="$HOME/.codex/worktrees/7f3a/logparse" g="$HOME/.codex/scratch/proj"
+  mkdir -p "$w/tests/fixtures" "$w/.git" "$g"
+  echo entry >"$w/tests/fixtures/access.log.1"
+  echo 'ref: refs/heads/main' >"$w/.git/HEAD"
+  printf 'gitdir: /home/x/repo/.git/worktrees/proj\n' >"$g/.git"   # a checkout, .git is a file
+  echo entry >"$g/app.log.1"
+  mm_age "$HOME/.codex" 90
+  run sessions_run 30
+  [ "$status" -eq 0 ]
+  exist "$w/tests/fixtures/access.log.1" "$g/app.log.1"
+  gone "$HOME/.codex/debug/codex.log.1"                    # rotated logs in state still move
+}
+
 @test "retention keeps session files in use and whitelisted ones" {
   sessions_fixture
   local p="$HOME/.claude/projects"

@@ -23,8 +23,15 @@
 #
 # Row fields, separated by '|':
 #   name | process names | state dirs/files | session dirs | versions dir | active-version symlink
-#   | worktree dirs | logs dirs | helpers
+#   | worktree dirs | logs dirs | helpers | session file globs
 # Trailing fields may be left out: a shorter row loads with them empty.
+#
+# Session file globs name the files that are this tool's transcripts, for the opt-in retention
+# sweep (`mm clean --sessions DAYS`): with them set, nothing else in a session dir is touched.
+# Claude Code writes its auto memory as Markdown next to the transcripts
+# (~/.claude/projects/<project>/memory/*.md, code.claude.com/docs/en/memory), so only its *.jsonl
+# transcripts count. Without globs every file in a session dir counts, as before. Memory folders,
+# agent worktrees and git checkouts are never entered, whatever the globs say.
 #
 # Helpers are processes a tool starts for itself under the same process name (language-server
 # hubs, daemon brokers, completion daemons): they are not sessions. A pattern starting with ~/ or
@@ -59,7 +66,7 @@
 #   oh-my-pi    ~/.omp/logs: omp.<date>.<pid>.log
 #               https://github.com/can1357/oh-my-pi/blob/d0362782e2107c3c49e5fa1cd05d1dd823697a3a/packages/utils/src/dirs.ts#L637-L657
 MM_AGENTS_TABLE='
-Claude Code|claude|~/.claude ~/.claude.json|~/.claude/projects ~/.claude/sessions|~/.local/share/claude/versions|~/.local/bin/claude|
+Claude Code|claude|~/.claude ~/.claude.json|~/.claude/projects ~/.claude/sessions|~/.local/share/claude/versions|~/.local/bin/claude||||*.jsonl
 Codex CLI|codex|~/.codex|~/.codex/sessions|||~/.codex/worktrees|~/.codex/log
 Gemini CLI|gemini|~/.gemini|~/.gemini/tmp|||
 Cursor Agent|cursor-agent|~/.cursor|~/.cursor/chats ~/.cursor/projects|~/.local/share/cursor-agent/versions|~/.local/bin/cursor-agent|~/.cursor/worktrees
@@ -81,7 +88,7 @@ uzi|uzi|~/.local/share/uzi||||~/.local/share/uzi/worktrees
 '
 
 MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
-MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=()
+MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=() MM_AGENT_SESSION_FILES=()
 MM_AGENT_REJECTED=()   # "<file>:<line>: <reason>" for user rows that were not accepted
 
 # _mm_tilde_list WORDS — the space-separated WORDS in REPLY, single-spaced, a leading ~ of each
@@ -109,14 +116,14 @@ _mm_agent_path_problem() {
 # _mm_agents_parse ORIGIN — read rows from stdin and load them; a row named like a loaded one
 # replaces it. Rows of the user's file (ORIGIN is its name) are validated first.
 _mm_agents_parse() {
-  local origin=$1 line n=0 i j w where bad name procs state sessions versions active worktrees logs helpers
+  local origin=$1 line n=0 i j w where bad name procs state sessions versions active worktrees logs helpers files
   local -a words=() more=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     n=$((n + 1))
     line=${line//$'\t'/ }
     read -r line <<<"$line"
     [[ -z "$line" || "$line" == \#* ]] && continue
-    IFS='|' read -r name procs state sessions versions active worktrees logs helpers <<<"$line"
+    IFS='|' read -r name procs state sessions versions active worktrees logs helpers files <<<"$line"
     read -r name <<<"$name"
     if [[ "$origin" != builtin ]]; then
       where="$origin:$n"
@@ -147,6 +154,7 @@ _mm_agents_parse() {
     _mm_tilde_list "$worktrees"; MM_AGENT_WORKTREES[i]=$REPLY
     _mm_tilde_list "$logs"; MM_AGENT_LOGS[i]=$REPLY
     MM_AGENT_HELPERS[i]=$helpers
+    read -r files <<<"$files"; MM_AGENT_SESSION_FILES[i]=$files
   done
 }
 

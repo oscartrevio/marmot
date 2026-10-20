@@ -663,12 +663,28 @@ _clean_agent_logs() {
 # ---------------------------------------------------------------- agent sessions (opt-in)
 
 # Session transcripts are the user's conversations: untouched unless they set a retention
-# (sessions_keep_days=N in the config file, or --sessions N for one run). Then files under each
-# agent's session dirs (lib/agents.sh) and rotated logs in its state dirs (outside its logs dirs,
-# which the agent logs step handles), last written more than N days ago and not in use, move to
-# the Trash (restorable); folders they leave empty are removed.
+# (sessions_keep_days=N in the config file, or --sessions N for one run). Then the session files
+# under each agent's session dirs (lib/agents.sh; its session file globs say which files are
+# transcripts) and rotated logs in its state dirs (outside its logs dirs, which the agent logs
+# step handles), last written more than N days ago and not in use, move to the Trash (restorable);
+# folders they leave empty are removed.
+# The walk never enters an agent's logs dirs, a memory folder (Claude Code keeps auto memory in
+# ~/.claude/projects/<project>/memory), an agent worktree dir, or any folder holding a .git entry:
+# those hold what an agent remembers and the user's own projects, not conversations.
 # The config file is standing consent: without a terminal only a configured retention acts.
 _CLEAN_ROTATED_LOGS=('*.log.[0-9]*' '*.log.*.gz' '*.log.old')
+_CLEAN_SESSION_KEEP_DIRS=(memory)
+
+# _clean_repo_prune ROOT — set the `prune` array (the caller's) to a -path test per git checkout
+# under ROOT: a folder holding a .git entry is a repository's work tree, so it holds the user's
+# own files whatever they are named. An unreadable walk leaves every checkout found so far in,
+# and the files it could not see are never listed either, so nothing is lost.
+_clean_repo_prune() {
+  local d
+  prune=()
+  while IFS= read -r -d '' d; do prune+=(-o -path "$(_clean_find_literal "$d")"); done \
+    < <(find "$1" -xdev -name .git -printf '%h\0' 2>/dev/null)
+}
 
 # _clean_trash_dev — device id of the Trash files dir (or its nearest existing ancestor).
 _clean_trash_dev() {
@@ -690,14 +706,16 @@ _clean_agent_root() {
 _clean_sessions() {
   local days="$1" from="$2" now tdev i dir root rec t blk path n b old rc d l
   local total=0 tb=0
-  local -a units=() names=() logs=() match=() skip=(-false)
+  local -a units=() names=() logs=() match=() files=() skip=(-false) prune=()
   # Per agent index: candidates, their bytes, oldest mtime; moved, moved bytes, kept, failed,
   # emptied folders. s_up: every folder above a moved file (inside its root) -> "index<TAB>root".
   local -A seen=() s_cnt=() s_bytes=() s_old=() s_n=() s_b=() s_kept=() s_fail=() s_empty=() s_up=()
   _clean_cat "Agent sessions older than $days days"
   now=$(date +%s) tdev=$(_clean_trash_dev)
   for d in "${_CLEAN_ROTATED_LOGS[@]}"; do logs+=(-o -name "$d"); done
-  for l in "${MM_AGENT_LOGS[@]}"; do
+  for d in "${_CLEAN_SESSION_KEEP_DIRS[@]}"; do skip+=(-o -name "$d"); done
+  # shellcheck disable=SC2153 # set by lib/agents.sh
+  for l in "${MM_AGENT_LOGS[@]}" "${MM_AGENT_WORKTREES[@]}"; do
     for d in $l; do d=$(realpath -e -- "$d" 2>/dev/null) && skip+=(-o -path "$(_clean_find_literal "$d")"); done
   done
   for i in "${!MM_AGENT_NAME[@]}"; do
@@ -707,7 +725,15 @@ _clean_sessions() {
       [[ -d "$dir" ]] || continue
       _clean_agent_root "$dir" "$tdev" || continue
       root=$_CLEAN_ROOT match=(-type f)
-      [[ " ${MM_AGENT_SESSIONS[$i]} " == *" $dir "* ]] || match=(-type f \( "${logs[@]:1}" \))
+      if [[ " ${MM_AGENT_SESSIONS[$i]} " == *" $dir "* ]]; then
+        files=()
+        # shellcheck disable=SC2153 # set by lib/agents.sh
+        for d in ${MM_AGENT_SESSION_FILES[$i]}; do files+=(-o -name "$d"); done
+        (( ${#files[@]} )) && match=(-type f \( "${files[@]:1}" \))
+      else
+        match=(-type f \( "${logs[@]:1}" \))
+      fi
+      _clean_repo_prune "$root"
       while IFS= read -r -d '' rec; do
         t=${rec%% *} rec=${rec#* } blk=${rec%% *} path=${rec#* }
         [[ -z "${seen[$path]+x}" ]] || continue
@@ -715,7 +741,7 @@ _clean_sessions() {
         units+=("$i"$'\t'"$root"$'\t'"$path")
         s_cnt[$i]=$(( ${s_cnt[$i]:-0} + 1 )) s_bytes[$i]=$(( ${s_bytes[$i]:-0} + blk * 512 ))
         t=${t%.*}; (( t < ${s_old[$i]:-$now} )) && s_old[$i]=$t
-      done < <(find "$root" -xdev \( -type d \( "${skip[@]}" \) -prune \) -o \
+      done < <(find "$root" -xdev \( -type d \( "${skip[@]}" "${prune[@]}" \) -prune \) -o \
         \( "${match[@]}" -mmin +$((days * 1440)) -printf '%T@ %b %p\0' \) 2>/dev/null)
     done
   done
