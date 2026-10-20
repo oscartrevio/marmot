@@ -9,21 +9,111 @@
 # ${MARMOT_BIN:-~/.local/bin}. Running it from the install directory itself only (re)creates links.
 # The copy notes where it came from in .install-source (this folder, its git commit, the launcher
 # folder): `mm update` pulls and reinstalls from there, `mm --version` shows the commit.
+# .install-manifest lists the files the copy put there: a reinstall or --uninstall removes those
+# and nothing else. A prefix that is a symlink or inside a git work tree is refused.
 set -euo pipefail
 
 src=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
 prefix=${MARMOT_PREFIX:-$HOME/.local/share/marmot}
+while [[ "$prefix" == ?*/ ]]; do prefix=${prefix%/}; done   # "link/" would act on the link's target
 bindir=${MARMOT_BIN:-$HOME/.local/bin}
+manifest=.install-manifest
+
+# What install copies: the launcher, libraries, commands, completion, and this installer (for
+# --uninstall). Tests and git metadata stay in the checkout.
+PAYLOAD=(marmot install.sh lib cmd completion)
+# Everything an install made before .install-manifest existed can hold (no file has left these
+# folders since): such a copy is replaced or removed only when it holds nothing else.
+LEGACY_DIRS=(lib cmd completion)
+LEGACY_FILES=(marmot install.sh .install-source lib/agents.sh lib/catalog.sh lib/core.sh lib/schedule.sh
+  cmd/analyze.sh cmd/clean.sh cmd/history.sh cmd/optimize.sh cmd/purge.sh cmd/schedule.sh cmd/status.sh
+  cmd/uninstall.sh cmd/update.sh completion/_mm completion/mm.bash)
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf '! %s\n' "$*" >&2; }
 die()  { printf '✗ %s\n' "$*" >&2; exit 1; }
 
-# _is_marmot_tree DIR — DIR looks like a marmot install (guards every removal below).
+# _is_marmot_tree DIR — DIR looks like a marmot install.
 _is_marmot_tree() { [[ -f "$1/marmot" && -f "$1/lib/core.sh" && -d "$1/cmd" ]]; }
 
-# _is_checkout DIR — DIR holds git metadata: never removed, whoever asks.
-_is_checkout() { [[ -e "$1/.git" ]]; }
+# _work_tree DIR — print the top of the git work tree DIR (or, while it does not exist, its
+# nearest existing parent) is in; 1 when none. A .git found walking up counts even without git.
+_work_tree() {
+  local d=$1 top
+  while [[ ! -d "$d" ]]; do d=$(dirname -- "$d"); done
+  if command -v git >/dev/null && top=$(git -C "$d" rev-parse --show-toplevel 2>/dev/null) && [[ -n "$top" ]]; then
+    printf '%s\n' "$top"
+    return 0
+  fi
+  d=$(cd -- "$d" && pwd -P)
+  while :; do
+    if [[ -e "$d/.git" ]]; then printf '%s\n' "$d"; return 0; fi
+    [[ "$d" != / ]] || return 1
+    d=$(dirname -- "$d")
+  done
+}
+
+# _plain_path REL — REL is relative, has no "." or ".." part, and no symlinked folder leads to it
+# inside $prefix (real path in $real), so acting on $prefix/REL stays inside $prefix.
+_plain_path() {
+  local rel=$1 dir want=$real
+  [[ -n "$rel" && "/$rel/" != *//* && "/$rel/" != */./* && "/$rel/" != */../* ]] || return 1
+  dir=$(dirname -- "$rel")
+  [[ "$dir" == . ]] || want+="/$dir"
+  [[ ! -e "$prefix/$dir" ]] || [[ "$(realpath -e -- "$prefix/$dir")" == "$want" ]]
+}
+
+# _owned — set owned to the files of the marmot copy in $prefix: its manifest's list or, for an
+# install made before manifests, LEGACY_FILES when the folder holds nothing else. 1 when $prefix
+# is no marmot install. Dies naming the reason when it cannot tell marmot's files from yours.
+_owned() {
+  local rel f other=() by_hand="remove marmot's own files from $prefix by hand (keeping yours) or set MARMOT_PREFIX"
+  local -A known=()
+  owned=()
+  if [[ -f "$prefix/$manifest" ]]; then
+    while IFS= read -r rel; do
+      [[ -z "$rel" || "$rel" == '#'* ]] && continue
+      _plain_path "$rel" || die "$prefix/$manifest lists '$rel', which is not a file inside $prefix; nothing removed: $by_hand"
+      owned+=("$rel")
+    done <"$prefix/$manifest"
+    return 0
+  fi
+  _is_marmot_tree "$prefix" || return 1
+  for f in "${LEGACY_DIRS[@]}"; do known[$f]="dir"; done
+  for f in "${LEGACY_FILES[@]}"; do known[$f]="file"; done
+  while IFS= read -r -d '' f; do
+    rel=${f#"$prefix"/}
+    if [[ -d "$f" && ! -L "$f" ]]; then
+      [[ "${known[$rel]:-}" == dir ]] || other+=("$rel")
+    elif [[ "${known[$rel]:-}" == file ]]; then
+      owned+=("$rel")
+    else
+      other+=("$rel")
+    fi
+  done < <(find "$prefix" -mindepth 1 -print0)
+  (( ${#other[@]} == 0 )) ||
+    die "$prefix holds files marmot did not install (${other[*]:0:5}) and has no $manifest to tell them apart; nothing removed: $by_hand"
+}
+
+# _remove_owned — remove the files in owned, then the folders that leaves empty (deepest first),
+# then the manifest. Nothing else in $prefix is touched.
+_remove_owned() {
+  local rel d p dirs=()
+  local -A seen=()
+  for rel in "${owned[@]}"; do
+    p=$prefix/$rel
+    if [[ -L "$p" || ( -e "$p" && ! -d "$p" ) ]]; then
+      rm -f -- "$p"   # SAFE: a file the manifest (or the pre-manifest layout) says marmot copied, path checked by _plain_path
+    fi
+    d=$(dirname -- "$rel")
+    while [[ "$d" != . && -z "${seen[$d]:-}" ]]; do seen[$d]=1; dirs+=("$d"); d=$(dirname -- "$d"); done
+  done
+  rm -f -- "${prefix:?}/$manifest"   # SAFE: marmot's own manifest
+  (( ${#dirs[@]} )) || return 0
+  while IFS= read -r d; do
+    rmdir -- "$prefix/$d" 2>/dev/null || true   # SAFE: rmdir removes only an empty folder
+  done < <(printf '%s\n' "${dirs[@]}" | LC_ALL=C sort -r)
+}
 
 # _foreign NAME — $bindir/NAME exists and is not a symlink to a marmot launcher.
 _foreign() {
@@ -60,20 +150,35 @@ _unschedule() {
 }
 
 uninstall() {
-  local l
+  local l keep="" top
+  owned=()
+  if [[ -L "$prefix" ]]; then
+    keep="a symlink to $(readlink -f -- "$prefix"); remove the copy yourself"
+  elif [[ ! -e "$prefix" ]]; then
+    keep=none
+  elif top=$(_work_tree "$prefix"); then
+    keep="in the git checkout $top; remove it yourself if you want"
+  else
+    real=$(realpath -e -- "$prefix")
+    _owned || keep=none   # dies, before anything changed, when marmot's files cannot be told apart
+  fi
   _unschedule
   for l in "$bindir/mm" "$bindir/marmot"; do
     if [[ -L "$l" && "$(readlink -f "$l")" == "$prefix/marmot" ]]; then
       rm -f -- "$l" && say "removed $l"   # SAFE: our own launcher symlink, target verified
     fi
   done
-  if _is_marmot_tree "$prefix"; then
-    if _is_checkout "$prefix"; then
-      say "kept $prefix (a git checkout; remove it yourself if you want)"
-    else
-      rm -rf -- "$prefix" && say "removed $prefix"   # SAFE: verified marmot install, not a git checkout
-    fi
-  fi
+  case "$keep" in
+    "")
+      _remove_owned
+      if rmdir -- "$prefix" 2>/dev/null; then   # SAFE: rmdir removes only an empty folder
+        say "removed $prefix"
+      else
+        say "removed marmot's files from $prefix; kept the rest (marmot did not install it)"
+      fi ;;
+    none) ;;
+    *) say "kept $prefix ($keep)" ;;
+  esac
   say "Kept: ${XDG_CONFIG_HOME:-~/.config}/marmot, ${XDG_STATE_HOME:-~/.local/state}/marmot and the Trash."
 }
 
@@ -111,25 +216,67 @@ record_source() {
   else say "recorded source $src (not a git checkout: mm update needs a git clone)"; fi
 }
 
+# write_manifest — list the copied files (files, from install) in $prefix/.install-manifest:
+# written last and renamed into place, so a manifest always describes a finished copy.
+write_manifest() {
+  local tmp
+  tmp=$(mktemp "$prefix/$manifest.XXXXXX")
+  { echo "# Files install.sh copied here; a reinstall or install.sh --uninstall removes these only."
+    printf '%s\n' "${files[@]}"; } >"$tmp"
+  mv -f -- "$tmp" "$prefix/$manifest"
+}
+
+# _in_the_way — die, before anything changed, naming what in $prefix the copy would overwrite
+# that is not marmot's: anything but a file in owned where a copied file (files) goes, anything
+# but a plain folder where a copied folder (dirs) goes.
+_in_the_way() {
+  local f p blocked=()
+  local -A mine=()
+  for f in "${owned[@]}"; do mine[$f]=1; done
+  for f in "${files[@]}"; do
+    p=$prefix/$f
+    if ! _plain_path "$f" ||
+      [[ ( -e "$p" || -L "$p" ) && ( -z "${mine[$f]:-}" || ( -d "$p" && ! -L "$p" ) ) ]]; then
+      blocked+=("$f")
+    fi
+  done
+  for f in "${dirs[@]}"; do
+    p=$prefix/$f
+    if ! _plain_path "$f" || [[ -L "$p" || ( -e "$p" && ! -d "$p" ) ]]; then blocked+=("$f"); fi
+  done
+  (( ${#blocked[@]} == 0 )) ||
+    die "$prefix already has ${blocked[*]:0:5}, which marmot did not install and would overwrite; nothing changed: move them away or set MARMOT_PREFIX"
+}
+
 install() {
   check
   _foreign mm && die "$bindir/mm exists and is not a marmot launcher: move it away or set MARMOT_BIN, then run install.sh again"
-  local copied=0
+  local copied=0 top f files=() dirs=()
+  owned=()
   if [[ "$(readlink -f "$prefix" 2>/dev/null)" != "$src" ]]; then
+    [[ ! -L "$prefix" ]] ||
+      die "$prefix is a symlink (to $(readlink -f -- "$prefix")); not installing through it. Set MARMOT_PREFIX to a real folder."
+    if top=$(_work_tree "$prefix"); then
+      die "$prefix is in the git checkout $top; not installing there (it would replace that checkout's files). Set MARMOT_PREFIX to a folder outside it."
+    fi
+    while IFS= read -r -d '' f; do
+      [[ "$f" != *$'\n'* ]] || die "$src/$f has a newline in its name; not installing"
+      if [[ -d "$src/$f" && ! -L "$src/$f" ]]; then dirs+=("$f"); else files+=("$f"); fi
+    done < <(cd "$src" && find "${PAYLOAD[@]}" -print0)
+    files+=(.install-source)
     if [[ -e "$prefix" ]]; then
-      _is_marmot_tree "$prefix" || die "$prefix exists and is not a marmot install; set MARMOT_PREFIX."
-      _is_checkout "$prefix" && die "$prefix is a git checkout; not replacing it. Set MARMOT_PREFIX to install elsewhere, or remove it yourself."
-      rm -rf -- "$prefix"   # SAFE: verified marmot tree and not a git checkout, replaced by this checkout
+      real=$(realpath -e -- "$prefix")
+      _owned || die "$prefix exists and is not a marmot install; set MARMOT_PREFIX."
+      _in_the_way
+      _remove_owned
     fi
     mkdir -p "$prefix"
-    # Only what runs: the launcher, libraries, commands, completion, and this installer (for
-    # --uninstall). Tests and git metadata stay in the checkout.
-    cp -R -- "$src/marmot" "$src/install.sh" "$src/lib" "$src/cmd" "$src/completion" "$prefix/"
+    cp -R -- "${PAYLOAD[@]/#/$src/}" "$prefix/"
     say "installed to $prefix"
     copied=1
   fi
   mkdir -p "$bindir"
-  if (( copied )); then record_source; fi
+  if (( copied )); then record_source; write_manifest; fi
   _link mm
   _link marmot || true
   case ":$PATH:" in *":$bindir:"*) ;; *) _path_hint ;; esac
@@ -144,6 +291,6 @@ install() {
 case "${1:-}" in
   "") install ;;
   --uninstall) uninstall ;;
-  -h|--help) sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
   *) die "unknown option: $1 (see --help)" ;;
 esac

@@ -62,6 +62,15 @@ unchanged() {
   [ "$old" != "$new" ]
 }
 
+@test "an update keeps files of yours that sit in the install folder" {
+  echo 'echo my backup' >"$MARMOT_PREFIX/backup.sh"
+  publish "new upstream work"
+  on_tty y "$MARMOT_BIN/mm" update
+  [ "$status" -eq 0 ]
+  [ "$(installed)" = "$(head_of "$DEV")" ]
+  [ "$(cat "$MARMOT_PREFIX/backup.sh")" = 'echo my backup' ]
+}
+
 @test "behind: declining the prompt changes nothing" {
   local old; old=$(head_of "$SRC")
   publish "new upstream work"
