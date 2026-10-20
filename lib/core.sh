@@ -303,7 +303,7 @@ MM_INUSE_TAKEN=0
 # (MM_INUSE_PARTIAL=1, warned). An empty process snapshot is fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
   local out live refs script
-  script="$(declare -f _mm_inuse_scan); _mm_inuse_scan"
+  script="$(declare -f _mm_inuse_scan _mm_mounts _mm_mount_paths); _mm_inuse_scan"
   MM_INUSE_PARTIAL=0
   if (( EUID == 0 )) || { [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; }; then
     out=$(mm_sudo bash -c "$script")
@@ -327,16 +327,16 @@ mm_inuse_refresh() {
 
 # _mm_inuse_scan — every live path (sorted, one per line), then "A<TAB>process PID (comm)<TAB>word"
 # for each argument containing a /. Runs in a child bash (as root when possible), so it uses
-# nothing else from this file. Batch reads: one find, one cat, a few awks, whatever the process count.
+# nothing else from this file but _mm_mounts and _mm_mount_paths (declared with it). Batch reads:
+# one find, one cat, a few awks, whatever the process count.
 _mm_inuse_scan() {
   local p w c a=()
   { find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
-    # cat, not one awk over the files: mawk stops at the first unreadable one
-    cat /proc/[0-9]*/maps | awk '$6 ~ /^\// && !seen[$6]++ { print $6 }'
-    { echo /proc/self/mountinfo
-      find /proc/[0-9]*/ns/mnt -maxdepth 0 -printf '%l %h\n' | awk '!seen[$1]++ { sub(/\/ns$/, "/mountinfo", $2); print $2 }'
-    } | xargs -d '\n' cat | awk '{ print $4; print $5 }'
-    awk 'NR > 1 && $8 ~ /^\// { print $8 }' /proc/net/unix
+    # cat, not one awk over the files: mawk stops at the first unreadable one. A path is the rest
+    # of the line after the fixed fields (five in maps, seven in /proc/net/unix): it may hold spaces.
+    cat /proc/[0-9]*/maps | awk '{ sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\// && !seen[$0]++'
+    _mm_mounts
+    awk 'NR > 1 { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\//' /proc/net/unix
   } 2>/dev/null | sed 's/ (deleted)$//' | grep '^/' | sort -u
   for p in /proc/[0-9]*; do
     [[ "${p#/proc/}" == "$$" || "${p#/proc/}" == "$PPID" ]] && continue   # this scan and its sudo
@@ -344,6 +344,42 @@ _mm_inuse_scan() {
     for w in "${a[@]}"; do [[ "$w" == */* ]] && printf 'A\tprocess %s (%s)\t%s\n' "${p#/proc/}" "$c" "$w"; done
   done
   return 0
+}
+
+# _mm_mounts — every mount point and bind-mount source of this mount namespace and of every
+# readable /proc/PID/mountinfo (one per namespace where its ns link can be read, else all of them,
+# so a process this user may not inspect still shows its mounts), decoded by _mm_mount_paths.
+_mm_mounts() {
+  { echo /proc/self/mountinfo
+    find /proc/[0-9]*/ns/mnt -maxdepth 0 -printf '%l\t%h\n' 2>/dev/null |
+      awk -F'\t' '$1 == "" || !seen[$1]++ { sub(/\/ns$/, "/mountinfo", $2); print $2 }'
+  } | xargs -d '\n' cat 2>/dev/null | _mm_mount_paths
+}
+
+# _mm_mount_paths < MOUNTINFO_LINES — the root (bind source, relative to its filesystem) and the
+# mount point of each line, decoded: mountinfo writes space, tab, newline and backslash as
+# \040 \011 \012 \134, and a bind mount under an undecoded path went unseen.
+_mm_mount_paths() {
+  awk '
+    function unesc(s,   o, i, c) {
+      o = ""
+      while ((i = index(s, "\\")) > 0) {
+        c = substr(s, i + 1, 3); o = o substr(s, 1, i - 1)
+        if (c == "040") o = o " "; else if (c == "011") o = o "\t"; else if (c == "012") o = o "\n"
+        else if (c == "134") o = o "\\"; else { o = o "\\"; s = substr(s, i + 1); continue }
+        s = substr(s, i + 4)
+      }
+      return o s
+    }
+    { print unesc($4); print unesc($5) }'
+}
+
+# mm_mount_under REAL — 0 if a mount point or bind-mount source (this namespace's and every
+# readable one's: _mm_mounts, read afresh) is REAL or lies under it. rm --one-file-system descends
+# into a bind mount from the same filesystem, so removing a folder holding one empties its source.
+mm_mount_under() {
+  MM_P="${1%/}" awk 'BEGIN { p = ENVIRON["MM_P"] }
+    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !found }' < <(_mm_mounts 2>/dev/null)
 }
 
 # _mm_inuse_refs < ARGV_LINES — "path<TAB>source" for every existing regular file (never a
@@ -725,6 +761,9 @@ mm_rm() {
   if [[ "$(realpath -e -- "$(dirname -- "$real")" 2>/dev/null)" != "$parent" || "$(mm_identity "$real")" != "$id" ]]; then
     _mm_refuse "changed while sizing"; return 1
   fi
+  # Last look before the sink: a mount made since the snapshot (--one-file-system does not stop at
+  # a bind mount from the same filesystem, and the mounted source would be emptied).
+  mm_mount_under "$real" && { _mm_refuse "contains a mount"; return 1; }
   if [[ "$MM_DRY_RUN" != 1 ]]; then
     if [[ "$mode" == trash ]]; then
       _mm_trash "$real" "$bytes" || return $?
