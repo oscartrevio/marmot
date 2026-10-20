@@ -522,7 +522,7 @@ _optimize_orphan_task() {
   if (( ! asked )); then
     printf '\n'
     for row in "${chosen[@]}"; do mm_info "$(_optimize_orphan_line "$row")"; done
-    mm_confirm "Send SIGTERM to these ${#chosen[@]} processes?" ||
+    mm_confirm "Send SIGTERM to ${#chosen[@]} process$( (( ${#chosen[@]} == 1 )) && printf '' || printf es)?" ||
       { _optimize_skipped "Orphaned processes" "declined"; return; }
   fi
 
@@ -728,7 +728,7 @@ _optimize_browser_task() {
   if (( ! asked )); then
     printf '\n'
     for row in "${chosen[@]}"; do mm_info "$(_optimize_browser_line "$row")"; done
-    mm_confirm "Stop these ${#chosen[@]} browsers (SIGTERM, then SIGKILL after 5s)?" ||
+    mm_confirm "Stop ${#chosen[@]} browser$( (( ${#chosen[@]} == 1 )) || printf s) (SIGTERM, then SIGKILL)?" ||
       { _optimize_skipped "Orphaned browsers" "declined"; return; }
   fi
 

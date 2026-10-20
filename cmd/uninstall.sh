@@ -333,11 +333,10 @@ _uninstall_app_data() { [[ "${1%/}" != "$HOME/.cache/"* && "${1%/}" != "$HOME/.c
 _uninstall_describe() {
   local files size newest
   files=$(find "$1" -xdev -type f -printf . 2>/dev/null | wc -c)
-  [[ "$files" =~ ^[0-9]+$ ]] || files=""
+  if [[ "$files" =~ ^[0-9]+$ ]]; then files="$files file$( (( files == 1 )) || printf s)"; else files="file count unknown"; fi
   size=$(mm_size "$1") || size=""
   newest=$(find "$1" -xdev -printf '%T@\n' 2>/dev/null | awk 'BEGIN { m = 0 } $1 > m { m = $1 } END { printf "%.0f\n", m }')
-  printf '%s, %s, newest %s' "${files:+$files files}${files:-file count unknown}" \
-    "$(_uninstall_human "$size")" "$(_uninstall_ago "${newest:-0}")"
+  printf '%s, %s, newest %s' "$files" "$(_uninstall_human "$size")" "$(_uninstall_ago "${newest:-0}")"
 }
 
 declare -A _UN_GOING=()   # item index → 1 for every item this run removes (set by _uninstall_apply)
@@ -843,10 +842,10 @@ _uninstall_apply() {
 }
 
 # _uninstall_snap_save NAME — snapshot NAME's data (sudo snap save) and print the snapshot set id;
-# fails (keeping the snap) when the save fails. The id comes from snap save's own output; if that
-# cannot be parsed the save still counts, with `snap saved NAME` named as the lookup.
+# fails (keeping the snap) when the save fails. The id comes from snap save's own output; when
+# that cannot be parsed the save still counts and nothing is printed.
 _uninstall_snap_save() {
-  local out rc id
+  local out rc
   out=$(mm_sudo timeout 600 snap save "$1" 2>&1); rc=$?
   if (( rc != 0 )); then
     mm_err "snap save $1 failed (exit $rc); $1 kept"
@@ -854,8 +853,7 @@ _uninstall_snap_save() {
     return 1
   fi
   mm_log run "snap save $1"
-  id=$(printf '%s\n' "$out" | awk -v s="$1" '$2 == s && $1 ~ /^[0-9]+$/ { printf "%.0f\n", $1; exit }')
-  printf '%s' "${id:-unknown (see: snap saved $1)}"
+  printf '%s\n' "$out" | awk -v s="$1" '$2 == s && $1 ~ /^[0-9]+$/ { printf "%.0f", $1; exit }'
 }
 
 # _uninstall_apt_recheck STEPS EXPECTED PKG... — 0 if a fresh simulation (with autoremove when
@@ -911,7 +909,7 @@ _uninstall_execute() {
         # snapd deletes ~/snap/NAME for every user on remove. A snapshot of marmot's own comes
         # first (no snap goes without one); --purge then skips snapd's duplicate automatic one.
         if snapshot=$(_uninstall_snap_save "${_UN_NAME[i]}"); then
-          mm_info "${_UN_NAME[i]} data saved as snapshot $snapshot (bring it back: sudo snap restore $snapshot)"
+          mm_info "${_UN_NAME[i]} data saved as snapshot ${snapshot:-(id: snap saved ${_UN_NAME[i]})}; bring it back: sudo snap restore ${snapshot:-<id>}"
           mm_run "snap remove --purge ${_UN_NAME[i]}" mm_sudo timeout 600 snap remove --purge "${_UN_NAME[i]}" || ok=0
         else
           ok=0
