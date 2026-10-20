@@ -18,6 +18,31 @@ teardown() { mm_test_teardown; }
   [ "${#MM_AGENT_VERSIONS[@]}" -eq "$n" ]
   [ "${#MM_AGENT_ACTIVE[@]}" -eq "$n" ]
   [ "${#MM_AGENT_WORKTREES[@]}" -eq "$n" ]
+  [ "${#MM_AGENT_SESSION_FILES[@]}" -eq "$n" ]
+}
+
+@test "session file globs load unexpanded; only Claude Code limits its sessions to transcripts" {
+  local c
+  c=$(agent "Claude Code")
+  [ "${MM_AGENT_SESSION_FILES[c]}" = '*.jsonl' ]
+  [ -z "${MM_AGENT_SESSION_FILES[$(agent "Codex CLI")]}" ]
+  [ -z "${MM_AGENT_HELPERS[c]}" ]
+}
+
+@test "Kimi CLI and OpenHands are known, so their state and conversations are protected" {
+  mm_core
+  mkdir -p "$HOME/.kimi/sessions/a1b2/0001" "$HOME/.kimi/credentials" "$HOME/.openhands/conversations/c1/events"
+  echo '{}' >"$HOME/.kimi/sessions/a1b2/0001/context.jsonl"
+  echo '{}' >"$HOME/.openhands/conversations/c1/events/event-0.json"
+  echo '{}' >"$HOME/.openhands/agent_settings.json"
+  mm_inuse_refresh
+  local p
+  for p in "$HOME/.kimi" "$HOME/.kimi/sessions/a1b2" "$HOME/.openhands" "$HOME/.openhands/conversations/c1"; do
+    MM_DRY_RUN=1 run mm_rm "$p" "$HOME"
+    [ "$status" -eq 1 ] || { echo "not refused: $p"; false; }
+  done
+  [ -e "$HOME/.kimi/sessions/a1b2/0001/context.jsonl" ]
+  [ -e "$HOME/.openhands/conversations/c1/events/event-0.json" ]
 }
 
 @test "every agent has a process name and at least one state path, all under HOME" {
@@ -79,7 +104,7 @@ agent() { local i; for i in "${!MM_AGENT_NAME[@]}"; do [[ "${MM_AGENT_NAME[i]}" 
 Tool|tool|~/.tool|~/.tool/sessions|~/.tool/versions|~/.local/bin/tool
 '
   MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
-  MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=()
+  MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=() MM_AGENT_SESSION_FILES=()
   _mm_agents_load
   [ "${#MM_AGENT_LOGS[@]}" -eq 1 ]
   [ "${#MM_AGENT_HELPERS[@]}" -eq 1 ]

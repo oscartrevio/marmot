@@ -44,13 +44,14 @@ trash_item() {
 # fake_docker — containers: c-old/c-never-old (stopped/created long ago), c-recent (postgres:16,
 # stopped an hour ago), c-never-new, and c-running (web:1, listed only without --filter). Images
 # no container uses: old/tool:1 (90 days), multi:a+multi:b (200 days, tag time unknown), base:12
-# (built 90 days ago, pulled 2 days ago), fresh:1 (3 days), and an untagged one. Removing the
-# two old ones drops the `system df` Images total by 2.1GB (estimate from unique sizes: 2.0GB).
+# (built 90 days ago, pulled 2 days ago), fresh:1 (3 days), mydev:snapshot (45 days, no repo
+# digests: built or committed here), and an untagged one. Removing the two old pulled ones drops
+# the `system df` Images total by 2.1GB (estimate from unique sizes: 2.0GB).
 # FAKE_DOCKER_PS_FAIL=1 makes `docker ps` fail.
 fake_docker() {
   fake_rec docker '
 iso() { command date -u -d "$1" +%Y-%m-%dT%H:%M:%S.000000000Z; }
-row() { printf "%s\t%s\t%s\t%s\n" "$@"; }
+row() { printf "%s\t%s\t%s\t%s\t%s\n" "$@"; }
 gone="$CALLS.gone"
 [[ -n "${FAKE_DOCKER_PS_FAIL:-}" && "$1" == ps ]] && exit 1
 case "$1 ${2:-}" in
@@ -69,30 +70,59 @@ case "$1 ${2:-}" in
         c-never-old /never-ran created 0001-01-01T00:00:00Z "$(iso "20 days ago")" alpine 0 \
         c-never-new /fresh created 0001-01-01T00:00:00Z "$(iso "1 day ago")" alpine 0
     fi ;;
-  "image ls") printf "%s\n" sha256:old sha256:multi sha256:pulled sha256:fresh sha256:web sha256:postgres sha256:app \
-    sha256:alpine sha256:dangling sha256:multi ;;
+  "image ls") printf "%s\n" sha256:old sha256:multi sha256:pulled sha256:fresh sha256:local sha256:web \
+    sha256:postgres sha256:app sha256:alpine sha256:dangling sha256:multi ;;
   "image inspect")
-    row sha256:old "old/tool:1" "$(iso "90 days ago")" "$(iso "90 days ago")"
-    row sha256:multi "multi:a multi:b" "$(iso "200 days ago")" 0001-01-01T00:00:00Z
-    row sha256:pulled "base:12" "$(iso "90 days ago")" "$(iso "2 days ago")"
-    row sha256:fresh "fresh:1" "$(iso "3 days ago")" "$(iso "3 days ago")"
+    row sha256:old "old/tool:1" "$(iso "90 days ago")" "$(iso "90 days ago")" 1
+    row sha256:multi "multi:a multi:b" "$(iso "200 days ago")" 0001-01-01T00:00:00Z 1
+    row sha256:pulled "base:12" "$(iso "90 days ago")" "$(iso "2 days ago")" 1
+    row sha256:fresh "fresh:1" "$(iso "3 days ago")" "$(iso "3 days ago")" 1
+    row sha256:local "mydev:snapshot" "$(iso "45 days ago")" "$(iso "45 days ago")" 0
     for i in web:1 postgres:16 app:1 alpine:latest; do
-      row "sha256:${i%%:*}" "$i" "$(iso "200 days ago")" "$(iso "200 days ago")"
+      row "sha256:${i%%:*}" "$i" "$(iso "200 days ago")" "$(iso "200 days ago")" 1
     done
-    row sha256:dangling "" "$(iso "300 days ago")" 0001-01-01T00:00:00Z ;;
+    row sha256:dangling "" "$(iso "300 days ago")" 0001-01-01T00:00:00Z 0 ;;
   "image rm") echo "$*" >>"$gone" ;;
-  "images "*) echo 12MB ;;
+  "images "*) printf "%s\t%s\n" sha256:dangling 12MB ;;
   "builder du") echo "Reclaimable: 1.5GB" ;;
   "volume ls") echo vol-db ;;
   "system df")
     case "$*" in
       *Volumes*) printf "vol-db\t1.8GB\n" ;;
-      *UniqueSize*) printf "%s\t%s\n" sha256:old 1.2GB sha256:multi 800MB sha256:pulled 50MB sha256:web 300MB ;;
+      *UniqueSize*) printf "%s\t%s\n" sha256:old 1.2GB sha256:multi 800MB sha256:pulled 50MB sha256:local 2.0GB sha256:web 300MB ;;
       *) mb=5000
         grep -q "old/tool:1" "$gone" 2>/dev/null && mb=$((mb - 1200))
         grep -q "multi:a multi:b" "$gone" 2>/dev/null && mb=$((mb - 900))
         printf "Images\t%sMB\nContainers\t10MB\n" "$mb" ;;
     esac ;;
+esac'
+}
+
+# fake_docker_many — a stand-in with 12 containers stopped 30 days ago and 12 unused images,
+# more than any listing cap.
+fake_docker_many() {
+  fake_rec docker '
+iso() { command date -u -d "$1" +%Y-%m-%dT%H:%M:%S.000000000Z; }
+case "$1 ${2:-}" in
+  "ps "*) for i in 01 02 03 04 05 06 07 08 09 10 11 12; do echo "c$i"; done ;;
+  "container inspect")
+    if [[ "$*" == *"{{.Image}}"* ]]; then shift 4; for c; do echo "sha256:running-$c"; done
+    else
+      for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+        printf "c%s\t/box-%s\texited\t%s\t%s\tubuntu:24.04\t%s\n" \
+          "$i" "$i" "$(iso "30 days ago")" "$(iso "90 days ago")" "${i#0}0000000"
+      done
+    fi ;;
+  "image ls") for i in 01 02 03 04 05 06 07 08 09 10 11 12; do echo "sha256:im$i"; done ;;
+  "image inspect")
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+      printf "sha256:im%s\tolder/tool:%s \t%s\t%s\t1\n" "$i" "$i" "$(iso "60 days ago")" "$(iso "60 days ago")"
+    done ;;
+  "image rm"|"rm "*) echo "$*" >>"$CALLS.gone" ;;
+  "images "*) ;;
+  "builder du") ;;
+  "volume ls") ;;
+  "system df") printf "Images\t5GB\nContainers\t1GB\n" ;;
 esac'
 }
 
@@ -314,6 +344,43 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   [[ "$output" == *"Unused images · skipped"* ]]
 }
 
+@test "docker: untagged images are listed and asked about, never pruned unattended" {
+  fake_docker
+  src
+  run _clean_docker                                  # no terminal: every prompt declines
+  none grep -E ' docker image (prune|rm)' "$CALLS"
+  [[ "$output" == *"Dangling images"* ]]             # still listed
+  : >"$CALLS"
+  mm_confirm() { return 0; }
+  _clean_docker >/dev/null
+  grep -qE ' docker image rm sha256:dangling$' "$CALLS"
+  none grep ' docker image prune' "$CALLS"
+  none grep -E ' docker image rm .*(-f|--force)' "$CALLS"
+}
+
+@test "docker: an image no registry has is kept and listed for review, not offered for removal" {
+  fake_docker
+  src
+  mm_confirm() { return 0; }
+  images_then_review() { _clean_docker_images; _clean_review_print; }
+  run images_then_review
+  none grep ' docker image rm mydev:snapshot' "$CALLS"
+  [[ "$output" == *"Kept for you to review"*"mydev:snapshot"* ]]
+}
+
+@test "docker: every container and image that would go is listed, none hidden behind a count" {
+  fake_docker_many
+  src
+  mm_confirm() { return 0; }
+  run _clean_docker
+  local i
+  for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    [[ "$output" == *"box-$i"* ]] || { echo "container box-$i not listed"; false; }
+    [[ "$output" == *"older/tool:$i"* ]] || { echo "image older/tool:$i not listed"; false; }
+  done
+  none grep -F '(+' <<<"$output"
+}
+
 # unix_socket PATH — a listening-less unix socket file at PATH (what a mounted docker.sock looks like).
 unix_socket() {
   command -v python3 >/dev/null || skip "python3 not installed"
@@ -368,6 +435,70 @@ unix_socket() {
   mm_test_fake dpkg-query "printf 'ii\tlinux-image-1.0.0-1-generic\nii\tlinux-image-99.0.0-1-generic\n'"
   MM_CONTAINER=1 run _clean_kernels
   [[ "$output" == *"Old kernels · skipped (in a container: the running kernel is the host's)"* ]]
+}
+
+# ---------------------------------------------------------------- apt
+
+# apt_src — clean with a sudo double that runs the command as the test user, an apt-get that only
+# records what it was asked to do, and dpkg's maintainer scripts in the sandbox.
+apt_src() {
+  mm_test_fake sudo '[[ "$1" == -n ]] && shift; [[ "$1" == -k ]] && exit 0; exec "$@"'
+  mm_test_fake apt-get 'echo "apt-get $*" >>"$CALLS"
+[[ "$1 $2" == "-s autoremove" ]] && echo "Remv demo-agentd [1.0]"
+exit 0'
+  mm_test_fake dpkg-query 'exit 0'
+  src
+  _CLEAN_DPKG_INFO="$SB/dpkg-info"
+  mkdir -p "$_CLEAN_DPKG_INFO"
+}
+# postrm PKG LINE — PKG's purge script, running LINE when dpkg purges it.
+postrm() {
+  printf '#!/bin/sh\nset -e\ncase "$1" in\n  purge)\n    %s\n    ;;\nesac\n' "$2" >"$_CLEAN_DPKG_INFO/$1.postrm"
+  chmod 755 "$_CLEAN_DPKG_INFO/$1.postrm"
+}
+
+@test "apt: unused packages are removed, not purged, so edited config files stay" {
+  apt_src
+  mm_confirm() { return 0; }
+  run _clean_apt_autoremove
+  [ "$status" -eq 0 ]
+  grep -qxF 'apt-get -y autoremove' "$CALLS"
+  none grep -E 'autoremove.*--purge' "$CALLS"
+}
+
+@test "apt: rc packages whose purge script deletes data keep their config; the rest are purged" {
+  apt_src
+  postrm docker.io 'nuke-graph-directory /var/lib/docker'
+  postrm postgresql-15 'pg_dropcluster --stop 15 main'
+  postrm weird-daemon 'rm -rf /var/lib/weird-daemon'
+  postrm web-thing 'rm -rf /var/www/thing'
+  postrm user-daemon 'deluser --quiet --system --remove-home userd'
+  postrm vague-tool 'rm -rf "$STATE_DIR"'
+  postrm tidy-tool 'rm -f /etc/tidy-tool.conf; rm -rf /var/lib/ucf/cache/tidy-tool'
+  mm_test_fake dpkg 'printf "rc   %s   1.0   all\n" docker.io postgresql-15 weird-daemon web-thing user-daemon vague-tool tidy-tool no-script'
+  mm_confirm() { return 0; }
+  residual_then_review() { _clean_apt_residual; _clean_review_print; }
+  run residual_then_review
+  [ "$status" -eq 0 ]
+  grep -qxF 'apt-get -y purge tidy-tool no-script' "$CALLS"
+  none grep -F 'purge ~c' "$CALLS"
+  local p
+  for p in docker.io postgresql-15 weird-daemon web-thing user-daemon vague-tool; do
+    none grep -E "apt-get .*purge .*(^| )$p( |$)" "$CALLS"
+    [[ "$output" == *"$p"* ]] || { echo "$p not listed for review"; false; }
+  done
+}
+
+@test "apt: an rc package whose purge script cannot be read is kept" {
+  (( EUID != 0 )) || skip "root can read every file"
+  apt_src
+  postrm secret-tool 'rm -rf /var/lib/secret-tool'
+  chmod 000 "$_CLEAN_DPKG_INFO/secret-tool.postrm"
+  mm_test_fake dpkg 'printf "rc   %s   1.0   all\n" secret-tool'
+  mm_confirm() { return 0; }
+  run _clean_apt_residual
+  [ "$status" -eq 0 ]
+  none grep 'apt-get' "$CALLS"
 }
 
 # ---------------------------------------------------------------- editors
@@ -428,11 +559,14 @@ exec $real \"\$@\""
 }
 
 @test "catalog cache entries used in the last 7 days stay (an MCP server npx runs); older ones go" {
-  local x="$HOME/.npm/_npx"
+  local x="$HOME/.npm/_npx" e
   mkdir -p "$x/old/node_modules/a" "$x/read/node_modules/b" "$x/written/node_modules/c" "$x/nested/node_modules/d/dist"
   echo '{}' >"$x/old/package.json"; echo '{}' >"$x/read/package.json"; echo '{}' >"$x/written/package.json"
   echo '{}' >"$x/nested/package.json"; echo 'run()' >"$x/nested/node_modules/d/dist/index.js"
+  for e in old read written nested; do : >"$x/$e/node_modules/.package-lock.json"; done
   mm_age "$x" 30
+  # npm writes the lockfile last, so a cache entry nothing wrote into has no file newer than it.
+  for e in old read written nested; do touch -d '29 days ago' "$x/$e/node_modules/.package-lock.json"; done
   touch -a "$x/read/package.json"           # npx -y read it: only its access time moves
   echo '{"v":2}' >"$x/written/package.json"  # reinstalled today
   touch -a "$x/nested/node_modules/d/dist/index.js"  # a server loaded only a nested file
@@ -442,6 +576,72 @@ exec $real \"\$@\""
   gone "$x/old"
   exist "$x/read/node_modules/b" "$x/written/node_modules/c" "$x/nested/node_modules/d/dist/index.js"
   [[ "$output" == *"npx package cache"*"1 item"*"3 used in the last 7 days kept"* ]]
+}
+
+# caches_then_review — the catalog cache rows plus the "Kept for you to review" block.
+caches_then_review() { _clean_catalog_caches; _clean_review_print; }
+
+# npx_entry NAME — an npx cache entry: an installed package tree 30 days old, with npm's install
+# marker written last, the way a real `npx -y` install leaves it.
+npx_entry() {
+  local e="$HOME/.npm/_npx/$1"
+  mkdir -p "$e/node_modules/@modelcontextprotocol/server-memory/dist"
+  echo '{"_npx":{"packages":["@modelcontextprotocol/server-memory"]}}' >"$e/package.json"
+  echo 'run()' >"$e/node_modules/@modelcontextprotocol/server-memory/dist/index.js"
+  : >"$e/node_modules/.package-lock.json"
+  mm_age "$e" 30
+  touch -d '29 days ago' "$e/node_modules/.package-lock.json"
+}
+
+@test "npx: an entry a server wrote into after its install is kept and listed; a plain one goes" {
+  local x="$HOME/.npm/_npx" m="$HOME/.npm/_npx/mem/node_modules/@modelcontextprotocol/server-memory/dist"
+  npx_entry plain; npx_entry mem
+  echo '{"type":"entity","name":"Oscar"}' >"$m/memory.jsonl"   # the server's knowledge graph
+  touch -d '20 days ago' "$m/memory.jsonl" "$m"   # written 10 days after the install, not since
+  mkdir -p "$x/partial/node_modules/x"; echo i >"$x/partial/node_modules/x/index.js"
+  echo '{}' >"$x/partial/package.json"; mm_age "$x/partial" 30   # an install with no marker
+  catalog
+  _clean_busy() { return 1; }
+  run caches_then_review
+  [ "$status" -eq 0 ]
+  gone "$x/plain"
+  exist "$m/memory.jsonl" "$m/index.js" "$x/partial/node_modules/x/index.js"
+  [[ "$output" == *"files written after install"*"memory.jsonl"* ]]
+  [ -z "$(mm_log_rows remove | grep -E "^$x/(mem|partial)")" ]
+}
+
+@test "Deno's npm cache is kept and reported; its other caches are still emptied" {
+  local d="$HOME/.cache/deno"
+  mkdir -p "$d/npm/registry.npmjs.org/@modelcontextprotocol/server-memory/2.0.0/dist" "$d/gen/file" "$d/deps/https"
+  echo '{"name":"server-memory"}' >"$d/npm/registry.npmjs.org/@modelcontextprotocol/server-memory/2.0.0/package.json"
+  echo '{"type":"entity"}' >"$d/npm/registry.npmjs.org/@modelcontextprotocol/server-memory/2.0.0/dist/memory.jsonl"
+  echo c >"$d/gen/file/x.js"; echo h >"$d/deps/https/body"
+  mm_age "$d" 30
+  catalog
+  _clean_busy() { return 1; }
+  run caches_then_review
+  [ "$status" -eq 0 ]
+  exist "$d/npm/registry.npmjs.org/@modelcontextprotocol/server-memory/2.0.0/dist/memory.jsonl"
+  gone "$d/gen/file" "$d/deps/https"
+  [[ "$output" == *"Deno npm packages"* ]]
+  [ -z "$(mm_log_rows remove | grep -E "^$d/npm/")" ]
+}
+
+@test "opencode: a plugin that wrote into its own folder keeps the cache's node_modules" {
+  local c="$HOME/.cache/opencode"
+  mkdir -p "$c/node_modules/marmot-plugin"
+  : >"$c/node_modules/.package-lock.json"; echo p >"$c/node_modules/marmot-plugin/index.js"
+  echo '{}' >"$c/models.json"
+  mm_age "$c" 30
+  touch -d '29 days ago' "$c/node_modules/.package-lock.json"
+  echo '{"seen":1}' >"$c/node_modules/marmot-plugin/state.json"
+  touch -d '20 days ago' "$c/node_modules/marmot-plugin/state.json" "$c/node_modules/marmot-plugin"
+  catalog
+  _clean_busy() { return 1; }
+  run caches_then_review
+  [ "$status" -eq 0 ]
+  exist "$c/node_modules/marmot-plugin/state.json" "$c/node_modules/marmot-plugin/index.js"
+  gone "$c/models.json"
 }
 
 @test "a big cache folder no catalog row knows is listed for review and kept" {
@@ -540,11 +740,26 @@ claude_versions() {
   exist "$d/1.0.0" "$d/1.0.1" "$d/1.0.2"
 }
 
+@test "agent versions: a version a directory on PATH points into is kept" {
+  local d="$HOME/.local/share/cursor-agent/versions" v
+  mkdir -p "$HOME/.local/bin"
+  for v in 2025.08.01-aaa 2025.09.01-bbb 2025.10.01-ccc 2025.11.01-ddd; do
+    mkdir -p "$d/$v"; echo bin >"$d/$v/cursor-agent"; chmod +x "$d/$v/cursor-agent"
+  done
+  ln -sfn "$d/2025.11.01-ddd/cursor-agent" "$HOME/.local/bin/cursor-agent"
+  PATH="$d/2025.08.01-aaa:$PATH"
+  catalog
+  run _clean_builds
+  [ "$status" -eq 0 ]
+  exist "$d/2025.08.01-aaa/cursor-agent" "$d/2025.10.01-ccc" "$d/2025.11.01-ddd"
+  gone "$d/2025.09.01-bbb"
+}
+
 @test "Playwright: newest revision per browser kept, plus ones in use or still referenced by a project" {
   local p="$HOME/.cache/ms-playwright" r
   for r in chromium-1100 chromium-1200 chromium_headless_shell-1100 chromium_headless_shell-1200 \
            firefox-1400 firefox-1500 webkit-1900 webkit-2000 ffmpeg-1009; do
-    mkdir -p "$p/$r"; echo bin >"$p/$r/browser"
+    mkdir -p "$p/$r"; echo bin >"$p/$r/browser"; : >"$p/$r/INSTALLATION_COMPLETE"
   done
   mkdir -p "$p/.links" "$SB/proj/node_modules/playwright-core"
   printf '{ "browsers": [\n { "name": "chromium-headless-shell",\n "revision": "1100" }\n] }\n' \
@@ -558,6 +773,21 @@ claude_versions() {
            webkit-1900 webkit-2000 ffmpeg-1009 .links; do
     [ -e "$p/$r" ] || { echo "removed $r"; false; }
   done
+}
+
+@test "Playwright: folders without the install marker (MCP browser profiles) are never old builds" {
+  local p="$HOME/.cache/ms-playwright" r
+  for r in chromium-1100 chromium-1200; do
+    mkdir -p "$p/$r"; echo bin >"$p/$r/browser"; : >"$p/$r/INSTALLATION_COMPLETE"
+  done
+  # @playwright/mcp persistent profiles: mcp-<browser>-<7 hex of a workspace hash>, here all digits.
+  for r in mcp-chrome-4471023 mcp-chrome-9310577; do
+    mkdir -p "$p/$r/Default"; echo session >"$p/$r/Default/Cookies"
+  done
+  catalog
+  run _clean_builds
+  gone "$p/chromium-1100"
+  exist "$p/chromium-1200" "$p/mcp-chrome-4471023/Default/Cookies" "$p/mcp-chrome-9310577/Default/Cookies"
 }
 
 @test "Puppeteer and Cypress: only the newest build per browser is kept" {
@@ -671,6 +901,36 @@ sessions_run() {
   gone "$cl/projects/p2" "$cx/sessions/2026"             # folders the moves emptied
   exist "$cl/projects" "$cx/sessions" "$cl/projects/p1"  # session roots and non-empty folders stay
   [ -z "$(mm_log_rows remove | grep -v -e "^$cl/projects/p2" -e "^$cx/sessions/2026")" ]
+}
+
+@test "retention never touches an agent's memory folder or files that are not transcripts" {
+  sessions_fixture
+  local p="$HOME/.claude/projects/p1"
+  mkdir -p "$p/memory"
+  printf -- '- [User role](user_role.md)\n' >"$p/memory/MEMORY.md"
+  printf -- 'Staff engineer, owns billing.\n' >"$p/memory/user_role.md"
+  echo '{}' >"$p/settings.json"
+  mm_age "$HOME/.claude" 90
+  run sessions_run 30
+  [ "$status" -eq 0 ]
+  exist "$p/memory/MEMORY.md" "$p/memory/user_role.md" "$p/settings.json"
+  gone "$p/old.jsonl"                                      # transcripts still move
+  [ ! -e "$XDG_DATA_HOME/Trash/files/MEMORY.md" ]
+}
+
+@test "retention keeps project files in agent worktrees and in git checkouts under agent state" {
+  sessions_fixture
+  local w="$HOME/.codex/worktrees/7f3a/logparse" g="$HOME/.codex/scratch/proj"
+  mkdir -p "$w/tests/fixtures" "$w/.git" "$g"
+  echo entry >"$w/tests/fixtures/access.log.1"
+  echo 'ref: refs/heads/main' >"$w/.git/HEAD"
+  printf 'gitdir: /home/x/repo/.git/worktrees/proj\n' >"$g/.git"   # a checkout, .git is a file
+  echo entry >"$g/app.log.1"
+  mm_age "$HOME/.codex" 90
+  run sessions_run 30
+  [ "$status" -eq 0 ]
+  exist "$w/tests/fixtures/access.log.1" "$g/app.log.1"
+  gone "$HOME/.codex/debug/codex.log.1"                    # rotated logs in state still move
 }
 
 @test "retention keeps session files in use and whitelisted ones" {
@@ -944,6 +1204,20 @@ blocks() { local p s=0; for p; do s=$((s + $(stat -c %b "$p") * 512)); done; ech
   gone "$l/syslog.2.gz"
 }
 
+@test "rotated logs: a file descriptor the root script cannot read stops it deleting anything" {
+  local l="$SB/var/log" id real
+  real=$(command -v find)
+  root_src
+  file_aged "$l/syslog.1" 9
+  id=$("$real" "$l/syslog.1" -maxdepth 0 -printf '%D:%i')
+  # One fd link whose target root cannot read (an empty %l), as in a container without SYS_PTRACE.
+  mm_test_fake find "if [[ \"\$1\" == /proc/*/fd ]]; then printf '/dev/null\\0\\0/dev/zero\\0'; exit 0; fi
+exec $real \"\$@\""
+  run bash -c "$_CLEAN_ROOT_RM" _ 10 "$id" "$l/syslog.1"
+  [ "$status" -ne 0 ]
+  exist "$l/syslog.1"
+}
+
 @test "rotated logs and crash dumps: nothing is deleted without a terminal" {
   file_aged "$SB/var/log/syslog.1" 9; file_aged "$SB/var/crash/_usr_bin_node.1000.crash" 9
   mkdir -p "$XDG_DATA_HOME/apport/r1"; mm_age "$XDG_DATA_HOME/apport" 9
@@ -1022,6 +1296,32 @@ browser_tmp() { local n; for n; do blob "$MM_TEST_TMP_ROOT/$n/Default/Cache/data
   _clean_browser_tmp "$t" >/dev/null
   exist "$t/playwright_chromiumdev_profile-cwd/Default/Cache/data_1" "$t/puppeteer_dev_chrome_profile-fd/Default/Cache/data_1"
   [ "$(mm_log_rows refused | cut -f2 | sort -u)" = "in use" ]
+}
+
+@test "browser temp: a live Playwright browser keeps the artifacts folders of that run" {
+  src
+  local t=$MM_TEST_TMP_ROOT
+  browser_tmp playwright-artifacts-LIVE puppeteer_dev_chrome_profile-OLD
+  echo invoice >"$t/playwright-artifacts-LIVE/6f1c2e7a-download"
+  # A live browser holds its profile's lock open, and its command line names the profile.
+  mkdir -p "$t/playwright_chromiumdev_profile-LIVE"; echo lock >"$t/playwright_chromiumdev_profile-LIVE/LOCK"
+  mm_test_bg "$SB" bash -c 'exec 3<"$1"; sleep 60; :' browser "$t/playwright_chromiumdev_profile-LIVE/LOCK"
+  mm_test_clock 1
+  mm_inuse_refresh >/dev/null 2>&1
+  _clean_browser_tmp "$t" >/dev/null
+  exist "$t/playwright-artifacts-LIVE/6f1c2e7a-download"
+  gone "$t/puppeteer_dev_chrome_profile-OLD"
+}
+
+@test "browser temp: a browser named on a command line keeps the artifacts folders too" {
+  src
+  local t=$MM_TEST_TMP_ROOT
+  browser_tmp playwright-artifacts-LIVE
+  mm_test_bg "$SB" bash -c 'sleep 60; :' browser "--user-data-dir=$t/playwright_chromiumdev_profile-LIVE"
+  mm_test_clock 1
+  mm_inuse_refresh >/dev/null 2>&1
+  _clean_browser_tmp "$t" >/dev/null
+  exist "$t/playwright-artifacts-LIVE/Default/Cache/data_1"
 }
 
 @test "browser temp: another user's entries are never touched" {
@@ -1165,12 +1465,14 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   echo n >"$h/.gem/ruby/3.2.0/cache/notes.txt"
   echo l >"$h/.gradle/daemon/8.5/daemon-4242.out.log"; echo r >"$h/.gradle/daemon/8.5/registry.bin"
   echo m >"$h/.cache/opencode/node_modules/ai/index.js"; echo j >"$h/.cache/opencode/models.json"
+  : >"$h/.cache/opencode/node_modules/.package-lock.json"   # the plugin install, nothing written into it since
   echo s >"$h/.cache/opencode/snapshots/s1/f"
   echo l >"$h/.npm/_logs/2026-01-01T00_00_00_000Z-debug-0.log"; echo c >"$h/.cache/composer/files/acme/p.zip"
   echo z >"$h/.oh-my-zsh/cache/completions/_docker"; echo b >"$h/.android/build-cache/x/b"
   echo '{}' >"$h/.local/share/jupyter/runtime/kernel-1.json"; echo t >"$h/.hex/packages/hexpm/jason-1.4.1.tar"
   echo o >"$h/.opam/download-cache/sha256/ab"
   mm_age "$h" 30
+  touch -d '29 days ago' "$h/.cache/opencode/node_modules/.package-lock.json"
   catalog
   _clean_busy() { return 1; }   # isolate from tools running on the host
   run _clean_catalog_caches
@@ -1242,6 +1544,21 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   [ "$MM_FREED" -eq "$est" ]
   [ $((before - after)) -eq "$est" ]
   (( est >= 500000 ))
+}
+
+@test "more caches: Corepack's lastKnownGood.json and oh-my-zsh's dotenv lists stay; the caches around them go" {
+  local c="$HOME/.cache/node/corepack" z="$HOME/.oh-my-zsh/cache"
+  mkdir -p "$c/v1/pnpm/8.15.9" "$z/completions"
+  echo '{"pnpm":"8.15.9"}' >"$c/lastKnownGood.json"; echo '{}' >"$c/v1/pnpm/8.15.9/package.json"
+  echo "$HOME/work" >"$z/dotenv-allowed.list"; echo "$HOME/Downloads" >"$z/dotenv-disallowed.list"
+  echo z >"$z/completions/_docker"; echo x >"$z/grep-alias"
+  mm_age "$HOME" 30
+  catalog
+  _clean_busy() { return 1; }
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  exist "$c/lastKnownGood.json" "$z/dotenv-allowed.list" "$z/dotenv-disallowed.list"
+  gone "$c/v1" "$z/completions" "$z/grep-alias"
 }
 
 # ---------------------------------------------------------------- mise, conda, Homebrew, nix
