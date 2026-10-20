@@ -749,3 +749,31 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
   run try_rm "$SB/root/x" "$SB/root"
   [ "$output" = "1 whitelisted" ]
 }
+
+# ---------------------------------------------------------------- dotfiles setups (symlinks)
+
+@test "symlinked ~/.claude, ~/.config and ~/.ssh keep their protection, through the link and behind it" {
+  rm -rf "$HOME/.config"   # stow and dotfiles repos move the whole folder out of the way
+  mkdir -p "$HOME/dotfiles/claude/projects/p" "$HOME/dotfiles/claude/local/node_modules" \
+    "$HOME/dotfiles/config/marmot" "$HOME/dotfiles/config/coc/extensions/node_modules" "$HOME/dotfiles/ssh"
+  echo s >"$HOME/dotfiles/claude/projects/p/s.jsonl"; echo k >"$HOME/dotfiles/ssh/id_ed25519"
+  echo x >"$HOME/dotfiles/config/coc/extensions/node_modules/i.js"
+  ln -s "$HOME/dotfiles/claude" "$HOME/.claude"
+  ln -s "$HOME/dotfiles/config" "$HOME/.config"
+  ln -s "$HOME/dotfiles/ssh" "$HOME/.ssh"
+  mm_core
+  : >"$MM_WHITELIST_FILE"
+  mm_inuse_refresh
+  local p
+  for p in "$HOME/dotfiles/claude" "$HOME/dotfiles/claude/projects/p" "$HOME/.claude/projects/p" \
+           "$HOME/dotfiles/claude/local/node_modules" "$HOME/dotfiles/config/coc" "$HOME/.config/coc" \
+           "$HOME/dotfiles/config/coc/extensions/node_modules"; do
+    run try_rm "$p" "$HOME"
+    [ "$output" = "1 whitelisted" ] || { echo "not protected: $p ($output)"; false; }
+  done
+  run try_rm "$HOME/dotfiles/ssh/id_ed25519" "$HOME"; [ "$output" = "1 protected" ]
+  run try_rm "$HOME/.ssh/id_ed25519" "$HOME";         [ "$output" = "1 protected" ]
+  [ -f "$HOME/dotfiles/ssh/id_ed25519" ]
+  [ -f "$HOME/dotfiles/claude/projects/p/s.jsonl" ]
+  [ -f "$HOME/dotfiles/config/coc/extensions/node_modules/i.js" ]
+}

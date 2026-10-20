@@ -504,6 +504,7 @@ mm_whitelist_init() {
 # (-g: commands and tests source this file inside a function, where a plain declare would be local.)
 declare -gA _MM_REAL_CACHE=()
 _MM_PASSWD=() _MM_PASSWD_READY="" _MM_WL_REPORTED=""
+_MM_KEEP=() _MM_AGENT_KEEP=() _MM_AGENT_KEEP_REAL=() _MM_GATE_READY=""
 
 # _mm_real PATH — REPLY is PATH with its symlinks resolved (realpath -m, so PATH need not exist).
 _mm_real() {
@@ -662,23 +663,64 @@ mm_carveout() {
   return 1
 }
 
+# _mm_gate_init — work out this run's protection paths once: the built-in keeps and the known
+# agents' state paths, each with the path it resolves to when a symlink carries it elsewhere (a
+# dotfiles setup links ~/.claude or ~/.config into ~/dotfiles, and the gate compares resolved
+# paths), and the same for the $HOME trees marmot never deletes inside. mm_rm calls it in its own
+# shell, so the checks that run in a subshell inherit the answers instead of forking per item.
+_mm_gate_init() {
+  [[ -n "$_MM_GATE_READY" ]] && return 0
+  _MM_GATE_READY=1
+  local p
+  _MM_KEEP=() _MM_AGENT_KEEP=() _MM_AGENT_KEEP_REAL=()
+  for p in "${MM_BUILTIN_KEEP[@]}"; do
+    p=${p%/}
+    _MM_KEEP+=("$p")
+    _mm_has_link "$p" || continue
+    _mm_real "$p"
+    [[ "$REPLY" == "$p" ]] || _MM_KEEP+=("$REPLY")
+  done
+  while IFS= read -r p; do
+    [[ "$p" == \~* ]] && p="$HOME${p:1}"
+    p=${p%/}
+    [[ "$p" == /?* ]] || continue
+    _MM_AGENT_KEEP+=("$p")
+    REPLY=""
+    if _mm_has_link "$p"; then
+      _mm_real "$p"
+      [[ "$REPLY" == "$p" ]] && REPLY=""
+    fi
+    _MM_AGENT_KEEP_REAL+=("$REPLY")
+  done < <(mm_agent_state_paths)
+  for p in "${MM_PROTECTED_TREES[@]}"; do
+    [[ "$p" == "$HOME"/?* ]] || continue
+    _mm_has_link "$p" || continue
+    _mm_real "$p"
+    [[ "$REPLY" == "$p" ]] || MM_PROTECTED_TREES+=("$REPLY")
+  done
+  return 0
+}
+
 # mm_keep_patterns [--carveout] — every protection pattern as an absolute path or glob, one per
-# line: built-ins, agent state, then the whitelist file. --carveout leaves the built-ins out (for
-# entries mm_carveout waives). MM_KEEP_AGENT_STATE=0 leaves agent state out; only for removing git
-# worktrees that git reports clean (agents such as Cursor keep their worktrees inside their state
-# dir). _MM_WAIVED (set by mm_rm for MM_AGENT_WAIVER) leaves out only the agent state entries that
-# contain that directory.
+# line: built-ins, agent state, then the whitelist file, each also as the path it resolves to.
+# --carveout leaves the built-ins out (for entries mm_carveout waives). MM_KEEP_AGENT_STATE=0
+# leaves agent state out; only for removing git worktrees that git reports clean (agents such as
+# Cursor keep their worktrees inside their state dir). _MM_WAIVED (set by mm_rm for
+# MM_AGENT_WAIVER) leaves out only the agent state entries that contain that directory.
 mm_keep_patterns() {
-  [[ "${1:-}" == --carveout ]] || printf '%s\n' "${MM_BUILTIN_KEEP[@]}"
+  _mm_gate_init
+  [[ "${1:-}" == --carveout ]] || printf '%s\n' "${_MM_KEEP[@]}"
   if [[ "${MM_KEEP_AGENT_STATE:-1}" != 0 ]]; then
-    local p
-    while IFS= read -r p; do
-      [[ "$p" == "~"* ]] && p="$HOME${p:1}"
-      p=${p%/}
-      [[ "$p" == /?* ]] || continue
-      [[ -n "${_MM_WAIVED:-}" && ( "$_MM_WAIVED" == "$p" || "$_MM_WAIVED" == "$p"/* ) ]] && continue
-      printf '%s\n' "$p"
-    done < <(mm_agent_state_paths)
+    local i p r
+    for i in "${!_MM_AGENT_KEEP[@]}"; do
+      p=${_MM_AGENT_KEEP[i]} r=${_MM_AGENT_KEEP_REAL[i]}
+      if [[ -n "${_MM_WAIVED:-}" ]] &&
+         { [[ "$_MM_WAIVED" == "$p" || "$_MM_WAIVED" == "$p"/* ]] ||
+           [[ -n "$r" && ( "$_MM_WAIVED" == "$r" || "$_MM_WAIVED" == "$r"/* ) ]]; }; then
+        continue
+      fi
+      printf '%s\n' "$p" ${r:+"$r"}
+    done
   fi
   _mm_whitelist_entries
 }
@@ -772,9 +814,12 @@ MM_PROTECTED_TREES=(/bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /run /
   "$HOME/.ssh" "$HOME/.gnupg")
 [[ "$HOME" == /root ]] || MM_PROTECTED_TREES+=(/root)
 
-# mm_protected REAL — 0 (and prints why) if the resolved path REAL is a protected path, lies in a
-# protected tree, or is a home directory under /home.
+# mm_protected PATH — 0 (and prints why) if PATH is a protected path, lies in a protected tree, or
+# is a home directory under /home. Call it with the target as written and as resolved: a tree is
+# protected under the name it is reached by and under the folder it resolves to (a symlinked
+# ~/.ssh), and neither form may grant what the other refuses.
 mm_protected() {
+  _mm_gate_init
   local p
   for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" || "$1" == "$p" ]] && { echo protected; return 0; }; done
   for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && { echo protected; return 0; }; done
@@ -854,9 +899,14 @@ mm_rm() {
     fi
     mm_credential_like "$real" && { _mm_refuse "looks like credentials"; return 1; }
   fi
-  p=$(mm_protected "$real") && { _mm_refuse "$p"; return 1; }
+  _mm_gate_init   # this run's protection paths, in this shell: the checks below then fork none
   # A protection denies on either form: a resolved path never grants what the path as written
-  # does not (a symlinked parent must not carry a target out of a whitelisted folder).
+  # does not (a symlinked parent must not carry a target out of a protected or whitelisted folder).
+  if p=$(mm_protected "$real"); then
+    _mm_refuse "$p"; return 1
+  elif [[ "$path" != "$real" ]] && p=$(mm_protected "$path"); then
+    _mm_refuse "$p"; return 1
+  fi
   if _MM_WAIVED=$waived mm_whitelisted "$real" ||
      { [[ "$path" != "$real" ]] && _MM_WAIVED=$waived mm_whitelisted "$path"; }; then
     _mm_refuse "whitelisted"; return 1
