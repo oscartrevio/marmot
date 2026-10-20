@@ -671,6 +671,21 @@ _purge_wt_clean() {
   [[ -z "$out" ]]
 }
 
+# _purge_wt_reflog WORKTREE — 0 if every commit in WORKTREE's HEAD reflog is on a branch, tag or
+# remote-tracking branch. `git worktree remove` deletes that reflog, so a commit only it holds (made
+# on a detached HEAD, dropped by a reset) would be orphaned. Else 1, _PURGE_WT_WHY says why.
+_purge_wt_reflog() {
+  local log n
+  _PURGE_WT_WHY="could not verify git state"
+  log=$(_purge_git "$1" rev-list -g HEAD) || return 1
+  if [[ -n "$log" ]]; then
+    n=$(_purge_git "$1" rev-list --count --stdin --not --branches --tags --remotes <<<"$log") || return 1
+    [[ "$n" =~ ^[0-9]+$ ]] || return 1
+    (( n == 0 )) || { _PURGE_WT_WHY="$n commit$( (( n > 1 )) && echo s) only in its HEAD reflog"; return 1; }
+  fi
+  _PURGE_WT_WHY=""
+}
+
 # _purge_wt_landed COMMON HEAD BRANCH — how a worktree's work reached the default branch, by git
 # alone (read-only, no fetch): "merged" (HEAD is an ancestor), "rebase-merged" (git cherry: every
 # commit has an equivalent patch there), "squash-merged" (the branch's whole diff from the merge
@@ -724,8 +739,8 @@ _purge_pr_state() {
 
 # _purge_wt_eval I — decide worktree I. Sets _WT_STATE, _WT_WHY (keep reason), _WT_IDLE (seconds)
 # and _WT_MERGE (a _purge_wt_landed label, "PR merged", "PR closed" or "unmerged"):
-#   offer   clean, unlocked, not in use, commits reachable, idle >= 1h, and finished (its work
-#           landed) or unmerged and idle >= 30 days
+#   offer   clean, unlocked, not in use, no commit that only its HEAD or HEAD reflog holds, idle
+#           >= 1h, and finished (its work landed) or unmerged and idle >= 30 days
 #   keep    would be offered but one of those checks fails (_WT_WHY says which)
 #   active  idle < 1h, or unmerged and idle < 30 days (not shown)
 #   skip    the main worktree, or not a worktree of this repository
@@ -761,6 +776,7 @@ _purge_wt_eval() {
       why="detached HEAD with commits on no branch or tag"
     fi
   fi
+  [[ -n "$why" ]] || _purge_wt_reflog "$w" || why="$_PURGE_WT_WHY"
   _WT_MERGE=unmerged
   [[ "$head" =~ ^[0-9a-f]{7,64}$ ]] && _WT_MERGE=$(_purge_wt_landed "$c" "$head" "$br")
   # gh is a network call: only for worktrees that could be offered
@@ -851,8 +867,9 @@ _purge_worktrees() {
   for i in "${sel[@]}"; do
     w="${_WT_PATH[$i]}" m="${_WT_MAIN[$i]}" c="${_WT_COMMON[$i]}"
     if mm_in_use "$w"; then mm_tilde "$w"; mm_skip "$REPLY" "$(mm_inuse_why "$w" || echo "in use")"; continue; fi
-    rc=0; _purge_wt_clean "$w" || rc=$?
-    (( rc == 0 )) || { mm_tilde "$w"; _purge_kept "$REPLY" "changed since the scan"; continue; }
+    if ! _purge_wt_clean "$w" || ! _purge_wt_reflog "$w"; then
+      mm_tilde "$w"; _purge_kept "$REPLY" "changed since the scan"; continue
+    fi
     if [[ -d "$m" ]]; then
       mm_run "remove worktree $w" timeout 120 git -c core.fsmonitor=false -C "$m" worktree remove -- "$w"; rc=$?
     else

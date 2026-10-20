@@ -905,6 +905,22 @@ esac"
   [ "$(git -C "$SB/away" diff --cached --name-only)" = staged ]
 }
 
+@test "a worktree whose HEAD reflog holds commits no branch, tag or remote has is kept" {
+  wt_repo; wt_add det -b det; wt_add reset -b reset; wt_add plain -b plain
+  # made on a detached HEAD, then back on the branch: only the worktree's HEAD reflog holds it
+  git -C "$SB/det" checkout -q --detach; echo x >"$SB/det/x"; wt_commit "$SB/det" "detached work"
+  git -C "$SB/det" checkout -q det
+  echo y >"$SB/reset/y"; wt_commit "$SB/reset" "dropped work"; git -C "$SB/reset" reset -q --hard HEAD~1
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ -d "$SB/det" ]
+  [ -d "$SB/reset" ]
+  never_offered "$SB/det"
+  never_offered "$SB/reset"
+  [ ! -e "$SB/plain" ]
+}
+
 # ---------------------------------------------------------------- more artifact kinds
 
 # cache_tag DIR [FIRST_LINE] — DIR holding a blob and a CACHEDIR.TAG with the standard signature
