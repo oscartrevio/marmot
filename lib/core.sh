@@ -505,6 +505,7 @@ mm_whitelist_init() {
 declare -gA _MM_REAL_CACHE=()
 _MM_PASSWD=() _MM_PASSWD_READY="" _MM_WL_REPORTED=""
 _MM_KEEP=() _MM_AGENT_KEEP=() _MM_AGENT_KEEP_REAL=() _MM_GATE_READY=""
+_MM_OTHER_HOMES=() _MM_HOMES_READY=""
 
 # _mm_real PATH — REPLY is PATH with its symlinks resolved (realpath -m, so PATH need not exist).
 _mm_real() {
@@ -698,6 +699,7 @@ _mm_gate_init() {
     _mm_real "$p"
     [[ "$REPLY" == "$p" ]] || MM_PROTECTED_TREES+=("$REPLY")
   done
+  _mm_other_homes_init
   return 0
 }
 
@@ -814,17 +816,83 @@ MM_PROTECTED_TREES=(/bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /run /
   "$HOME/.ssh" "$HOME/.gnupg")
 [[ "$HOME" == /root ]] || MM_PROTECTED_TREES+=(/root)
 
-# mm_protected PATH — 0 (and prints why) if PATH is a protected path, lies in a protected tree, or
-# is a home directory under /home. Call it with the target as written and as resolved: a tree is
-# protected under the name it is reached by and under the folder it resolves to (a symlinked
-# ~/.ssh), and neither form may grant what the other refuses.
+# mm_protected PATH — 0 (and prints why) if PATH is a protected path, lies in a protected tree, is
+# a home directory under /home, or lies in another account's home. Call it with the target as
+# written and as resolved: a tree is protected under the name it is reached by and under the
+# folder it resolves to (a symlinked ~/.ssh), and neither form may grant what the other refuses.
 mm_protected() {
   _mm_gate_init
   local p
   for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" || "$1" == "$p" ]] && { echo protected; return 0; }; done
   for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && { echo protected; return 0; }; done
   [[ "$1" == /home/* && "${1#/home/}" != */* ]] && { echo "protected (a home directory)"; return 0; }
+  if mm_foreign_home "$1" >/dev/null; then
+    echo "another user's home ($REPLY): run marmot as $REPLY"; return 0
+  fi
   return 1
+}
+
+# _mm_system_path PATH — 0 if PATH is one of the paths marmot never touches or lies inside one of
+# its trees. A system account's "home" (/, /var/backups, /usr/games) is not a user's home: the
+# trees already cover it, and treating it as one would refuse this user's own files.
+_mm_system_path() {
+  local p
+  for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" ]] && return 0; done
+  for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && return 0; done
+  return 1
+}
+
+# _mm_other_homes_init — the home folders of the machine's other accounts, "HOME<TAB>ACCOUNT" in
+# _MM_OTHER_HOMES, once per run. Left out: this user's own home and every folder above it (a
+# system account whose home is / would otherwise cover the whole disk), homes that do not exist,
+# and homes that are part of the OS.
+_mm_other_homes_init() {
+  [[ -n "$_MM_HOMES_READY" ]] && return 0
+  _MM_HOMES_READY=1
+  _mm_passwd_init
+  local e home
+  _MM_OTHER_HOMES=()
+  for e in ${_MM_PASSWD[@]+"${_MM_PASSWD[@]}"}; do
+    home=${e#*$'\t'}; home=${home%/}
+    [[ "$home" == /?* ]] || continue
+    [[ "$HOME" == "$home" || "$HOME" == "$home"/* ]] && continue
+    [[ -d "$home" ]] || continue
+    _mm_system_path "$home" && continue
+    _MM_OTHER_HOMES+=("$home"$'\t'"${e%%$'\t'*}")
+  done
+  return 0
+}
+
+# _mm_in_other_home PATH — 0, printing the account (also in REPLY), when PATH is at or below the
+# home folder of another account.
+_mm_in_other_home() {
+  local p=${1%/} e home account
+  # Every direct child of /home belongs to somebody, whether the password database says so or not.
+  if [[ "$p" == /home/?* ]]; then
+    account=${p#/home/}; account=${account%%/*}
+    home=/home/$account
+    if [[ "$HOME" != "$home" && "$HOME" != "$home"/* ]]; then REPLY=$account; echo "$REPLY"; return 0; fi
+  fi
+  for e in ${_MM_OTHER_HOMES[@]+"${_MM_OTHER_HOMES[@]}"}; do
+    home=${e%%$'\t'*}
+    [[ "$p" == "$home" || "$p" == "$home"/* ]] || continue
+    REPLY=${e#*$'\t'}; echo "$REPLY"; return 0
+  done
+  return 1
+}
+
+# mm_foreign_home PATH — 0, printing the account (also in REPLY), when PATH lies in another
+# account's home folder, as written or once resolved. sudo hands marmot root's HOME, so it would
+# be root's whitelist, agent state and credentials that decide over a colleague's files: a run
+# over somebody else's home stops instead of cleaning it by the wrong rules.
+mm_foreign_home() {
+  _mm_other_homes_init
+  REPLY=""
+  _mm_in_other_home "$1" && return 0
+  _mm_has_link "$1" || return 1
+  _mm_real "$1"
+  [[ "$REPLY" == "$1" ]] && return 1
+  _mm_in_other_home "$REPLY"
 }
 
 # mm_credential_like PATH [BASE] — 0 if PATH's name, any name under it, or (when PATH lies inside

@@ -777,3 +777,26 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
   [ -f "$HOME/dotfiles/claude/projects/p/s.jsonl" ]
   [ -f "$HOME/dotfiles/config/coc/extensions/node_modules/i.js" ]
 }
+
+# ---------------------------------------------------------------- another account's home
+
+@test "another account's home is refused whoever runs marmot; this user's own artifacts still go" {
+  local me; me=$(id -un)
+  mkdir -p "$SB/alice/project/node_modules" "$HOME/proj/node_modules"
+  echo code >"$SB/alice/project/node_modules/i.js"; echo x >"$HOME/proj/node_modules/i.js"
+  mm_test_fake getent "printf '%s\n' 'root:x:0:0::/root:/bin/bash' 'sys:x:1:1::/:/usr/sbin/nologin' \
+    'backup:x:34:34::/var/backups:/usr/sbin/nologin' 'above:x:2:2::$(dirname "$HOME"):/bin/sh' \
+    'alice:x:1001:1001::$SB/alice:/bin/bash' '$me:x:$(id -u):$(id -g)::$HOME:/bin/bash'"
+  mm_inuse_refresh
+  run try_rm "$SB/alice/project/node_modules" "$SB/alice/project"
+  [[ "$output" == "1 another user's home (alice)"* ]]
+  [ -f "$SB/alice/project/node_modules/i.js" ]
+  # a system account whose home is / or a folder above HOME takes nothing of this user's away
+  run try_rm "$HOME/proj/node_modules" "$HOME/proj"
+  [ "$output" = "0 " ]
+  # a home under /home counts even when the password database does not list it
+  run mm_foreign_home /home/bob/code/app
+  [ "$status" -eq 0 ]; [ "$output" = bob ]
+  run mm_foreign_home "$HOME/proj"
+  [ "$status" -eq 1 ]
+}
