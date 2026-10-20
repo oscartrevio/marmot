@@ -202,28 +202,43 @@ _schedule_ours() {
   [[ "$first" == "$MM_SCHEDULE_MARK" ]]
 }
 
-# _schedule_crontab — the current crontab (empty when the user has none); 1 if it cannot be read.
+# _schedule_crontab — read the current crontab into _SCHEDULE_CRONTAB, byte for byte (empty when the
+# user has none); 1 if it cannot be read.
 _schedule_crontab() {
   local out rc=0
-  out=$(crontab -l 2>&1) || rc=$?
-  if (( rc )); then [[ "$out" == *"no crontab"* ]] || return 1; out=""; fi
-  [[ -n "$out" ]] && printf '%s\n' "$out"
-  return 0
+  # The dot keeps the trailing newlines $(...) would strip.
+  out=$(crontab -l 2>/dev/null; rc=$?; printf .; exit "$rc") || rc=$?
+  if (( rc )); then [[ "$(crontab -l 2>&1 >/dev/null)" == *"no crontab"* ]] || return 1; out=.; fi
+  _SCHEDULE_CRONTAB=${out%.}
 }
 
-# _schedule_cron_lines — the crontab lines enable added (ending in MM_SCHEDULE_CRON_TAG).
-_schedule_cron_lines() { _schedule_crontab 2>/dev/null | grep -E " $MM_SCHEDULE_CRON_TAG\$"; }
+# _SCHEDULE_CRON_RE — the crontab line enable writes, in every version: five time fields, PATH and
+# the folder variables, the trigger, marmot's path, MM_SCHEDULE_CRON_TAG. A line of the user's
+# that merely ends in the tag does not match.
+_SCHEDULE_CRON_RE="^([^ ]+ ){5}PATH=[^ ]+( [A-Za-z_][A-Za-z0-9_]*=[^ ]+)* MM_SCHEDULE_TRIGGER=cron /[^ ]+ schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG\$"
+
+# _schedule_cron_lines — the crontab lines enable added.
+_schedule_cron_lines() { _schedule_crontab && printf '%s' "$_SCHEDULE_CRONTAB" | grep -E "$_SCHEDULE_CRON_RE"; }
+
+# _schedule_cron_others — _SCHEDULE_CRONTAB without the lines enable added, into
+# _SCHEDULE_CRON_KEEP: every other line byte for byte (a last line without a newline gets one,
+# which crontab requires).
+_schedule_cron_others() {
+  local out
+  out=$(printf '%s' "$_SCHEDULE_CRONTAB" | grep -vE "$_SCHEDULE_CRON_RE"; printf .)
+  _SCHEDULE_CRON_KEEP=${out%.}
+}
 
 # _schedule_cron_set CONTENT DESCRIPTION — install CONTENT as the crontab (through mm_run).
 _schedule_cron_set() { mm_run "$2" crontab - < <(printf '%s' "$1"); }
 
-# _schedule_cron_remove — drop the tagged lines from the crontab, keeping every other line.
+# _schedule_cron_remove — drop the lines enable added from the crontab; with none there the crontab
+# is not rewritten.
 _schedule_cron_remove() {
-  local cur
-  cur=$(_schedule_crontab) || { mm_err "cannot read your crontab"; return 1; }
-  grep -qE " $MM_SCHEDULE_CRON_TAG\$" <<<"$cur" || return 0
-  cur=$(grep -vE " $MM_SCHEDULE_CRON_TAG\$" <<<"$cur")
-  _schedule_cron_set "${cur:+$cur$'\n'}" "remove marmot's crontab line"
+  _schedule_crontab || { mm_err "cannot read your crontab"; return 1; }
+  grep -qE "$_SCHEDULE_CRON_RE" <<<"$_SCHEDULE_CRONTAB" || return 0
+  _schedule_cron_others
+  _schedule_cron_set "$_SCHEDULE_CRON_KEEP" "remove marmot's crontab line"
 }
 
 # _schedule_units_remove — stop and remove the units enable wrote (only files carrying the mark).
@@ -250,7 +265,7 @@ _schedule_write() {
 }
 
 _schedule_enable() {
-  local freq=$1 exe="$MM_HOME/marmot" path cal dow svc tim f line cur min
+  local freq=$1 exe="$MM_HOME/marmot" path cal dow svc tim f line min
   _schedule_plain "$exe" || mm_die "marmot's path ($exe) has characters a unit file or crontab line cannot carry: install it with ./install.sh"
   path=$(_schedule_path)
   if _schedule_systemd_ok; then
@@ -301,12 +316,12 @@ WantedBy=timers.target
     command -v crontab >/dev/null && _schedule_cron_remove   # a cron schedule from before is replaced
     _schedule_note systemd "$freq"
   elif command -v crontab >/dev/null; then
-    cur=$(_schedule_crontab) || mm_die "cannot read your crontab (crontab -l)"
+    _schedule_crontab || mm_die "cannot read your crontab (crontab -l)"
     min=$((RANDOM % 60)) dow='*'; [[ "$freq" == weekly ]] && dow=0
     line="$min $_SCHEDULE_HOUR * * $dow PATH=$path MM_SCHEDULE_TRIGGER=cron $exe schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG"
-    cur=$(grep -vE " $MM_SCHEDULE_CRON_TAG\$" <<<"$cur")
     if [[ "$MM_DRY_RUN" == 1 ]]; then mm_info "Would add to your crontab: $line"; return 0; fi
-    _schedule_cron_set "${cur:+$cur$'\n'}$line"$'\n' "add marmot's crontab line" || mm_die "could not install the crontab line"
+    _schedule_cron_others
+    _schedule_cron_set "$_SCHEDULE_CRON_KEEP$line"$'\n' "add marmot's crontab line" || mm_die "could not install the crontab line"
     _schedule_note cron "$freq"
   else
     mm_err "Cannot schedule: \`systemctl --user\` does not answer here and crontab is not installed."

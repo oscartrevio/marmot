@@ -257,6 +257,36 @@ esac'
   [ "$(cat "$SB/crontab")" = '0 1 * * * /usr/local/bin/backup' ]
 }
 
+@test "cron: user lines that merely end in '# marmot' survive disable and enable, byte for byte; marmot's own old line is replaced" {
+  rec systemctl 'exit 1'
+  fake_cron
+  local mine='15 4 * * * rsync -a ~/notes /mnt/nas/  # marmot' note='    # sync groundhog photos # marmot'
+  local old="7 3 * * * PATH=/usr/bin:/bin MM_SCHEDULE_TRIGGER=cron $MM_SRC/marmot schedule run >/dev/null 2>&1 # marmot"
+  printf '%s\n' 'MAILTO=me@example.com' "$mine" "$note" '' >"$SB/user-crontab"
+  cp "$SB/user-crontab" "$SB/crontab"
+  run mm schedule disable                  # nothing of marmot's: the crontab is not rewritten
+  [ "$status" -eq 0 ]
+  none grep -qx 'crontab -' "$CALLS"
+  cmp "$SB/user-crontab" "$SB/crontab"
+  printf '%s\n' "$old" >>"$SB/crontab"
+  run mm schedule enable
+  [ "$status" -eq 0 ]
+  grep -qxF "$mine" "$SB/crontab"
+  grep -qxF "$note" "$SB/crontab"
+  none grep -qxF "$old" "$SB/crontab"
+  [ "$(grep -c 'MM_SCHEDULE_TRIGGER=cron' "$SB/crontab")" = 1 ]
+  run mm schedule status
+  [ "$(grep -c 'crontab line' <<<"$output")" = 1 ]
+  run mm schedule disable
+  [ "$status" -eq 0 ]
+  cmp "$SB/user-crontab" "$SB/crontab"
+  fake_systemd yes; : >"$CALLS"           # a systemd schedule leaves the user's lines alone too
+  run mm schedule enable
+  [ "$status" -eq 0 ]
+  none grep -qx 'crontab -' "$CALLS"
+  cmp "$SB/user-crontab" "$SB/crontab"
+}
+
 @test "without systemd or cron, enable explains what to do and changes nothing" {
   rec systemctl 'exit 1'
   local d f
