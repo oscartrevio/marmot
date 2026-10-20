@@ -14,13 +14,15 @@
 #                     directly inside: GLOB keeps only matching entries as candidates, !GLOB
 #                     leaves matching ones alone (e.g. "*.log", "!snapshot*").
 #          revisions  downloaded browser/tool builds: only the newest build per product is needed.
-#                     spec = DEPTH:REGEX[:refs=playwright][:files]. Entries DEPTH levels below
-#                     path are matched (relative path) against REGEX; group 1 is the product,
-#                     group 2 its version (compared with sort -V). Directories only, unless
-#                     :files (tools that keep one file per version). The newest per product,
-#                     anything in use, and (refs=playwright) every revision an installed
-#                     playwright-core still lists through ms-playwright/.links are kept; older
-#                     builds are removed.
+#                     spec = DEPTH:REGEX[:refs=playwright][:marker=NAME][:files]. Entries DEPTH
+#                     levels below path are matched (relative path) against REGEX; group 1 is the
+#                     product, group 2 its version (compared with sort -V). Directories only,
+#                     unless :files (tools that keep one file per version). With :marker=NAME only
+#                     entries holding that file of the tool's own (Playwright's
+#                     INSTALLATION_COMPLETE) count as builds; anything else named like one (a
+#                     browser profile) is left alone. The newest per product, anything in use, and
+#                     (refs=playwright) every revision an installed playwright-core still lists
+#                     through ms-playwright/.links are kept; older builds are removed.
 #          report     never touched: shown with its size in "Kept for you to review", plus hint.
 #                     spec = count: also count the entries directly inside (installed versions).
 #   label  what the user sees.
@@ -113,7 +115,7 @@ cache|kubectl discovery cache|~/.kube/cache/discovery|kubectl k9s helm||
 cache|kubectl HTTP cache|~/.kube/cache/http|kubectl k9s helm||
 cache|oh-my-zsh cache|~/.oh-my-zsh/cache||!dotenv-*.list|
 # ---- downloaded browser and test-runner builds
-revisions|Playwright browsers|%CACHE%/ms-playwright||1:^(.+)-([0-9]+)$:refs=playwright|
+revisions|Playwright browsers|%CACHE%/ms-playwright||1:^(.+)-([0-9]+)$:refs=playwright:marker=INSTALLATION_COMPLETE|
 revisions|Puppeteer browsers|%CACHE%/puppeteer||2:^([^/]+)/[^/]*-([0-9][0-9.]*)$|
 revisions|Cypress binaries|%CACHE%/Cypress|cypress Cypress|1:^()([0-9][0-9.]*)$|
 revisions|Firebase emulators|$FIREBASE_EMULATORS_PATH|firebase|1:^(.+)-v?([0-9][0-9.]*)(\.[a-z]+)?$:files|

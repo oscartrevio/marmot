@@ -260,17 +260,29 @@ _clean_playwright_refs() {
 # _clean_revisions_row LABEL DIR BUSY SPEC — catalog "revisions" row (see lib/catalog.sh): keep the
 # newest version of every product (plus referenced and in-use builds), remove the older ones.
 _clean_revisions_row() {
-  local label="$1" dir="$2" spec="$4" busy depth regex refs="" rel prod ver n=0 b=0 kept=0 fail=0 refkept=0
+  local label="$1" dir="$2" spec="$4" busy depth regex tok refs="" marker="" rel prod ver n=0 b=0 kept=0 fail=0 refkept=0
   local -A newest=() keep=()
   local -a rels=() prods=() vers=() types=(-type d)
   _clean_home_dir "$label" "$dir" || return 0
   if busy=$(_clean_busy "$3"); then mm_skip "$label" "$busy busy"; return 0; fi
   depth=${spec%%:*} regex=${spec#*:}
-  [[ "$regex" == *:files ]] && { regex=${regex%:files}; types=(\( -type d -o -type f \)); }
-  [[ "$regex" == *:refs=* ]] && { refs=${regex##*:refs=}; regex=${regex%:refs=*}; }
+  # Options are the trailing :NAME[=VALUE] tokens, read right to left; the rest is the regex.
+  while [[ "$regex" == *:* ]]; do
+    tok=${regex##*:}
+    case $tok in
+      files) types=(\( -type d -o -type f \)) ;;
+      refs=*) refs=${tok#refs=} ;;
+      marker=*) marker=${tok#marker=} ;;
+      *) break ;;
+    esac
+    regex=${regex%:*}
+  done
   [[ "$depth" =~ ^[1-9]$ ]] || { mm_debug "$label: bad spec $spec"; return 0; }
   while IFS= read -r -d '' rel; do
     [[ "$rel" != .* && "$rel" != */.* && "$rel" =~ $regex ]] || continue
+    # The tool's own install marker is the proof this is its build and not something else that
+    # happens to be named like one (a browser profile folder): without it, leave the entry alone.
+    [[ -z "$marker" || -f "$dir/$rel/$marker" ]] || continue
     prod=${BASH_REMATCH[1]:-.} ver=${BASH_REMATCH[2]}   # "." = single-product layouts (empty group 1)
     rels+=("$rel") prods+=("$prod") vers+=("$ver")
     if [[ -z "${newest[$prod]+x}" || "$(printf '%s\n%s\n' "${newest[$prod]}" "$ver" | sort -V | tail -1)" == "$ver" ]]; then

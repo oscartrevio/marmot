@@ -544,7 +544,7 @@ claude_versions() {
   local p="$HOME/.cache/ms-playwright" r
   for r in chromium-1100 chromium-1200 chromium_headless_shell-1100 chromium_headless_shell-1200 \
            firefox-1400 firefox-1500 webkit-1900 webkit-2000 ffmpeg-1009; do
-    mkdir -p "$p/$r"; echo bin >"$p/$r/browser"
+    mkdir -p "$p/$r"; echo bin >"$p/$r/browser"; : >"$p/$r/INSTALLATION_COMPLETE"
   done
   mkdir -p "$p/.links" "$SB/proj/node_modules/playwright-core"
   printf '{ "browsers": [\n { "name": "chromium-headless-shell",\n "revision": "1100" }\n] }\n' \
@@ -558,6 +558,21 @@ claude_versions() {
            webkit-1900 webkit-2000 ffmpeg-1009 .links; do
     [ -e "$p/$r" ] || { echo "removed $r"; false; }
   done
+}
+
+@test "Playwright: folders without the install marker (MCP browser profiles) are never old builds" {
+  local p="$HOME/.cache/ms-playwright" r
+  for r in chromium-1100 chromium-1200; do
+    mkdir -p "$p/$r"; echo bin >"$p/$r/browser"; : >"$p/$r/INSTALLATION_COMPLETE"
+  done
+  # @playwright/mcp persistent profiles: mcp-<browser>-<7 hex of a workspace hash>, here all digits.
+  for r in mcp-chrome-4471023 mcp-chrome-9310577; do
+    mkdir -p "$p/$r/Default"; echo session >"$p/$r/Default/Cookies"
+  done
+  catalog
+  run _clean_builds
+  gone "$p/chromium-1100"
+  exist "$p/chromium-1200" "$p/mcp-chrome-4471023/Default/Cookies" "$p/mcp-chrome-9310577/Default/Cookies"
 }
 
 @test "Puppeteer and Cypress: only the newest build per browser is kept" {
