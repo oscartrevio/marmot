@@ -753,7 +753,11 @@ exit 0'
   [ "$status" -eq 0 ]
   [[ "$(<"$HOME/tall")" == *"--(mm)--UU--(mm)--"* ]]
   [[ "$(<"$HOME/short")" != *"(mm)--UU--(mm)"* && "$(<"$HOME/short")" != *" more"* ]]
-  [ "$(grep -cE '^  codex ' "$HOME/short")" -eq 3 ]
+  # Both frames list every agent session on the machine, not only these three.
+  local n
+  n=$(grep -cE '^  codex ' "$HOME/tall")
+  [ "$n" -ge 3 ]
+  [ "$(grep -cE '^  codex ' "$HOME/short")" -eq "$n" ]
 }
 
 @test "the marmot's face: health first, then a busy CPU, any health reason, then agents at work" {
