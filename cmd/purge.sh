@@ -20,7 +20,9 @@ _PURGE_PATHS_TEMPLATE='# marmot purge: project roots to scan, one per line; ~ ex
 #   /srv/work
 '
 
-# Always rebuildable: pruned at the match, never descended into.
+# Names a build tool owns: pruned at the match, never descended into. A name proves nothing by
+# itself (~/Documents/insurance/coverage, a Go SDK's src/internal/coverage), so each still needs
+# the proof its rule in _purge_rule asks for before anything is removed.
 _PURGE_TARGETS=(node_modules .next .nuxt .output .turbo .parcel-cache .svelte-kit .astro .angular
   .expo .vite coverage __pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .nox .gradle
   .terragrunt-cache .dart_tool .zig-cache zig-out .cxx .docusaurus)
@@ -31,6 +33,11 @@ _PURGE_CONDITIONAL=(target build dist venv .venv vendor .build obj bin bower_com
 _PURGE_PROJECT_FILES=(.git package.json Cargo.toml go.mod pyproject.toml setup.py requirements.txt
   pom.xml build.gradle build.gradle.kts Gemfile composer.json pubspec.yaml Package.swift Makefile
   CMakeLists.txt build.zig mix.exs deno.json)
+# A node project: npm, pnpm, bun, deno and their frameworks build next to one of these.
+_PURGE_NODE_FILES=(package.json deno.json deno.jsonc)
+# A python project: pip, pytest, mypy, ruff, tox and nox write next to one of these (or next to a
+# requirements*.txt, checked separately).
+_PURGE_PY_FILES=(pyproject.toml setup.py setup.cfg Pipfile tox.ini tox.toml noxfile.py)
 # https://bford.info/cachedir/ — the first line of a CACHEDIR.TAG file.
 _PURGE_CACHEDIR_SIG="Signature: 8a477f597d28d172789f06886806bc55"
 # Never descended into: installed packages, not projects.
@@ -282,13 +289,34 @@ _purge_valid() {
   esac
 }
 
-# _purge_rule ART PROJ NAME — 0 if ART matches a named rule: an always-rebuildable name, or a
-# conditional one with its manifest; 1 no rule matches; 2 the git state needed is unknown.
+# _purge_rule ART PROJ NAME — 0 if ART is what a project of the matching type next to it builds;
+# 1 no rule matches; 2 the git state needed is unknown. Every name needs that project: ~/sdk/go*
+# ships a src/internal/coverage, a deployed Nuxt app is an .output with no sources left, and a
+# node prefix keeps its global packages in <prefix>/lib/node_modules.
 _purge_rule() {
   local art="$1" proj="$2" name="$3" rc
   if [[ "$art" == */.nx/cache ]]; then [[ -f "$proj/nx.json" ]]; return; fi
-  _purge_known "$name" || return 1
+  # a virtualenv is one whatever it is called (virtualenv and uv tag theirs as caches)
+  _purge_known "$name" || { [[ -f "$art/pyvenv.cfg" ]] && _purge_py_project "$proj"; return; }
   case "$name" in
+    node_modules) _purge_node_project "$proj" || return 1 ;;
+    .next|.nuxt|.output|.turbo|.parcel-cache|.svelte-kit|.astro|.angular|.expo|.vite|.docusaurus)
+      _purge_node_project "$proj" || return 1 ;;
+    coverage)
+      # a generic name: the project must own it and its own repository call it output
+      _purge_project_dir "$proj" || return 1
+      rc=0; _purge_ignored "$proj" "$name" || rc=$?
+      case "$rc" in 0) ;; 1) return 1 ;; *) return 2 ;; esac ;;
+    __pycache__) _purge_pycache "$art" || return 1 ;;
+    # pytest, mypy and ruff write a CACHEDIR.TAG of their own into these: either that tag or a
+    # python project next to them proves the tool, not a person, made the folder.
+    .pytest_cache|.mypy_cache|.ruff_cache) _purge_py_project "$proj" || _purge_cachedir_tag "$art" || return 1 ;;
+    .tox|.nox) _purge_py_project "$proj" || return 1 ;;
+    .gradle) _purge_has "$proj" build.gradle build.gradle.kts settings.gradle settings.gradle.kts gradlew || return 1 ;;
+    .terragrunt-cache) [[ -f "$proj/terragrunt.hcl" ]] || return 1 ;;
+    .dart_tool) [[ -f "$proj/pubspec.yaml" ]] || return 1 ;;
+    .zig-cache|zig-out) [[ -f "$proj/build.zig" ]] || return 1 ;;
+    .cxx) _purge_has "$proj" build.gradle build.gradle.kts CMakeLists.txt || return 1 ;;
     target) [[ -f "$proj/Cargo.toml" || -f "$proj/pom.xml" ]] || return 1 ;;
     build|dist)
       [[ -f "$proj/package.json" || -f "$proj/pyproject.toml" || -f "$proj/build.gradle" ||
@@ -306,6 +334,40 @@ _purge_rule() {
   return 0
 }
 
+# _purge_has DIR FILE... — 0 if DIR holds one of FILEs.
+_purge_has() {
+  local d="$1" f; shift
+  for f; do [[ -f "$d/$f" ]] && return 0; done
+  return 1
+}
+
+# _purge_node_project DIR — 0 if DIR is a node or deno project root.
+_purge_node_project() { _purge_has "$1" "${_PURGE_NODE_FILES[@]}"; }
+
+# _purge_py_project DIR — 0 if DIR is a python project root (a requirements*.txt counts).
+_purge_py_project() {
+  _purge_has "$1" "${_PURGE_PY_FILES[@]}" && return 0
+  local f
+  for f in "$1"/requirements*.txt; do [[ -f "$f" ]] && return 0; done
+  return 1
+}
+
+# _purge_project_dir DIR — 0 if DIR is a project root of any kind (_PURGE_PROJECT_FILES).
+_purge_project_dir() {
+  local f
+  for f in "${_PURGE_PROJECT_FILES[@]}"; do [[ -e "$1/$f" || -L "$1/$f" ]] && return 0; done
+  return 1
+}
+
+# _purge_pycache ART — 0 if ART holds nothing but compiled modules (regular *.pyc / *.pyo files),
+# which python writes itself and rebuilds on the next import; an unreadable one is not one.
+_purge_pycache() {
+  local other
+  other=$(find "$1" -xdev -mindepth 1 \
+    ! \( -type f \( -name '*.pyc' -o -name '*.pyo' \) \) -print -quit 2>/dev/null) || return 1
+  [[ -z "$other" ]]
+}
+
 # _purge_dotnet_project DIR — 0 if DIR holds a .NET project file.
 _purge_dotnet_project() {
   local f
@@ -313,18 +375,25 @@ _purge_dotnet_project() {
   return 1
 }
 
-# _purge_tagged_cache ART PROJ ROOT... — 0 if ART tags itself a cache (a regular CACHEDIR.TAG
-# file that starts with the standard signature) and sits directly in a project (one of
-# _PURGE_PROJECT_FILES next to it), never a scan root itself nor directly in $HOME. People also
-# tag folders only to keep them out of backups, so a tag alone is not enough.
-_purge_tagged_cache() {
-  local art="$1" proj="$2" tag="$1/CACHEDIR.TAG" sig r f; shift 2
+# _purge_cachedir_tag DIR — 0 if DIR holds a real CACHEDIR.TAG (a regular file starting with the
+# standard signature, https://bford.info/cachedir/).
+_purge_cachedir_tag() {
+  local tag="$1/CACHEDIR.TAG" sig
   [[ -f "$tag" && ! -L "$tag" ]] || return 1
   read -r -N "${#_PURGE_CACHEDIR_SIG}" sig <"$tag" 2>/dev/null || return 1
-  [[ "$sig" == "$_PURGE_CACHEDIR_SIG" && "$proj" != "$HOME" ]] || return 1
+  [[ "$sig" == "$_PURGE_CACHEDIR_SIG" ]]
+}
+
+# _purge_tagged_cache ART PROJ ROOT... — 0 if ART tags itself a cache (_purge_cachedir_tag) and
+# sits directly in a project (one of _PURGE_PROJECT_FILES next to it), never a scan root itself
+# nor directly in $HOME. People also tag folders only to keep them out of backups, so a tag is a
+# hint, not proof: callers offer these in the picker only (see _PURGE_TAGGED).
+_purge_tagged_cache() {
+  local art="$1" proj="$2" r; shift 2
+  _purge_cachedir_tag "$art" || return 1
+  [[ "$proj" != "$HOME" ]] || return 1
   for r; do [[ "$art" != "$r" ]] || return 1; done
-  for f in "${_PURGE_PROJECT_FILES[@]}"; do [[ -e "$proj/$f" || -L "$proj/$f" ]] && return 0; done
-  return 1
+  _purge_project_dir "$proj"
 }
 
 # _purge_gitroot DIR — sets _PURGE_GITROOT to the nearest ancestor-or-self holding .git, below
