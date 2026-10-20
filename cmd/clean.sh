@@ -1473,8 +1473,7 @@ _clean_docker_dangling() {
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"; return
   fi
-  # SAFE: listed, confirmed untagged images; no -f, so the daemon refuses ones a container uses
-  mm_run "docker image rm $n untagged images" timeout 600 docker image rm "${ids[@]}" || return 0
+  mm_run "docker image rm $n untagged images" timeout 600 docker image rm "${ids[@]}" || return 0 # SAFE: listed, confirmed untagged images; no -f, so the daemon refuses ones a container uses
   _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
 }
 
