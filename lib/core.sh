@@ -364,17 +364,23 @@ _mm_inuse_scan() {
 
 # _mm_mounts — every mount point and bind-mount source of this mount namespace and of every
 # readable /proc/PID/mountinfo (one per namespace where its ns link can be read, else all of them,
-# so a process this user may not inspect still shows its mounts), decoded by _mm_mount_paths.
+# so a process this user may not inspect still shows its mounts), decoded and mapped into this
+# namespace's paths by _mm_mount_paths.
 _mm_mounts() {
   { echo /proc/self/mountinfo
     find /proc/[0-9]*/ns/mnt -maxdepth 0 -printf '%l\t%h\n' 2>/dev/null |
       awk -F'\t' '$1 == "" || !seen[$1]++ { sub(/\/ns$/, "/mountinfo", $2); print $2 }'
-  } | xargs -d '\n' cat 2>/dev/null | _mm_mount_paths
+  } | xargs -d '\n' cat 2>/dev/null | _mm_mount_paths /proc/self/mountinfo
 }
 
-# _mm_mount_paths < MOUNTINFO_LINES — the root (bind source, relative to its filesystem) and the
-# mount point of each line, decoded: mountinfo writes space, tab, newline and backslash as
-# \040 \011 \012 \134, and a bind mount under an undecoded path went unseen.
+# _mm_mount_paths HOST < MOUNTINFO_LINES — for each line (any namespace's), its root and mount
+# point decoded (mountinfo writes space, tab, newline and backslash as \040 \011 \012 \134), plus
+# the root as a path of this namespace: the root is relative to the filesystem the mount is on
+# (a container's `-v ~/proj:/work` reads root=/tester/proj when /home is its own filesystem), so
+# it is placed through every mount of the same major:minor in HOST (this namespace's mountinfo):
+# HOST's mount point plus the root's remainder below HOST's root. A mount on a filesystem HOST
+# does not have prints "P<TAB>why" on stderr (the snapshot is partial), except filesystems that
+# hold no files of this namespace (proc, sysfs, tmpfs, cgroup, ...).
 _mm_mount_paths() {
   awk '
     function unesc(s,   o, i, c) {
@@ -387,7 +393,28 @@ _mm_mount_paths() {
       }
       return o s
     }
-    { print unesc($4); print unesc($5) }'
+    BEGIN {
+      n = split("proc sysfs devpts devtmpfs tmpfs mqueue cgroup cgroup2 securityfs debugfs tracefs pstore bpf " \
+        "binfmt_misc configfs fusectl hugetlbfs nsfs efivarfs selinuxfs rpc_pipefs autofs", a, " ")
+      for (i = 1; i <= n; i++) pseudo[a[i]] = 1
+    }
+    NR == FNR { k = ++hn[$3]; hroot[$3, k] = unesc($4); hmnt[$3, k] = unesc($5); next }
+    {
+      root = unesc($4); mnt = unesc($5)
+      print root; print mnt
+      if (!($3 in hn)) {
+        for (i = 7; i <= NF && $i != "-"; i++) ;
+        if (!($(i + 1) in pseudo))
+          print "P\tmount " mnt " of another namespace is on a filesystem this one does not have" > "/dev/stderr"
+        next
+      }
+      for (k = 1; k <= hn[$3]; k++) {
+        hr = hroot[$3, k]; hm = hmnt[$3, k]
+        if (root == hr) print hm
+        else if (hr == "/") print (hm == "/" ? "" : hm) root
+        else if (index(root, hr "/") == 1) print hm substr(root, length(hr) + 1)
+      }
+    }' "$1" -
 }
 
 # mm_mount_under REAL — 0 if a mount point or bind-mount source (this namespace's and every

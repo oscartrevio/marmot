@@ -172,3 +172,26 @@ EOF
   run try_rm "$SB/devsrv"; [ "$output" = "1 in use" ]
   run try_rm "$SB/idle";   [ "$output" = "0 " ]
 }
+
+@test "mount paths are decoded and mapped into this namespace through the filesystem they are on" {
+  printf '%s\n' '30 1 0:40 / /home rw,relatime - tmpfs tmpfs rw' '25 1 8:1 / / rw - ext4 /dev/sda1 rw' \
+    '40 1 8:1 /srv/bind\040src /mnt/at\040bind rw - ext4 /dev/sda1 rw' >"$SB/host"
+  run _mm_mount_paths "$SB/host" <<<'36 35 0:40 /tester/proj /work rw - tmpfs tmpfs rw
+37 35 8:1 /srv/bind\040src/a\011b\134c /opt/x rw - ext4 /dev/sda1 rw
+38 35 0:66 / /proc rw - proc proc rw'
+  [ "$status" -eq 0 ]
+  local want
+  want=$(printf '%s\n' /tester/proj /work /home/tester/proj "/srv/bind src/a"$'\t''b\c' /opt/x "/mnt/at bind/a"$'\t''b\c' / /proc | sort -u)
+  [ "$(sort -u <<<"$output")" = "$want" ]
+}
+
+@test "a mount of another namespace on a filesystem this one does not see makes the snapshot partial" {
+  printf '%s\n' '25 1 8:1 / / rw - ext4 /dev/sda1 rw' >"$SB/host"
+  run _mm_mount_paths "$SB/host" <<<'38 35 0:99 / /data rw - ext4 /dev/sdb1 rw'
+  [ "$status" -eq 0 ]
+  [[ "$output" == *$'\n'"P"$'\t'* || "$output" == "P"$'\t'* ]]
+  # the refresh turns any such line of the scan into a partial snapshot
+  _mm_inuse_scan() { printf '%s\n' "$SB/seen" $'P\tsomething could not be read'; }
+  mm_inuse_refresh >/dev/null 2>&1
+  [ "$MM_INUSE_PARTIAL" = 1 ]
+}
