@@ -482,8 +482,11 @@ mm_proc_age() {
 MM_BUILTIN_KEEP=(~/.ssh ~/.gnupg ~/.password-store ~/.local/share/keyrings ~/.pki ~/.netrc
   ~/.git-credentials ~/.aws ~/.azure ~/.kube ~/.docker ~/.config)
 
-MM_DEFAULT_WHITELIST='# marmot whitelist: your own additions, one path or glob per line; ~ expands.
-# Matching paths, anything under them, and every folder above them are never removed.
+MM_DEFAULT_WHITELIST='# marmot whitelist: your own additions, one path or glob per line.
+# ~, ~user and $HOME expand; an entry must be an absolute path, and # starts a comment only at
+# the start of a line or after a space, so a folder called C# or [2024] taxes protects itself.
+# Matching paths, anything under them, and every folder above them are never removed; an entry
+# that names nothing on this machine is reported when marmot runs.
 # Always protected (built in): ~/.ssh, ~/.gnupg, credentials (~/.aws, ~/.kube, ~/.docker,
 # ~/.netrc, ...), ~/.config, and the state of known coding agents (~/.claude, ~/.codex, ...).
 # Examples:
@@ -491,9 +494,154 @@ MM_DEFAULT_WHITELIST='# marmot whitelist: your own additions, one path or glob p
 #   ~/projects/*/fixtures
 '
 
+# mm_whitelist_init — make sure the config folder and the whitelist file exist; a machine without
+# one gets the explained default. An existing path of any kind is left alone.
 mm_whitelist_init() {
   mkdir -p "$MM_CONFIG_DIR"
-  [[ -f "$MM_WHITELIST_FILE" ]] || printf '%s' "$MM_DEFAULT_WHITELIST" >"$MM_WHITELIST_FILE"
+  [[ -e "$MM_WHITELIST_FILE" ]] || printf '%s' "$MM_DEFAULT_WHITELIST" >"$MM_WHITELIST_FILE"
+}
+
+# No protection is switchable from the environment (AGENTS.md). MM_KEEP_AGENT_STATE waives agent
+# state for one call, and the commands that need it (mm purge, for a git worktree that git reports
+# clean) set it as a prefix of that call, which happens after this file is sourced: an exported
+# one is dropped here, whoever started marmot. `marmot` drops it before sourcing too.
+unset MM_KEEP_AGENT_STATE
+
+# The gate runs for every item, and both resolving a path and reading the password database cost a
+# fork, so each is done once per run and kept here. Sourcing this file again starts over.
+# (-g: commands and tests source this file inside a function, where a plain declare would be local.)
+declare -gA _MM_REAL_CACHE=()
+_MM_PASSWD=() _MM_PASSWD_READY="" _MM_WL_REPORTED=""
+_MM_KEEP=() _MM_AGENT_KEEP=() _MM_AGENT_KEEP_REAL=() _MM_GATE_READY=""
+_MM_OTHER_HOMES=() _MM_HOMES_READY=""
+
+# _mm_real PATH — REPLY is PATH with its symlinks resolved (realpath -m, so PATH need not exist).
+_mm_real() {
+  REPLY=${_MM_REAL_CACHE[$1]:-}
+  [[ -n "$REPLY" ]] && return 0
+  REPLY=$(realpath -m -- "$1" 2>/dev/null)
+  [[ -n "$REPLY" ]] || REPLY=$1
+  _MM_REAL_CACHE[$1]=$REPLY
+}
+
+# _mm_has_link PATH — 0 if PATH or a folder above it (up to $HOME, which is canonical, else /) is
+# a symlink, so resolving it can give another path. Pure bash: resolving every protected entry of
+# every run would be a fork each.
+_mm_has_link() {
+  local p=${1%/}
+  while [[ "$p" == /?* && "$p" != "$HOME" ]]; do
+    [[ -L "$p" ]] && return 0
+    p=${p%/*}
+  done
+  return 1
+}
+
+# _mm_passwd_init — the password database as "ACCOUNT<TAB>HOME" lines in _MM_PASSWD. getent also
+# sees accounts that are not in /etc/passwd (LDAP, SSSD); where it is missing, read the file.
+_mm_passwd_init() {
+  [[ -n "$_MM_PASSWD_READY" ]] && return 0
+  _MM_PASSWD_READY=1
+  local name home
+  while IFS=: read -r name _ _ _ _ home _; do
+    [[ -n "$name" && "$home" == /* ]] || continue
+    _MM_PASSWD+=("$name"$'\t'"$home")
+  done < <(getent passwd 2>/dev/null || cat /etc/passwd 2>/dev/null)
+}
+
+# _mm_user_home ACCOUNT — REPLY is ACCOUNT's home folder; 1 when no account has that name, so a
+# ~user entry naming nobody protects nothing instead of silently meaning $HOME.
+_mm_user_home() {
+  _mm_passwd_init
+  local e
+  REPLY=""
+  for e in ${_MM_PASSWD[@]+"${_MM_PASSWD[@]}"}; do
+    [[ "${e%%$'\t'*}" == "$1" ]] && { REPLY=${e#*$'\t'}; return 0; }
+  done
+  return 1
+}
+
+# _mm_keep_canon ENTRY — REPLY is ENTRY as one absolute pattern: a UTF-8 BOM and a comment removed
+# (# starts one at the start of the line or after a space), surrounding spaces and a trailing
+# slash dropped, ~, ~user and $HOME expanded. Returns 1 for a comment or a blank line (REPLY
+# empty), and for an entry that can protect nothing — relative, or naming an unknown user — with
+# REPLY the entry as written, for the report.
+_mm_keep_canon() {
+  local p=${1#$'\xef\xbb\xbf'} user
+  [[ "$p" == *[[:space:]]"#"* ]] && p=${p%%[[:space:]]"#"*}
+  p=${p#"${p%%[![:space:]]*}"}; p=${p%"${p##*[![:space:]]}"}
+  REPLY=""
+  [[ -z "$p" || "$p" == "#"* ]] && return 1
+  case "$p" in
+    \~) p=$HOME ;;
+    \~/*) p="$HOME${p:1}" ;;
+    \~*)
+      user=${p#\~}; user=${user%%/*}
+      _mm_user_home "$user" || { REPLY=$p; return 1; }
+      p="$REPLY${p:$((${#user} + 1))}" ;;
+    '$HOME' | '${HOME}') p=$HOME ;;
+    '$HOME/'*) p="$HOME${p#\$HOME}" ;;
+    '${HOME}/'*) p="$HOME${p#\$\{HOME\}}" ;;
+  esac
+  REPLY=$p
+  [[ "$p" == /?* ]] || return 1
+  REPLY=${p%/}
+}
+
+# _mm_pattern_exists PATTERN — 0 if something on this machine matches PATTERN: the path itself, or
+# a glob match (* crosses / here, as in the gate's own matching).
+_mm_pattern_exists() {
+  local base
+  [[ -e "$1" || -L "$1" ]] && return 0
+  [[ "$1" == *[*?[]* ]] || return 1
+  compgen -G "$1" >/dev/null 2>&1 && return 0
+  base=${1%%[*?[]*}; base=${base%/*}
+  [[ -d "$base" ]] || return 1
+  [[ -n "$(find "$base" -xdev -path "$1" -print -quit 2>/dev/null)" ]]
+}
+
+# _mm_whitelist_report ENTRY... — say once per run which whitelist entries protect nothing, so a
+# typo, a relative path or a name typed in another Unicode form cannot pass for protection.
+# Unattended runs keep it in MM_SKIPS (mm schedule run writes those down).
+_mm_whitelist_report() {
+  local list="$1" e
+  for e in "${@:2}"; do list+=", $e"; done
+  list="whitelist entries that protect nothing (no such path): $list"
+  mm_warn "$list" >&2
+  MM_SKIPS+=("whitelist"$'\t'"$list")
+}
+
+# _mm_whitelist_entries [--report] — the user's entries as absolute patterns, one per line, each
+# followed by the path it resolves to when a symlink carries it elsewhere (the gate compares
+# resolved paths). --report prints no pattern and instead says, once per run, which entries
+# protect nothing; mm_whitelisted calls it that way in its own shell, because the patterns
+# themselves are read in a subshell, where a warning and MM_SKIPS would be lost. That pass also
+# fills the resolve cache the subshell then inherits.
+_mm_whitelist_entries() {
+  [[ -f "$MM_WHITELIST_FILE" && -r "$MM_WHITELIST_FILE" ]] || return 0
+  local line pat real report=""
+  local -a dead=()
+  if [[ "${1:-}" == --report ]]; then
+    [[ -n "$_MM_WL_REPORTED" ]] && return 0
+    _MM_WL_REPORTED=1 report=1
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if ! _mm_keep_canon "$line"; then
+      [[ -n "$REPLY" && -n "$report" ]] && dead+=("$REPLY")
+      continue
+    fi
+    pat=$REPLY real=""
+    if _mm_has_link "$pat"; then
+      _mm_real "$pat"
+      [[ "$REPLY" == "$pat" ]] || real=$REPLY
+    fi
+    if [[ -n "$report" ]]; then
+      _mm_pattern_exists "$pat" || dead+=("$pat")
+    else
+      printf '%s\n' "$pat" ${real:+"$real"}
+    fi
+  done <"$MM_WHITELIST_FILE"
+  (( ${#dead[@]} )) && _mm_whitelist_report "${dead[@]}"
+  return 0
 }
 
 # Carve-outs: folders inside a built-in protected tree that hold only logs or caches, so mm_rm may
@@ -524,47 +672,95 @@ mm_carveout() {
   return 1
 }
 
-# mm_keep_patterns [--carveout] — every protection pattern: built-ins, agent state, then the
-# whitelist file. --carveout leaves the built-ins out (for entries mm_carveout waives).
-# MM_KEEP_AGENT_STATE=0 leaves agent state out; only for removing git worktrees that git reports
-# clean (agents such as Cursor keep their worktrees inside their state dir). _MM_WAIVED (set by
-# mm_rm for MM_AGENT_WAIVER) leaves out only the agent state entries that contain that directory.
+# _mm_gate_init — work out this run's protection paths once: the built-in keeps and the known
+# agents' state paths, each with the path it resolves to when a symlink carries it elsewhere (a
+# dotfiles setup links ~/.claude or ~/.config into ~/dotfiles, and the gate compares resolved
+# paths), and the same for the $HOME trees marmot never deletes inside. mm_rm calls it in its own
+# shell, so the checks that run in a subshell inherit the answers instead of forking per item.
+_mm_gate_init() {
+  [[ -n "$_MM_GATE_READY" ]] && return 0
+  _MM_GATE_READY=1
+  local p
+  _MM_KEEP=() _MM_AGENT_KEEP=() _MM_AGENT_KEEP_REAL=()
+  for p in "${MM_BUILTIN_KEEP[@]}"; do
+    p=${p%/}
+    _MM_KEEP+=("$p")
+    _mm_has_link "$p" || continue
+    _mm_real "$p"
+    [[ "$REPLY" == "$p" ]] || _MM_KEEP+=("$REPLY")
+  done
+  while IFS= read -r p; do
+    [[ "$p" == \~* ]] && p="$HOME${p:1}"
+    p=${p%/}
+    [[ "$p" == /?* ]] || continue
+    _MM_AGENT_KEEP+=("$p")
+    REPLY=""
+    if _mm_has_link "$p"; then
+      _mm_real "$p"
+      [[ "$REPLY" == "$p" ]] && REPLY=""
+    fi
+    _MM_AGENT_KEEP_REAL+=("$REPLY")
+  done < <(mm_agent_state_paths)
+  for p in "${MM_PROTECTED_TREES[@]}"; do
+    [[ "$p" == "$HOME"/?* ]] || continue
+    _mm_has_link "$p" || continue
+    _mm_real "$p"
+    [[ "$REPLY" == "$p" ]] || MM_PROTECTED_TREES+=("$REPLY")
+  done
+  _mm_other_homes_init
+  return 0
+}
+
+# mm_keep_patterns [--carveout] — every protection pattern as an absolute path or glob, one per
+# line: built-ins, agent state, then the whitelist file, each also as the path it resolves to.
+# --carveout leaves the built-ins out (for entries mm_carveout waives). MM_KEEP_AGENT_STATE=0
+# leaves agent state out; only for removing git worktrees that git reports clean (agents such as
+# Cursor keep their worktrees inside their state dir). _MM_WAIVED (set by mm_rm for
+# MM_AGENT_WAIVER) leaves out only the agent state entries that contain that directory.
 mm_keep_patterns() {
-  [[ "${1:-}" == --carveout ]] || printf '%s\n' "${MM_BUILTIN_KEEP[@]}"
+  _mm_gate_init
+  [[ "${1:-}" == --carveout ]] || printf '%s\n' "${_MM_KEEP[@]}"
   if [[ "${MM_KEEP_AGENT_STATE:-1}" != 0 ]]; then
-    local p
-    while IFS= read -r p; do
-      [[ -n "${_MM_WAIVED:-}" && ( "$_MM_WAIVED" == "$HOME${p:1}" || "$_MM_WAIVED" == "$HOME${p:1}"/* ) ]] && continue
-      printf '%s\n' "$p"
-    done < <(mm_agent_state_paths)
+    local i p r
+    for i in "${!_MM_AGENT_KEEP[@]}"; do
+      p=${_MM_AGENT_KEEP[i]} r=${_MM_AGENT_KEEP_REAL[i]}
+      if [[ -n "${_MM_WAIVED:-}" ]] &&
+         { [[ "$_MM_WAIVED" == "$p" || "$_MM_WAIVED" == "$p"/* ]] ||
+           [[ -n "$r" && ( "$_MM_WAIVED" == "$r" || "$_MM_WAIVED" == "$r"/* ) ]]; }; then
+        continue
+      fi
+      printf '%s\n' "$p" ${r:+"$r"}
+    done
   fi
-  cat -- "$MM_WHITELIST_FILE"
+  _mm_whitelist_entries
 }
 
 # mm_whitelisted PATH — 0 if removing PATH would touch a protected entry (built-in, agent state,
-# or whitelist file): PATH or an ancestor matches it, or it lies under PATH. Globs follow [[ == ]]
-# rules (* crosses /). Inside a carve-out the built-ins are skipped (see mm_carveout).
+# or whitelist file): PATH or an ancestor matches it, or it lies under PATH. Every pattern counts
+# both as a glob (* crosses /, [[ == ]] rules) and as the literal name it spells, so a folder
+# called "[2024] taxes" protects itself. Inside a carve-out the built-ins are skipped
+# (see mm_carveout).
 mm_whitelisted() {
   mm_whitelist_init 2>/dev/null
-  # Fail closed: an unreadable whitelist must not mean "nothing is protected".
-  [[ -r "$MM_WHITELIST_FILE" ]] || { mm_err "cannot read whitelist $MM_WHITELIST_FILE: refusing"; return 0; }
+  # Fail closed: a whitelist that cannot be read, or is not a file at all, must not mean
+  # "nothing is protected".
+  [[ -f "$MM_WHITELIST_FILE" && -r "$MM_WHITELIST_FILE" ]] ||
+    { mm_err "cannot read whitelist $MM_WHITELIST_FILE: refusing"; return 0; }
+  _mm_whitelist_entries --report
   local path="${1%/}" pat probe lit carve="" rc=0
   mm_carveout "$path" || rc=$?
   case $rc in 0) carve=--carveout ;; 2) return 0 ;; esac
   while IFS= read -r pat || [[ -n "$pat" ]]; do
-    pat="${pat%%#*}"; pat="${pat%"${pat##*[![:space:]]}"}"; pat="${pat#"${pat%%[![:space:]]*}"}"
-    [[ -n "$pat" ]] || continue
-    [[ "$pat" == "~"* ]] && pat="$HOME${pat:1}"
-    pat="${pat%/}"
     probe="$path"
     while [[ -n "$probe" ]]; do
       # shellcheck disable=SC2053
-      [[ "$probe" == $pat ]] && return 0
+      [[ "$probe" == "$pat" || "$probe" == $pat ]] && return 0
       [[ "$probe" == */* ]] || break
       probe="${probe%/*}"
     done
+    # An entry below PATH: removing PATH would take it along. For a glob, its literal prefix.
     lit="${pat%%[*?[]*}"
-    [[ "$lit" == "$path"/* ]] && return 0
+    [[ "$pat" == "$path"/* || "$lit" == "$path"/* ]] && return 0
     # Glob whose literal prefix is above PATH: look for an actual match underneath.
     if [[ "$lit" != "$pat" && "$path/" == "$lit"* && -d "$path" ]] &&
        [[ -n "$(find "$path" -xdev -path "$pat" -print -quit 2>/dev/null)" ]]; then
@@ -628,14 +824,83 @@ MM_PROTECTED_TREES=(/bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /run /
   "$HOME/.ssh" "$HOME/.gnupg")
 [[ "$HOME" == /root ]] || MM_PROTECTED_TREES+=(/root)
 
-# mm_protected REAL — 0 (and prints why) if the resolved path REAL is a protected path, lies in a
-# protected tree, or is a home directory under /home.
+# mm_protected PATH — 0 (and prints why) if PATH is a protected path, lies in a protected tree, is
+# a home directory under /home, or lies in another account's home. Call it with the target as
+# written and as resolved: a tree is protected under the name it is reached by and under the
+# folder it resolves to (a symlinked ~/.ssh), and neither form may grant what the other refuses.
 mm_protected() {
+  _mm_gate_init
   local p
   for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" || "$1" == "$p" ]] && { echo protected; return 0; }; done
   for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && { echo protected; return 0; }; done
   [[ "$1" == /home/* && "${1#/home/}" != */* ]] && { echo "protected (a home directory)"; return 0; }
+  if mm_foreign_home "$1" >/dev/null; then
+    echo "another user's home ($REPLY): run marmot as $REPLY"; return 0
+  fi
   return 1
+}
+
+# _mm_system_path PATH — 0 if PATH is one of the paths marmot never touches or lies inside one of
+# its trees. A system account's "home" (/, /var/backups, /usr/games) is not a user's home: the
+# trees already cover it, and treating it as one would refuse this user's own files.
+_mm_system_path() {
+  local p
+  for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" ]] && return 0; done
+  for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && return 0; done
+  return 1
+}
+
+# _mm_other_homes_init — the home folders of the machine's other accounts, "HOME<TAB>ACCOUNT" in
+# _MM_OTHER_HOMES, once per run. Left out: this user's own home and every folder above it (a
+# system account whose home is / would otherwise cover the whole disk), homes that do not exist,
+# and homes that are part of the OS.
+_mm_other_homes_init() {
+  [[ -n "$_MM_HOMES_READY" ]] && return 0
+  _MM_HOMES_READY=1
+  _mm_passwd_init
+  local e home
+  _MM_OTHER_HOMES=()
+  for e in ${_MM_PASSWD[@]+"${_MM_PASSWD[@]}"}; do
+    home=${e#*$'\t'}; home=${home%/}
+    [[ "$home" == /?* ]] || continue
+    [[ "$HOME" == "$home" || "$HOME" == "$home"/* ]] && continue
+    [[ -d "$home" ]] || continue
+    _mm_system_path "$home" && continue
+    _MM_OTHER_HOMES+=("$home"$'\t'"${e%%$'\t'*}")
+  done
+  return 0
+}
+
+# _mm_in_other_home PATH — 0, printing the account (also in REPLY), when PATH is at or below the
+# home folder of another account.
+_mm_in_other_home() {
+  local p=${1%/} e home account
+  # Every direct child of /home belongs to somebody, whether the password database says so or not.
+  if [[ "$p" == /home/?* ]]; then
+    account=${p#/home/}; account=${account%%/*}
+    home=/home/$account
+    if [[ "$HOME" != "$home" && "$HOME" != "$home"/* ]]; then REPLY=$account; echo "$REPLY"; return 0; fi
+  fi
+  for e in ${_MM_OTHER_HOMES[@]+"${_MM_OTHER_HOMES[@]}"}; do
+    home=${e%%$'\t'*}
+    [[ "$p" == "$home" || "$p" == "$home"/* ]] || continue
+    REPLY=${e#*$'\t'}; echo "$REPLY"; return 0
+  done
+  return 1
+}
+
+# mm_foreign_home PATH — 0, printing the account (also in REPLY), when PATH lies in another
+# account's home folder, as written or once resolved. sudo hands marmot root's HOME, so it would
+# be root's whitelist, agent state and credentials that decide over a colleague's files: a run
+# over somebody else's home stops instead of cleaning it by the wrong rules.
+mm_foreign_home() {
+  _mm_other_homes_init
+  REPLY=""
+  _mm_in_other_home "$1" && return 0
+  _mm_has_link "$1" || return 1
+  _mm_real "$1"
+  [[ "$REPLY" == "$1" ]] && return 1
+  _mm_in_other_home "$REPLY"
 }
 
 # mm_credential_like PATH [BASE] — 0 if PATH's name, any name under it, or (when PATH lies inside
@@ -710,8 +975,18 @@ mm_rm() {
     fi
     mm_credential_like "$real" && { _mm_refuse "looks like credentials"; return 1; }
   fi
-  p=$(mm_protected "$real") && { _mm_refuse "$p"; return 1; }
-  _MM_WAIVED=$waived mm_whitelisted "$real" && { _mm_refuse "whitelisted"; return 1; }
+  _mm_gate_init   # this run's protection paths, in this shell: the checks below then fork none
+  # A protection denies on either form: a resolved path never grants what the path as written
+  # does not (a symlinked parent must not carry a target out of a protected or whitelisted folder).
+  if p=$(mm_protected "$real"); then
+    _mm_refuse "$p"; return 1
+  elif [[ "$path" != "$real" ]] && p=$(mm_protected "$path"); then
+    _mm_refuse "$p"; return 1
+  fi
+  if _MM_WAIVED=$waived mm_whitelisted "$real" ||
+     { [[ "$path" != "$real" ]] && _MM_WAIVED=$waived mm_whitelisted "$path"; }; then
+    _mm_refuse "whitelisted"; return 1
+  fi
   (( MM_INUSE_TAKEN )) || mm_inuse_refresh   # here, not inside $(...): a failed snapshot must stop marmot
   p=$(mm_inuse_why "$real") && { _mm_refuse "$p"; return 1; }
 
@@ -767,8 +1042,16 @@ _mm_trash() {
     _mm_refuse "Trash is on another filesystem"; return 1
   fi
   base=$(basename -- "$real") name=$base enc=$(_mm_url_encode "$real") stamp=$(date +%Y-%m-%dT%H:%M:%S)
-  until [[ ! -e "$files/$name" && ! -L "$files/$name" ]] &&
-        ( set -C; printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$stamp" >"$info/$name.trashinfo" ) 2>/dev/null; do
+  while :; do
+    if [[ ! -e "$files/$name" && ! -L "$files/$name" && ! -e "$info/$name.trashinfo" ]]; then
+      ( set -C; printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$stamp" >"$info/$name.trashinfo" ) 2>/dev/null && break
+      # On a full disk the exclusive create succeeds and only the write fails; the empty record
+      # left behind would claim this name for good. Take it back and say what is wrong.
+      if [[ -f "$info/$name.trashinfo" && ! -s "$info/$name.trashinfo" ]]; then
+        rm -f -- "$info/$name.trashinfo" # SAFE: the empty .trashinfo this call just created
+        _mm_refuse "no space for the Trash record ($MM_TRASH_DIR)"; return 1
+      fi
+    fi
     n=$((n + 1)) name="$base.$n"
     (( n > 1000 )) && { _mm_refuse "no free name in Trash"; return 1; }
   done
