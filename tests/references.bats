@@ -195,3 +195,11 @@ EOF
   mm_inuse_refresh >/dev/null 2>&1
   [ "$MM_INUSE_PARTIAL" = 1 ]
 }
+
+@test "a snapshot older than a few seconds is retaken right before acting" {
+  mkdir -p "$SB/late/node_modules"
+  mm_inuse_refresh >/dev/null 2>&1
+  mm_test_bg "$SB/late/node_modules" sleep 30
+  MM_INUSE_AT=$(( $(date +%s) - 10 ))
+  run try_rm "$SB/late"; [ "$output" = "1 in use" ]
+}

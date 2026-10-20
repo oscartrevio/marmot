@@ -294,7 +294,7 @@ mm_sudo() {
 
 MM_INUSE=""        # newline-separated snapshot; kept in memory so a killed run leaves no files
 MM_INUSE_REFS=""   # "path<TAB>source" for snapshot paths that only a reference keeps (mm_inuse_why)
-MM_INUSE_TAKEN=0
+MM_INUSE_TAKEN=0 MM_INUSE_AT=0   # whether a snapshot exists, and when it was taken (date +%s)
 MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""   # what the last snapshot could not see, if anything
 # mm_inuse_refresh — snapshot every path any process has as cwd, root, exe, open fd, mapping, or
 # bound unix socket, plus every mount point and bind-mount source (per mount namespace), so a
@@ -330,6 +330,7 @@ mm_inuse_refresh() {
     _MM_PARTIAL_WARNED=1
     mm_warn "In-use check is partial: $MM_INUSE_PARTIAL_WHY"
   fi
+  MM_INUSE_AT=$(date +%s)
   mm_debug "in-use snapshot: $(mm_inuse_paths | wc -l) paths (partial=$MM_INUSE_PARTIAL)"
 }
 
@@ -749,7 +750,8 @@ mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 # mm_rm [--trash] PATH ALLOWED_ROOT — the only way marmot deletes or trashes files.
 # Refuses unless PATH is strictly inside ALLOWED_ROOT (after resolving parent symlinks), has no
 # control characters, is not protected, not whitelisted, not in use, can be sized within
-# MM_SIZE_TIMEOUT, and is still the same object (device/inode/ctime) and location after sizing.
+# MM_SIZE_TIMEOUT, is still the same object (device/inode/ctime) and location after sizing, is
+# still not in use per a snapshot at most a few seconds old, and neither is nor holds a mount.
 # --trash moves it to the XDG Trash instead and never falls back to a permanent delete.
 # Returns 0 done (or would be, in dry-run), 1 refused (MM_SKIP_REASON set), 2 action failed.
 # Updates MM_FREED or MM_TRASHED (by mm_frees), MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals
@@ -803,6 +805,12 @@ mm_rm() {
   # Sizing a large tree takes a while: act only if the same object is still at the same place.
   if [[ "$(realpath -e -- "$(dirname -- "$real")" 2>/dev/null)" != "$parent" || "$(mm_identity "$real")" != "$id" ]]; then
     _mm_refuse "changed while sizing"; return 1
+  fi
+  # Purge sizes item after item for up to MM_SIZE_TIMEOUT each: a snapshot more than a few seconds
+  # old is retaken, so a process that started using the item meanwhile is seen.
+  if (( $(date +%s) - MM_INUSE_AT > 5 )); then
+    mm_inuse_refresh
+    p=$(mm_inuse_why "$real") && { _mm_refuse "$p"; return 1; }
   fi
   # Last look before the sink: a mount made since the snapshot (--one-file-system does not stop at
   # a bind mount from the same filesystem, and the mounted source would be emptied).
