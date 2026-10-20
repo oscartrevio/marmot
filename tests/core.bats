@@ -712,3 +712,40 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
   run env MM_CONTAINER=0 bash -c '. "$1/lib/core.sh"; mm_sysline' _ "$MM_SRC"
   [[ "$output" != *container* && "$output" == *" · $(nproc) cores · "*"GB RAM | Free: "* ]]
 }
+
+# ---------------------------------------------------------------- whitelist entries as written
+
+@test "whitelist entries protect what they name: brackets, #, \$HOME, ~user, a BOM, a symlink" {
+  local me p; me=$(id -un)
+  mm_test_fake getent "printf '%s\n' '$me:x:$(id -u):$(id -g)::$HOME:/bin/bash'"
+  local dirs=("$SB/root/[2024] taxes" "$SB/root/C#/app" "$HOME/datasets" "$HOME/notes"
+    "$SB/real/client" "$HOME/globbed/x" "$SB/root/hash" "$SB/root/open")
+  for p in "${dirs[@]}"; do mkdir -p "$p/coverage"; echo personal >"$p/coverage/policy.pdf"; done
+  ln -s "$SB/real" "$HOME/code2"
+  printf '\xef\xbb\xbf%s\n' "$SB/root/[2024] taxes" >"$MM_WHITELIST_FILE"
+  printf '%s\n' "# a whole-line comment" "$SB/root/C#/app" '$HOME/datasets' "~$me/notes" \
+    '~/code2/client' '~/globbed/*' "$SB/root/hash  # and a trailing one" >>"$MM_WHITELIST_FILE"
+  mm_inuse_refresh
+  for p in "${dirs[@]:0:7}"; do
+    run try_rm "$p/coverage" "$p"
+    [ "$output" = "1 whitelisted" ] || { echo "not protected: $p ($output)"; false; }
+    [ -f "$p/coverage/policy.pdf" ]
+  done
+  run try_rm "$SB/root/open/coverage" "$SB/root/open"
+  [ "$output" = "0 " ]
+}
+
+@test "whitelist entries that can protect nothing are reported once, naming the entry" {
+  mkdir -p "$SB/root/x"
+  printf '%s\n' 'projects/keep' "$HOME/Re$(printf '\xcc\x81')sume" "$SB/root/x" >"$MM_WHITELIST_FILE"
+  mm_inuse_refresh
+  MM_SKIPS=()
+  mm_whitelisted "$SB/root/other" || true
+  [ "${#MM_SKIPS[@]}" -eq 1 ]
+  [[ "${MM_SKIPS[*]}" == *"projects/keep"* ]]
+  [[ "${MM_SKIPS[*]}" == *"sume"* ]]
+  mm_whitelisted "$SB/root/other" || true
+  [ "${#MM_SKIPS[@]}" -eq 1 ]
+  run try_rm "$SB/root/x" "$SB/root"
+  [ "$output" = "1 whitelisted" ]
+}
