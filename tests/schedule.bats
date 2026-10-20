@@ -287,6 +287,107 @@ esac'
   cmp "$SB/user-crontab" "$SB/crontab"
 }
 
+@test "a run started from the crontab line uses this shell's folders: its whitelist, Trash and state" {
+  profile_tools
+  rec systemctl 'exit 1'
+  fake_cron
+  # set in the user's shell only: cron starts the line without them
+  export XDG_CONFIG_HOME="$HOME/.dotfiles/config" XDG_STATE_HOME="$HOME/.dotfiles/state" \
+    XDG_DATA_HOME="$HOME/.dotfiles/data"
+  mkdir -p "$XDG_CONFIG_HOME/marmot"
+  echo '~/work/keep' >"$XDG_CONFIG_HOME/marmot/whitelist"
+  local p
+  for p in keep old; do
+    mkdir -p "$HOME/work/$p/node_modules/x"
+    echo '{}' >"$HOME/work/$p/package.json"; echo x >"$HOME/work/$p/node_modules/x/i.js"
+  done
+  mm_age "$HOME/work" 30
+  trash_item old31 31
+  run mm schedule enable
+  [ "$status" -eq 0 ]
+  local line cmd
+  line=$(grep 'MM_SCHEDULE_TRIGGER=cron' "$SB/crontab")
+  cmd=$(sed -E 's/^([^ ]+ +){5}//; s/ # marmot$//; s/ >\/dev\/null 2>&1$//' <<<"$line")
+  run env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME -u XDG_CACHE_HOME sh -c "$cmd"
+  [ "$status" -eq 0 ]
+  exist "$HOME/work/keep/node_modules/x/i.js" "$XDG_STATE_HOME/marmot/last-run.json"
+  gone "$HOME/work/old/node_modules" "$XDG_DATA_HOME/Trash/files/old31"
+  gone "$HOME/.config/marmot" "$HOME/.local/state/marmot"
+}
+
+@test "enable pins the folders that differ from the defaults or that systemd's environment sets; units go where systemd reads them" {
+  rec systemctl 'case "$*" in
+  "--user show-environment") printf "HOME=%s\nXDG_CONFIG_HOME=%s\nXDG_CACHE_HOME=/srv/cache\n" "$HOME" "$SB/sdcfg" ;;
+  "--user is-enabled marmot-schedule.timer") echo enabled ;;
+esac
+exit 0'
+  rec loginctl 'echo Linger=yes'
+  fake_cron
+  export XDG_CONFIG_HOME="$SB/cfg" MM_WHITELIST_FILE="$SB/keep-list"
+  run mm schedule enable
+  [ "$status" -eq 0 ]
+  gone "$SB/cfg/systemd"
+  local svc="$SB/sdcfg/systemd/user/marmot-schedule.service"
+  grep -qx "Environment=XDG_CONFIG_HOME=$SB/cfg" "$svc"
+  grep -qx "Environment=XDG_CACHE_HOME=$HOME/.cache" "$svc"
+  grep -qx "Environment=MM_WHITELIST_FILE=$SB/keep-list" "$svc"
+  none grep -qE '^Environment=(XDG_STATE_HOME|XDG_DATA_HOME|MM_CONFIG_DIR|MM_STATE_DIR|MM_CONFIG_FILE|MM_LOG_FILE|MM_PURGE_PATHS_FILE)=' "$svc"
+  grep -qx 'Environment=MM_SCHEDULE_TRIGGER=systemd' "$svc"
+  run mm schedule disable
+  gone "$svc"
+}
+
+@test "enable pins a folder the crontab's own variables would change" {
+  rec systemctl 'exit 1'
+  fake_cron
+  printf 'XDG_DATA_HOME = /srv/data\n0 1 * * * /usr/local/bin/backup\n' >"$SB/crontab"
+  export MM_CONFIG_DIR="$SB/marmot-config"
+  run mm schedule enable
+  [ "$status" -eq 0 ]
+  grep -qE "^[0-9]+ 3 \* \* \* PATH=[^ ]+ XDG_DATA_HOME=$HOME/.local/share MM_CONFIG_DIR=$SB/marmot-config MM_SCHEDULE_TRIGGER=cron $MM_SRC/marmot schedule run >/dev/null 2>&1 # marmot\$" "$SB/crontab"
+  grep -qx 'XDG_DATA_HOME = /srv/data' "$SB/crontab"
+}
+
+@test "enable refuses a folder a unit file or crontab line cannot carry, and changes nothing" {
+  fake_systemd yes; fake_cron
+  printf '0 1 * * * /usr/local/bin/backup\n' >"$SB/crontab"
+  XDG_DATA_HOME="$HOME/my data" run mm schedule enable
+  [ "$status" -ne 0 ]
+  [[ "$output" == *XDG_DATA_HOME* ]]
+  gone "$UNITS" "$XDG_STATE_HOME/marmot/schedule"
+  rec systemctl 'exit 1'
+  XDG_CONFIG_HOME="relative/config" run mm schedule enable
+  [ "$status" -ne 0 ]
+  [[ "$output" == *XDG_CONFIG_HOME* ]]
+  [ "$(cat "$SB/crontab")" = '0 1 * * * /usr/local/bin/backup' ]
+  gone "$XDG_STATE_HOME/marmot/schedule"
+}
+
+@test "status flags a schedule whose folders differ from this shell's" {
+  rec systemctl 'exit 1'
+  fake_cron
+  run mm schedule enable
+  [ "$status" -eq 0 ]
+  run mm schedule status
+  [[ "$output" != *XDG_CONFIG_HOME* ]]
+  XDG_CONFIG_HOME="$SB/cfg" run mm schedule status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *XDG_CONFIG_HOME*"mm schedule enable"* ]]
+  XDG_CONFIG_HOME="$SB/cfg" run mm schedule enable
+  XDG_CONFIG_HOME="$SB/cfg" run mm schedule status
+  [[ "$output" != *XDG_CONFIG_HOME* ]]
+  run mm schedule status                   # back in a shell with the default folders
+  [[ "$output" == *XDG_CONFIG_HOME*"mm schedule enable"* ]]
+  run mm schedule disable
+  fake_systemd yes                         # the same for the systemd unit
+  run mm schedule enable
+  [ "$status" -eq 0 ]
+  run mm schedule status
+  [[ "$output" != *XDG_DATA_HOME* ]]
+  XDG_DATA_HOME="$SB/data" run mm schedule status
+  [[ "$output" == *XDG_DATA_HOME*"mm schedule enable"* ]]
+}
+
 @test "without systemd or cron, enable explains what to do and changes nothing" {
   rec systemctl 'exit 1'
   local d f

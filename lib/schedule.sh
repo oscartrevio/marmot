@@ -4,6 +4,8 @@
 # summary every scheduled run writes. Reading them runs no external command.
 
 MM_SCHEDULE_UNIT=marmot-schedule    # marmot-schedule.service, run by marmot-schedule.timer
+# Where systemd looks for user units; cmd/schedule.sh follows systemd's own XDG_CONFIG_HOME when
+# `systemctl --user` answers.
 MM_SCHEDULE_UNIT_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 # First line of both unit files: disable removes only files that carry it.
 MM_SCHEDULE_MARK="# Written by mm schedule enable; mm schedule disable removes it."
