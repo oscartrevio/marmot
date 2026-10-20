@@ -8,6 +8,8 @@ All notable changes to marmot are recorded here. The format follows
 ### Added
 
 - MIT license.
+- `mm status`: a marmot peeks over the dashboard, its face summing up the health score, a busy
+  CPU and whether an agent is at work; a short terminal drops it first.
 - `~/.config/marmot/agents`: add any coding agent or orchestrator in the same row format as the
   built-in table; its state is protected and its sessions show in `mm status`.
 - Files that running processes, launchers in `~/.local/bin` and `$PATH` folders in your home,

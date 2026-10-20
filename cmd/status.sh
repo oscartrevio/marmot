@@ -88,6 +88,10 @@ Environment:
 Health starts at 100 and drops for sustained CPU >85%, load above core count (not in a
 container), low available memory, swap >50%, root disk >=80%, root inodes >=90%, pending reboot,
 failed units, and orphaned agent or dev processes.
+The marmot over the dashboard shows it at a glance, first match wins: x x health below 60,
+O O ! below 80, > < CPU above 85% over the last three samples, o o any other health reason,
+- - z Z no agent session busy, ^ ^ agents at work on a healthy machine. Short terminals drop it
+first.
 EOF
 }
 
@@ -249,7 +253,7 @@ _status_init() {
     read -r -a procs <<<"${MM_AGENT_PROCS[i]}"
     for k in "${procs[@]}"; do ST_AGENT_OF[$k]=${MM_AGENT_NAME[i]} ST_AGENT_IDX[$k]=$i ST_AGENT_COMM[${k:0:15}]=$k; done
   done
-  ST_PF=0 ST_T=0 ST_SLOW_PID="" ST_SLOW_AT=0 ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1 ST_IF=""
+  ST_PF=0 ST_T=0 ST_SLOW_PID="" ST_SLOW_AT=0 ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1 ST_MASCOT=1 ST_IF=""
   ST_SHOWN=() ST_REPAINT=1 ST_SIZE=""
   ST_CT=() ST_CI=() ST_CPU=() ST_CPUH=() ST_RXH=() ST_TXH=() ST_FAILED=() ST_ORPHANS=() ST_KPENDING=0
   declare -gA ST_SLOW=() ST_NRX=() ST_NTX=() ST_P_NRX=() ST_P_NTX=() ST_RBPS=() ST_TBPS=() ST_CL_PREV=()
@@ -1288,6 +1292,25 @@ _status_health() {
   for i in "${idx[@]}"; do ST_REASONS+=("${ST_WHY[i]}"); done
 }
 
+# _status_mood — the marmot's face for this frame into REPLY, first match wins: dizzy (health
+# below 60), alert (below 80), squint (CPU above 85% over the last three samples), neutral (any
+# other health reason), sleepy (no agent session busy), happy.
+_status_mood() {
+  local i n=0 sum=0 e busy
+  for ((i = ${#ST_CPUH[@]} - 1; i >= 0 && n < 3; i--)); do sum=$((sum + ST_CPUH[i])) n=$((n + 1)); done
+  if ((ST_SCORE < 60)); then REPLY=dizzy
+  elif ((ST_SCORE < 80)); then REPLY=alert
+  elif ((n && sum / n > 850)); then REPLY=squint
+  elif ((${#ST_REASONS[@]})); then REPLY=neutral
+  else
+    REPLY=sleepy
+    for e in "${ST_AGENTS[@]}"; do
+      IFS=$'\t' read -r _ _ _ _ _ _ _ busy _ <<<"$e"
+      ((busy)) && { REPLY=happy; break; }
+    done
+  fi
+}
+
 # ---------------------------------------------------------------- panels
 
 # _status_row LABEL CONTENT — append a "Label    content" row to ST_PANEL (labels over 8 chars
@@ -1814,12 +1837,36 @@ _status_panel_sys() {
 
 # ---------------------------------------------------------------- frame
 
+# _status_marmot WIDTH TITLE FACTS COLOR — the header as five rows into ST_FRAME: the marmot
+# peeking over the dashboard, TITLE and FACTS (dimmed) beside its ears and eyes, its paws and
+# teeth on a rule WIDTH wide. The face is _status_mood's, the eyes in the health COLOR. The
+# caller checks that TITLE fits: 21 columns go to the marmot.
+_status_marmot() {
+  local w=$1 col=$4 l r mark="" rule
+  _status_mood
+  case $REPLY in
+    happy) l='^' r='^' ;;
+    neutral) l=o r=o ;;
+    squint) l='>' r='<' ;;
+    sleepy) l=- r=- mark="  ${C_DIM}z Z$C_RESET" ;;
+    alert) l=O r=O mark="  $C_YELLOW!$C_RESET" ;;
+    *) l=x r=x ;;
+  esac
+  printf -v rule '%*s' $((w > 18 ? w - 18 : 0)) ''
+  ST_FRAME+=("     _..--.._$mark"
+    "  ()'        '()     $2"
+    "   |  $col$l$C_RESET    $col$r$C_RESET  |${3:+      $C_DIM$3$C_RESET}"
+    '  .--.  \/  .--.'
+    "$C_DIM--$C_RESET(mm)$C_DIM--${C_RESET}UU$C_DIM--$C_RESET(mm)$C_DIM--${rule// /-}$C_RESET")
+}
+
 # _status_frame_full COLS — render the dashboard into ST_FRAME (array of lines).
 _status_frame_full() {
-  local cols=$1 two=0 col head info len ilen r i rows left pad
+  local cols=$1 two=0 col head info len ilen r i rows left pad span
   ((cols >= 100)) && two=1
   if ((two)); then ST_W=$(((cols - 2) / 2)); ((ST_W > 56)) && ST_W=56
   else ST_W=$((cols > 80 ? 80 : cols)); ((ST_W < 40)) && ST_W=40; fi
+  span=$((two ? 2 * ST_W + 2 : ST_W))
 
   if ((ST_SCORE >= 80)); then col=$C_GREEN; elif ((ST_SCORE >= 60)); then col=$C_YELLOW; else col=$C_RED; fi
   printf -v head '%smm status%s  Health %s● %d%s' "$C_BOLD" "$C_RESET" "$col" "$ST_SCORE" "$C_RESET"
@@ -1834,7 +1881,11 @@ _status_frame_full() {
   _status_vlen len "$head"
   ilen=${#info}
   ST_FRAME=()
-  if ((len + 2 + ilen <= (two ? cols : ST_W))); then
+  if ((ST_MASCOT && len + 21 <= span)); then
+    # Beside the marmot, as wide as the panels under it.
+    _status_trunc info "$info" $((span - 21))
+    _status_marmot "$span" "$head" "$info" "$col"
+  elif ((len + 2 + ilen <= (two ? cols : ST_W))); then
     ST_FRAME+=("$head  $C_DIM$info$C_RESET")
   else
     ST_FRAME+=("$head" "$C_DIM$info$C_RESET")
@@ -1889,15 +1940,17 @@ _status_frame_full() {
 
 # _status_frame_compact COLS [ROWS] — the default view into ST_FRAME: agent sessions first, the
 # link to you, one line per resource, checks, top memory; one column as wide as the terminal.
-# With ROWS > 0 the agent list gives way ("… N more") until the frame fits ROWS lines, then the
-# helpers lines.
+# With ROWS > 0 the marmot gives way first, then the agent list ("… N more") until the frame
+# fits ROWS lines, then the helpers lines.
 _status_frame_compact() {
   local cols=$1 rows=${2:-0} lim=${#ST_AGENTS[@]} over
   ((lim < 1)) && lim=1
+  ST_MASCOT=1
   while :; do
     _status_compact "$cols" "$lim"
     over=$((${#ST_FRAME[@]} - rows))
     ((rows <= 0 || over <= 0)) && break
+    if ((ST_MASCOT)); then ST_MASCOT=0; continue; fi
     ((lim <= 1)) && { _status_compact "$cols" 1 0; break; }
     lim=$((lim > over ? lim - over : 1))
   done
@@ -1928,6 +1981,7 @@ _status_cline_spark() {
 # listed, and the helpers lines unless HELPERS is 0.
 _status_compact() {
   local w=$1 lim=$2 helpers=${3:-1} col left info len up t bar s r wr v m sz us av it iu e pid name ctx n older
+  local mascot room
   local -a more=()
   ((w < 60)) && w=60
   ST_FRAME=()
@@ -1937,13 +1991,20 @@ _status_compact() {
   ((ST_CL_LAGGY)) && left+="  ${C_YELLOW}link to you is laggy$C_RESET"
   _status_vlen len "$left"
   _status_age up "$ST_UP"
-  # Machine facts right-aligned, dropping detail until they fit.
+  # Machine facts under the title beside the marmot, else right-aligned on the title's line;
+  # detail drops until they fit.
+  mascot=$((ST_MASCOT && len + 21 <= w))
+  room=$((mascot ? w - 21 : w - len - 2))
   for info in "$ST_HOST$ST_TAG · $ST_MODEL · $ST_CORES_TXT · $ST_RAM_TXT · up $up" \
     "$ST_HOST$ST_TAG · $ST_CORES_TXT · $ST_RAM_TXT · up $up" "$ST_HOST$ST_TAG · up $up" ""; do
-    ((len + 2 + ${#info} <= w)) && break
+    ((${#info} <= room)) && break
   done
-  printf -v t '%*s' $((w - len - ${#info} > 0 ? w - len - ${#info} : 0)) ''
-  ST_FRAME+=("$left${info:+$t$C_DIM$info$C_RESET}")
+  if ((mascot)); then
+    _status_marmot "$w" "$left" "$info" "$col"
+  else
+    printf -v t '%*s' $((w - len - ${#info} > 0 ? w - len - ${#info} : 0)) ''
+    ST_FRAME+=("$left${info:+$t$C_DIM$info$C_RESET}")
+  fi
 
   ST_PANEL=()
   if ((${#ST_AGENTS[@]})); then
@@ -2401,12 +2462,13 @@ _status_draw() {
   if [[ "$ST_VIEW" == compact ]]; then
     _status_frame_compact "$cols" "$n"
   else
-    # Shrink until it fits: top lists, cores, agent sessions, panel gaps, then 1 each.
-    ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1
+    # Shrink until it fits: the marmot, top lists, cores, agent sessions, panel gaps, then 1 each.
+    ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1 ST_MASCOT=1
     while :; do
       _status_frame_full "$cols"
       ((${#ST_FRAME[@]} + ST_GAP <= n)) && break
-      if ((ST_TOPN > 2)); then ST_TOPN=$((ST_TOPN - 1))
+      if ((ST_MASCOT)); then ST_MASCOT=0
+      elif ((ST_TOPN > 2)); then ST_TOPN=$((ST_TOPN - 1))
       elif ((ST_NCORE > 2)); then ST_NCORE=$((ST_NCORE - 1))
       elif ((ST_AGN > 3)); then ST_AGN=$((ST_AGN - 1))
       elif ((ST_GAP)); then ST_GAP=0
