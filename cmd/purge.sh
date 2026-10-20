@@ -268,10 +268,11 @@ _purge_ignored() {
 # say so (git state unknown). Rules: absolute, no control characters, a real directory (not a
 # symlink), not a repository itself, not inside a $HOME dot-dir no ROOT points into, a named rule
 # (_purge_rule) or a tagged cache (_purge_tagged_cache), and nothing under it tracked by git
-# (_purge_tracked_load must have seen ARTIFACT).
+# (_purge_tracked_load must have seen ARTIFACT). Sets _PURGE_TAGGED when only the cache tag
+# matched: a tag is the owner's hint, so those are offered in the picker and nowhere else.
 _purge_valid() {
   local art="$1" proj="${1%/*}" name="${1##*/}" rc; shift
-  _PURGE_WHY=""
+  _PURGE_WHY="" _PURGE_TAGGED=0
   [[ "$art" == */.nx/cache ]] && proj="${art%/.nx/cache}"
   [[ "$art" == /?*/?* && "$art" != *[[:cntrl:]]* ]] || return 1
   [[ -d "$art" && ! -L "$art" ]] || return 1
@@ -280,7 +281,7 @@ _purge_valid() {
   rc=0; _purge_rule "$art" "$proj" "$name" || rc=$?
   case "$rc" in
     0) ;;
-    1) _purge_tagged_cache "$art" "$proj" "$@" || return 1 ;;
+    1) _purge_tagged_cache "$art" "$proj" "$@" || return 1; _PURGE_TAGGED=1 ;;
     *) _PURGE_WHY="could not verify git state"; return 2 ;;
   esac
   rc=0; _purge_tracked "$art" || rc=$?
@@ -1120,11 +1121,14 @@ _purge_run() {
   _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=() _PURGE_GH=""
   [[ "$_PURGE_MODE" == scheduled ]] || _purge_worktrees "$yes" "${roots[@]}"
 
-  # ---- validate artifacts
+  # ---- validate artifacts. picks[i] is why an artifact is only ever removed by hand: a terminal
+  # picker shows it, --yes, a scheduled run and the stale/all answers never touch it.
   local -a kept_out=()
   local -A seen=() gitroot_of=()
-  local -a arts=() projs=() gits=()
-  local art proj anc ok g rc
+  local -a arts=() projs=() gits=() picks=()
+  local art proj anc ok g rc pick
+  local pickable=0
+  [[ "$MM_TTY" == 1 && ( "$_PURGE_MODE" == ask || "$_PURGE_MODE" == all ) ]] && pickable=1
   # shallowest first, so an artifact inside another one is seen as part of it
   mapfile -d '' -t cand_raw < <(for art in "${cand_raw[@]}"; do
       anc="${art//[!\/]/}"; printf '%s\t%s\0' "${#anc}" "$art"
@@ -1147,7 +1151,8 @@ _purge_run() {
     seen[$art]=1
     proj="${art%/*}"; [[ "$art" == */.nx/cache ]] && proj="${art%/.nx/cache}"
     if [[ -z "${gitroot_of[$proj]+x}" ]]; then _purge_gitroot "$proj"; gitroot_of[$proj]=$_PURGE_GITROOT; fi
-    arts+=("$art"); projs+=("$proj"); gits+=("${gitroot_of[$proj]}")
+    pick=""; (( _PURGE_TAGGED )) && pick="tagged as a cache"
+    arts+=("$art"); projs+=("$proj"); gits+=("${gitroot_of[$proj]}"); picks+=("$pick")
   done
 
   # ---- in-use: artifact, its project, or the project's repository/worktree
@@ -1163,6 +1168,8 @@ _purge_run() {
       key="${gits[$i]:-${projs[$i]}}" nm="${arts[$i]##*/}"
       skip_n[$key]=$(( ${skip_n[$key]:-0} + 1 ))
       [[ ", ${skip_names[$key]:-}, " == *", $nm, "* ]] || skip_names[$key]+="${skip_names[$key]:+, }$nm"
+    elif [[ -n "${picks[$i]}" ]] && (( ! pickable )); then
+      kept_out+=("${arts[$i]}"$'\t'"${picks[$i]}; pick it on a terminal")
     else
       cand+=("$i")
     fi
@@ -1222,8 +1229,8 @@ _purge_run() {
   for i in "${cand[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
   _purge_activity_load "${pair_of[@]}"
   local now; now=$(date +%s)
-  local -a order=() idle=() stale=() pnpm_art=()
-  local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act mt shared=0
+  local -a order=() idle=() stale=() kind=() pnpm_art=()
+  local stale_bytes=0 recent_bytes=0 pick_bytes=0 stale_n=0 recent_n=0 pick_n=0 act mt shared=0
   for i in "${cand[@]}"; do
     act="${_PURGE_ACT[${projs[$i]}]:-}"
     # a write inside the artifact is activity too: a tool is still using it
@@ -1232,10 +1239,12 @@ _purge_run() {
     elif [[ -n "$act" ]] && (( mt > act )); then act=$mt; fi
     # unknown activity counts as recent: never selected by default
     if [[ -n "$act" ]]; then idle[i]=$(( (now - act) / 86400 )); else idle[i]=0; fi
-    if (( idle[i] > days )); then
-      stale[i]=1; stale_n=$((stale_n + 1)); stale_bytes=$((stale_bytes + ${frees[${arts[$i]}]:-0}))
+    if [[ -n "${picks[$i]}" ]]; then
+      stale[i]=0 kind[i]=pick; pick_n=$((pick_n + 1)); pick_bytes=$((pick_bytes + ${frees[${arts[$i]}]:-0}))
+    elif (( idle[i] > days )); then
+      stale[i]=1 kind[i]=stale; stale_n=$((stale_n + 1)); stale_bytes=$((stale_bytes + ${frees[${arts[$i]}]:-0}))
     else
-      stale[i]=0; recent_n=$((recent_n + 1)); recent_bytes=$((recent_bytes + ${frees[${arts[$i]}]:-0}))
+      stale[i]=0 kind[i]=recent; recent_n=$((recent_n + 1)); recent_bytes=$((recent_bytes + ${frees[${arts[$i]}]:-0}))
     fi
     pnpm_art[i]=0; _purge_pnpm_managed "${arts[$i]}" && pnpm_art[i]=1
   done
@@ -1252,15 +1261,19 @@ _purge_run() {
     mm_tilde "${arts[$i]}"
     printf -v row '%9s  %9s  %5s  %s' "$(mm_human "$sz")" "$(mm_human "$fr")" "$(_purge_age "${idle[i]}")" "$REPLY"
     _purge_to_trash "${arts[$i]}" && row+=" (to Trash)"
+    [[ -n "${picks[$i]}" ]] && row+=" (${picks[$i]})"
     if (( fr < sz )); then
       shared=1; (( pnpm_art[i] )) && row+=" (rest in the pnpm store)"
     fi
     row_of[$i]="$row"
-    # keep the table readable: recent artifacts freeing under 1MB are summarized, not listed
-    if (( ! stale[i] && fr < 1048576 )); then
+    # keep the table readable: recent artifacts freeing under 1MB are summarized, not listed.
+    # Pick-only rows stay: the picker is the only way to remove them, so they must be seen.
+    if (( ! stale[i] && fr < 1048576 )) && [[ "${kind[i]}" != pick ]]; then
       hidden_n=$((hidden_n + 1)) hidden_bytes=$((hidden_bytes + fr)); continue
     fi
-    if (( stale[i] )); then mark="${C_YELLOW}●${C_RESET}"; else mark="${C_DIM}○${C_RESET}"; fi
+    if [[ "${kind[i]}" == pick ]]; then mark="${C_DIM}◎${C_RESET}"
+    elif (( stale[i] )); then mark="${C_YELLOW}●${C_RESET}"
+    else mark="${C_DIM}○${C_RESET}"; fi
     printf '  %s  %s\n' "$mark" "$row"
   done
   (( hidden_n )) && printf '  %s○  %9s  %9s         … %d more recent artifacts freeing under 1MB%s\n' \
@@ -1269,6 +1282,7 @@ _purge_run() {
   (( shared )) && mm_info "${C_DIM}FREES is what deleting releases: files also hard-linked elsewhere (the pnpm store, other copies) stay on disk.${C_RESET}"
   mm_info "${C_YELLOW}●${C_RESET} stale (idle > ${days}d): $stale_n artifacts, frees $(mm_human "$stale_bytes")"
   mm_info "${C_DIM}○${C_RESET} recent:               $recent_n artifacts, frees $(mm_human "$recent_bytes")"
+  (( pick_n )) && mm_info "${C_DIM}◎${C_RESET} pick only:            $pick_n artifacts, frees $(mm_human "$pick_bytes"); never selected for you"
 
   # ---- selection: dry-run previews the default; --yes is stale only; otherwise ask on the terminal
   local mode=stale; (( all )) && mode=all
@@ -1291,17 +1305,18 @@ _purge_run() {
     esac
   fi
 
+  # stale and all take only what a rule vouches for: a pick-only row needs the picker
   local -a sel=()
   case "$mode" in
     stale) for i in "${order[@]}"; do (( stale[i] )) && sel+=("$i"); done ;;
-    all) sel=("${order[@]}") ;;
+    all) for i in "${order[@]}"; do [[ "${kind[i]}" == pick ]] || sel+=("$i"); done ;;
     pick)
       local line idx
       while IFS= read -r line; do
         idx="${line%%[[:space:]]*}"
         [[ "$idx" =~ ^[0-9]+$ && -n "${row_of[$idx]:-}" ]] && sel+=("$idx")
       done < <(for i in "${order[@]}"; do
-          printf '%-4s %s  %s\n' "$i" "$( (( stale[i] )) && echo stale || echo recent)" "${row_of[$i]}"
+          printf '%-4s %-6s %s\n' "$i" "${kind[i]}" "${row_of[$i]}"
         done | mm_pick "TAB marks, ctrl-a all, Enter purges")
       ;;
   esac
