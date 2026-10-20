@@ -366,9 +366,7 @@ Report security problems privately as [SECURITY.md](SECURITY.md) describes.
 
 ## Acknowledgements
 
-Thanks to [Mole](https://github.com/tw93/Mole) by tw93, the cleanup tool for macOS. Its care
-about what is safe to delete set the bar for marmot, which brings that care to the Linux machines
-coding agents run on.
+Thanks to [Mole](https://github.com/tw93/Mole) by tw93, the cleanup tool for macOS.
 
 ## License
 
