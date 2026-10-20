@@ -821,3 +821,24 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
   MM_KEEP_AGENT_STATE=0 MM_DRY_RUN=1 run try_rm "$HOME/.claude/projects/p" "$HOME/.claude"
   [ "$output" = "0 " ]
 }
+
+@test "a Trash record that cannot be written is taken back, and the refusal names the space" {
+  mkdir -p "$SB/root/item" "$MM_TRASH_DIR/files" "$MM_TRASH_DIR/info"
+  echo important >"$SB/root/item/doc.txt"
+  mm_whitelist_init
+  # A disk with no room left: the exclusive create of the .trashinfo still works, the write into
+  # it does not (ulimit -f 0 stands in for a full filesystem; XFSZ ignored, so writes just fail).
+  run bash -c 'ulimit -f 0; trap "" XFSZ
+    . "$1/lib/core.sh"; mm_inuse_refresh >/dev/null 2>&1
+    rc=0; mm_rm --trash "$2/root/item" "$2/root" >/dev/null 2>&1 || rc=$?
+    echo "$rc $MM_SKIP_REASON"
+    echo "records $(find "$MM_TRASH_DIR/info" -type f | wc -l)"' _ "$MM_SRC" "$SB"
+  [[ "${lines[0]}" == "1 "*"no space"* ]]
+  [ "${lines[1]}" = "records 0" ]
+  [ "$(cat "$SB/root/item/doc.txt")" = important ]
+  # with room again the same name is free: nothing of the failed call is left to block it
+  mm_inuse_refresh
+  run try_rm --trash "$SB/root/item" "$SB/root"
+  [ "$output" = "0 " ]
+  [ "$(cat "$MM_TRASH_DIR/files/item/doc.txt")" = important ]
+}

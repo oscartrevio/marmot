@@ -1040,8 +1040,16 @@ _mm_trash() {
     _mm_refuse "Trash is on another filesystem"; return 1
   fi
   base=$(basename -- "$real") name=$base enc=$(_mm_url_encode "$real") stamp=$(date +%Y-%m-%dT%H:%M:%S)
-  until [[ ! -e "$files/$name" && ! -L "$files/$name" ]] &&
-        ( set -C; printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$stamp" >"$info/$name.trashinfo" ) 2>/dev/null; do
+  while :; do
+    if [[ ! -e "$files/$name" && ! -L "$files/$name" && ! -e "$info/$name.trashinfo" ]]; then
+      ( set -C; printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$stamp" >"$info/$name.trashinfo" ) 2>/dev/null && break
+      # On a full disk the exclusive create succeeds and only the write fails; the empty record
+      # left behind would claim this name for good. Take it back and say what is wrong.
+      if [[ -f "$info/$name.trashinfo" && ! -s "$info/$name.trashinfo" ]]; then
+        rm -f -- "$info/$name.trashinfo" # SAFE: the empty .trashinfo this call just created
+        _mm_refuse "no space for the Trash record ($MM_TRASH_DIR)"; return 1
+      fi
+    fi
     n=$((n + 1)) name="$base.$n"
     (( n > 1000 )) && { _mm_refuse "no free name in Trash"; return 1; }
   done
