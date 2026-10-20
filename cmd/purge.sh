@@ -20,7 +20,9 @@ _PURGE_PATHS_TEMPLATE='# marmot purge: project roots to scan, one per line; ~ ex
 #   /srv/work
 '
 
-# Always rebuildable: pruned at the match, never descended into.
+# Names a build tool owns: pruned at the match, never descended into. A name proves nothing by
+# itself (~/Documents/insurance/coverage, a Go SDK's src/internal/coverage), so each still needs
+# the proof its rule in _purge_rule asks for before anything is removed.
 _PURGE_TARGETS=(node_modules .next .nuxt .output .turbo .parcel-cache .svelte-kit .astro .angular
   .expo .vite coverage __pycache__ .pytest_cache .mypy_cache .ruff_cache .tox .nox .gradle
   .terragrunt-cache .dart_tool .zig-cache zig-out .cxx .docusaurus)
@@ -31,6 +33,11 @@ _PURGE_CONDITIONAL=(target build dist venv .venv vendor .build obj bin bower_com
 _PURGE_PROJECT_FILES=(.git package.json Cargo.toml go.mod pyproject.toml setup.py requirements.txt
   pom.xml build.gradle build.gradle.kts Gemfile composer.json pubspec.yaml Package.swift Makefile
   CMakeLists.txt build.zig mix.exs deno.json)
+# A node project: npm, pnpm, bun, deno and their frameworks build next to one of these.
+_PURGE_NODE_FILES=(package.json deno.json deno.jsonc)
+# A python project: pip, pytest, mypy, ruff, tox and nox write next to one of these (or next to a
+# requirements*.txt, checked separately).
+_PURGE_PY_FILES=(pyproject.toml setup.py setup.cfg Pipfile tox.ini tox.toml noxfile.py)
 # https://bford.info/cachedir/ — the first line of a CACHEDIR.TAG file.
 _PURGE_CACHEDIR_SIG="Signature: 8a477f597d28d172789f06886806bc55"
 # Never descended into: installed packages, not projects.
@@ -40,6 +47,8 @@ _PURGE_SKIP_HOME=(snap go/pkg anaconda3 miniconda3 miniforge3 mambaforge microma
 _PURGE_MAXDEPTH=8
 _PURGE_SCAN_TIMEOUT=60
 _PURGE_GIT_TIMEOUT=20
+# Reading a project with no repository to the bottom for its newest edit (_purge_deep_mtime).
+_PURGE_DEEP_TIMEOUT=20
 # Worktrees: a finished one (its work landed) is offered once idle this many seconds; an unmerged
 # one only after this many days. Branches are kept either way.
 _PURGE_WT_FINISHED_IDLE=3600
@@ -245,9 +254,12 @@ _purge_tracked_load() {
 _purge_tracked() { return "${_PURGE_TRACKED[$1]:-1}"; }
 
 # _purge_ignored DIR NAME — 0 git ignores DIR/NAME, 1 not ignored or no repository, 2 unknown.
+# Only the project's own repository below $HOME answers (_purge_gitroot): a dotfiles repository
+# at $HOME whose .gitignore says `*` must not make every folder below it look rebuildable.
 _purge_ignored() {
   local rc=0
-  _purge_repo_of "$1" || return 1
+  _purge_gitroot "$1"
+  [[ -n "$_PURGE_GITROOT" ]] || return 1
   _purge_git "$1" check-ignore -q -- "$2" || rc=$?
   case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
@@ -256,10 +268,11 @@ _purge_ignored() {
 # say so (git state unknown). Rules: absolute, no control characters, a real directory (not a
 # symlink), not a repository itself, not inside a $HOME dot-dir no ROOT points into, a named rule
 # (_purge_rule) or a tagged cache (_purge_tagged_cache), and nothing under it tracked by git
-# (_purge_tracked_load must have seen ARTIFACT).
+# (_purge_tracked_load must have seen ARTIFACT). Sets _PURGE_TAGGED when only the cache tag
+# matched: a tag is the owner's hint, so those are offered in the picker and nowhere else.
 _purge_valid() {
   local art="$1" proj="${1%/*}" name="${1##*/}" rc; shift
-  _PURGE_WHY=""
+  _PURGE_WHY="" _PURGE_TAGGED=0
   [[ "$art" == */.nx/cache ]] && proj="${art%/.nx/cache}"
   [[ "$art" == /?*/?* && "$art" != *[[:cntrl:]]* ]] || return 1
   [[ -d "$art" && ! -L "$art" ]] || return 1
@@ -268,7 +281,7 @@ _purge_valid() {
   rc=0; _purge_rule "$art" "$proj" "$name" || rc=$?
   case "$rc" in
     0) ;;
-    1) _purge_tagged_cache "$art" "$proj" "$@" || return 1 ;;
+    1) _purge_tagged_cache "$art" "$proj" "$@" || return 1; _PURGE_TAGGED=1 ;;
     *) _PURGE_WHY="could not verify git state"; return 2 ;;
   esac
   rc=0; _purge_tracked "$art" || rc=$?
@@ -279,13 +292,34 @@ _purge_valid() {
   esac
 }
 
-# _purge_rule ART PROJ NAME — 0 if ART matches a named rule: an always-rebuildable name, or a
-# conditional one with its manifest; 1 no rule matches; 2 the git state needed is unknown.
+# _purge_rule ART PROJ NAME — 0 if ART is what a project of the matching type next to it builds;
+# 1 no rule matches; 2 the git state needed is unknown. Every name needs that project: ~/sdk/go*
+# ships a src/internal/coverage, a deployed Nuxt app is an .output with no sources left, and a
+# node prefix keeps its global packages in <prefix>/lib/node_modules.
 _purge_rule() {
   local art="$1" proj="$2" name="$3" rc
   if [[ "$art" == */.nx/cache ]]; then [[ -f "$proj/nx.json" ]]; return; fi
-  _purge_known "$name" || return 1
+  # a virtualenv is one whatever it is called (virtualenv and uv tag theirs as caches)
+  _purge_known "$name" || { [[ -f "$art/pyvenv.cfg" ]] && _purge_py_project "$proj"; return; }
   case "$name" in
+    node_modules) _purge_node_project "$proj" || return 1 ;;
+    .next|.nuxt|.output|.turbo|.parcel-cache|.svelte-kit|.astro|.angular|.expo|.vite|.docusaurus)
+      _purge_node_project "$proj" || return 1 ;;
+    coverage)
+      # a generic name: the project must own it and its own repository call it output
+      _purge_project_dir "$proj" || return 1
+      rc=0; _purge_ignored "$proj" "$name" || rc=$?
+      case "$rc" in 0) ;; 1) return 1 ;; *) return 2 ;; esac ;;
+    __pycache__) _purge_pycache "$art" || return 1 ;;
+    # pytest, mypy and ruff write a CACHEDIR.TAG of their own into these: either that tag or a
+    # python project next to them proves the tool, not a person, made the folder.
+    .pytest_cache|.mypy_cache|.ruff_cache) _purge_py_project "$proj" || _purge_cachedir_tag "$art" || return 1 ;;
+    .tox|.nox) _purge_py_project "$proj" || return 1 ;;
+    .gradle) _purge_has "$proj" build.gradle build.gradle.kts settings.gradle settings.gradle.kts gradlew || return 1 ;;
+    .terragrunt-cache) [[ -f "$proj/terragrunt.hcl" ]] || return 1 ;;
+    .dart_tool) [[ -f "$proj/pubspec.yaml" ]] || return 1 ;;
+    .zig-cache|zig-out) [[ -f "$proj/build.zig" ]] || return 1 ;;
+    .cxx) _purge_has "$proj" build.gradle build.gradle.kts CMakeLists.txt || return 1 ;;
     target) [[ -f "$proj/Cargo.toml" || -f "$proj/pom.xml" ]] || return 1 ;;
     build|dist)
       [[ -f "$proj/package.json" || -f "$proj/pyproject.toml" || -f "$proj/build.gradle" ||
@@ -303,6 +337,40 @@ _purge_rule() {
   return 0
 }
 
+# _purge_has DIR FILE... — 0 if DIR holds one of FILEs.
+_purge_has() {
+  local d="$1" f; shift
+  for f; do [[ -f "$d/$f" ]] && return 0; done
+  return 1
+}
+
+# _purge_node_project DIR — 0 if DIR is a node or deno project root.
+_purge_node_project() { _purge_has "$1" "${_PURGE_NODE_FILES[@]}"; }
+
+# _purge_py_project DIR — 0 if DIR is a python project root (a requirements*.txt counts).
+_purge_py_project() {
+  _purge_has "$1" "${_PURGE_PY_FILES[@]}" && return 0
+  local f
+  for f in "$1"/requirements*.txt; do [[ -f "$f" ]] && return 0; done
+  return 1
+}
+
+# _purge_project_dir DIR — 0 if DIR is a project root of any kind (_PURGE_PROJECT_FILES).
+_purge_project_dir() {
+  local f
+  for f in "${_PURGE_PROJECT_FILES[@]}"; do [[ -e "$1/$f" || -L "$1/$f" ]] && return 0; done
+  return 1
+}
+
+# _purge_pycache ART — 0 if ART holds nothing but compiled modules (regular *.pyc / *.pyo files),
+# which python writes itself and rebuilds on the next import; an unreadable one is not one.
+_purge_pycache() {
+  local other
+  other=$(find "$1" -xdev -mindepth 1 \
+    ! \( -type f \( -name '*.pyc' -o -name '*.pyo' \) \) -print -quit 2>/dev/null) || return 1
+  [[ -z "$other" ]]
+}
+
 # _purge_dotnet_project DIR — 0 if DIR holds a .NET project file.
 _purge_dotnet_project() {
   local f
@@ -310,18 +378,64 @@ _purge_dotnet_project() {
   return 1
 }
 
-# _purge_tagged_cache ART PROJ ROOT... — 0 if ART tags itself a cache (a regular CACHEDIR.TAG
-# file that starts with the standard signature) and sits directly in a project (one of
-# _PURGE_PROJECT_FILES next to it), never a scan root itself nor directly in $HOME. People also
-# tag folders only to keep them out of backups, so a tag alone is not enough.
-_purge_tagged_cache() {
-  local art="$1" proj="$2" tag="$1/CACHEDIR.TAG" sig r f; shift 2
+# _purge_cachedir_tag DIR — 0 if DIR holds a real CACHEDIR.TAG (a regular file starting with the
+# standard signature, https://bford.info/cachedir/).
+_purge_cachedir_tag() {
+  local tag="$1/CACHEDIR.TAG" sig
   [[ -f "$tag" && ! -L "$tag" ]] || return 1
   read -r -N "${#_PURGE_CACHEDIR_SIG}" sig <"$tag" 2>/dev/null || return 1
-  [[ "$sig" == "$_PURGE_CACHEDIR_SIG" && "$proj" != "$HOME" ]] || return 1
+  [[ "$sig" == "$_PURGE_CACHEDIR_SIG" ]]
+}
+
+# _purge_tagged_cache ART PROJ ROOT... — 0 if ART tags itself a cache (_purge_cachedir_tag) and
+# sits directly in a project (one of _PURGE_PROJECT_FILES next to it), never a scan root itself
+# nor directly in $HOME. People also tag folders only to keep them out of backups, so a tag is a
+# hint, not proof: callers offer these in the picker only (see _PURGE_TAGGED).
+_purge_tagged_cache() {
+  local art="$1" proj="$2" r; shift 2
+  _purge_cachedir_tag "$art" || return 1
+  [[ "$proj" != "$HOME" ]] || return 1
   for r; do [[ "$art" != "$r" ]] || return 1; done
-  for f in "${_PURGE_PROJECT_FILES[@]}"; do [[ -e "$proj/$f" || -L "$proj/$f" ]] && return 0; done
+  _purge_project_dir "$proj"
+}
+
+# _purge_sync_marker DIR — the file-sync tool whose marker DIR carries, or nothing: Syncthing's
+# .stfolder, Dropbox's .dropbox / .dropbox.cache, the Nextcloud and ownCloud clients' .sync_*.db,
+# ._sync_*.db and .owncloudsync.log, Resilio Sync's .sync/ID.
+_purge_sync_marker() {
+  local d="$1" f
+  [[ -e "$d/.stfolder" ]] && { printf 'Syncthing'; return 0; }
+  [[ -e "$d/.dropbox" || -e "$d/.dropbox.cache" ]] && { printf 'Dropbox'; return 0; }
+  [[ -e "$d/.sync/ID" ]] && { printf 'Resilio Sync'; return 0; }
+  [[ -e "$d/.owncloudsync.log" ]] && { printf 'Nextcloud or ownCloud'; return 0; }
+  for f in "$d"/.sync_*.db "$d"/._sync_*.db; do
+    [[ -e "$f" ]] && { printf 'Nextcloud or ownCloud'; return 0; }
+  done
   return 1
+}
+
+# Which folders a sync tool owns, per _purge_synced; one answer per directory per run.
+declare -A _PURGE_SYNCED=()
+
+# _purge_synced ART ROOT... — the file-sync tool that keeps a folder above ART in step with other
+# devices, or nothing. Ancestors are read from ART's project up to the ROOT that covers it, or
+# $HOME. Deleting below such a folder deletes on every device it syncs to, and the other devices
+# cannot rebuild it, so callers offer these in the picker only.
+_purge_synced() {
+  local d="${1%/*}" r why="" stop
+  local -a walked=()
+  shift
+  while [[ "$d" == /?* ]]; do
+    if [[ -n "${_PURGE_SYNCED[$d]+x}" ]]; then why="${_PURGE_SYNCED[$d]}"; break; fi
+    walked+=("$d")
+    why=$(_purge_sync_marker "$d") && break
+    stop=0; [[ "$d" == "$HOME" ]] && stop=1
+    for r; do [[ "$d" == "$r" ]] && stop=1; done
+    (( stop )) && break
+    d="${d%/*}"
+  done
+  for d in "${walked[@]}"; do _PURGE_SYNCED[$d]="$why"; done
+  [[ -n "$why" ]] && printf '%s' "$why"
 }
 
 # _purge_gitroot DIR — sets _PURGE_GITROOT to the nearest ancestor-or-self holding .git, below
@@ -386,13 +500,36 @@ _purge_in_agent_wtdir() {
   return 1
 }
 
+# _purge_deep_prune — the find -regex pattern of what a deep activity walk must not descend into:
+# .git and the artifact names, whose mtimes are a tool's writes, not the user's work.
+_purge_deep_prune() {
+  local n out=""
+  for n in .git "${_PURGE_TARGETS[@]}" "${_PURGE_CONDITIONAL[@]}"; do out+="\\|${n//./\\.}"; done
+  printf '.*/\\(%s\\)' "${out:2}"
+}
+
+# _purge_deep_mtime DIR... — "EPOCH<TAB>DIR" for each DIR: the newest mtime anywhere below it,
+# artifacts and .git pruned; "?<TAB>DIR" when the walk failed or timed out, so the caller keeps
+# DIR instead of calling it idle. 4 walks in parallel, each bounded by _PURGE_DEEP_TIMEOUT.
+_purge_deep_mtime() {
+  printf '%s\0' "$@" | MM_DEEP_RE=$(_purge_deep_prune) MM_DEEP_TIMEOUT=$_PURGE_DEEP_TIMEOUT \
+    xargs -0 -P4 -n1 bash -c '
+      t=$(timeout "$MM_DEEP_TIMEOUT" find "$1" -xdev -regextype posix-basic -regex "$MM_DEEP_RE" \
+            -prune -o -printf "%T@\n" 2>/dev/null |
+          awk '\''{ t = int($1); if (t > m) m = t } END { printf "%.0f", m }'\''
+          exit "${PIPESTATUS[0]}") || t="?"
+      printf "%s\t%s\n" "${t:-?}" "$1"' _
+}
+
 # _purge_activity DIR<TAB>GITROOT... — "EPOCH<TAB>DIR" for each DIR: the newest mtime among DIR,
 # its top-level files, and the git index/HEAD of GITROOT's repository (worktree .git files are
-# followed to their gitdir; empty GITROOT: no repository). One find and one stat for all DIRs.
-# A DIR whose repository's git dir can't be resolved is left out (activity unknown).
+# followed to their gitdir). A DIR with no repository (empty GITROOT) is read to the bottom
+# instead (_purge_deep_mtime): a file edited today deep in ~/Documents is activity too. One find
+# and one stat for all DIRs. A DIR whose repository's git dir or whose deep walk can't be read is
+# left out (activity unknown).
 _purge_activity() {
   local pair dir git
-  local -a dirs=() probes=() map=()
+  local -a dirs=() deep=() probes=() map=()
   local -A gd=()
   for pair; do
     dir="${pair%%$'\t'*}" git="${pair#*$'\t'}"
@@ -407,17 +544,21 @@ _purge_activity() {
     fi
     [[ -z "$git" || -n "${gd[$git]}" ]] || continue
     dirs+=("$dir"); map+=("Q"$'\t'"$dir"$'\t'"$git")
+    [[ -n "$git" ]] || deep+=("$dir")
   done
   (( ${#dirs[@]} )) || return 0
   {
     find "${dirs[@]}" -maxdepth 0 -printf '%T@\t%p\n' 2>/dev/null
     find "${dirs[@]}" -mindepth 1 -maxdepth 1 -type f -printf '%T@\t%h\n' 2>/dev/null
+    (( ${#deep[@]} )) && _purge_deep_mtime "${deep[@]}"
     (( ${#probes[@]} )) && stat -c '%Y'$'\t''%n' -- "${probes[@]}" 2>/dev/null
   } | awk -F '\t' 'NR == FNR { if ($1 == "Q") q[$2] = $3; else pr[$2] = $3; next }
-    ($2 in q) { t = int($1); if (t > d[$2]) d[$2] = t; next }
+    ($2 in q) { if ($1 == "?") { bad[$2] = 1; next }
+      t = int($1); if (t > d[$2]) d[$2] = t; next }
     ($2 in pr) { t = int($1); g = pr[$2]; if (t > r[g]) r[g] = t }
     END {
       for (k in q) {
+        if (k in bad) continue
         t = d[k]; g = q[k]
         if (g != "" && r[g] > t) t = r[g]
         if (t > 0) printf "%.0f\t%s\n", t, k
@@ -484,17 +625,38 @@ _purge_busy() {
     - <(mm_inuse_paths) | sort -u
 }
 
-# _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>holds<TAB>path" per artifact (see
-# mm_size_frees), 4 in parallel. size and frees are "?" when sizing failed or timed out (size
-# unknown). holds is what makes the artifact never purged, from one find: "git" when a .git entry
-# exists anywhere inside (a nested repository), "keypair" when a *-keypair.json file does
-# (Solana/Anchor program keypairs in target/deploy/: losing one loses the deploy authority).
+# _purge_probe ART — "HOLDS<TAB>MTIME" for ART from one bounded walk. HOLDS is what makes it
+# never purgeable: "git" (a .git entry anywhere inside: a nested repository), "keypair" (a
+# *-keypair.json file: Solana and Anchor keep program keypairs in target/deploy/, and losing one
+# loses the deploy authority), "tfstate" (*.tfstate or *.tfstate.backup: local Terraform state is
+# the only record of what is deployed, and terragrunt runs terraform inside .terragrunt-cache),
+# else empty. MTIME is the newest mtime of ART and anything inside it: a tool writing there is
+# activity, whatever the project's own files say. Both are "?" when the walk failed or timed out
+# (what cannot be read is never purged).
+_purge_probe() {
+  local out
+  out=$(timeout "${MM_SIZE_TIMEOUT:-300}" find "$1" -xdev -printf '%y\t%T@\t%p\n' 2>/dev/null |
+    awk -F'\t' -v root="$1" 'BEGIN { h = 0 }
+      { t = int($2); if (t > m) m = t }
+      NF == 3 && $3 == root { next }
+      { n = $NF; sub(/.*\//, "", n)
+        if (n == ".git") h = 3
+        else if ($1 == "f" && n ~ /-keypair\.json$/) { if (h < 2) h = 2 }
+        else if ($1 == "f" && n ~ /\.tfstate(\.backup)?$/) { if (h < 1) h = 1 } }
+      END { split("tfstate keypair git", name, " ")
+        printf "%s\t%.0f", (h ? name[h] : ""), m }'
+    exit "${PIPESTATUS[0]}") || { printf '?\t?'; return 0; }
+  printf '%s' "$out"
+}
+
+# _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>holds<TAB>mtime<TAB>path" per
+# artifact (see mm_size_frees and _purge_probe), 4 in parallel. size and frees are "?" when
+# sizing failed or timed out (size unknown), holds and mtime when the probe could not read it.
 _purge_measure() {
   (
-    export -f mm_size_frees; export MM_SIZE_TIMEOUT MM_SIZE_SUDO
+    export -f mm_size_frees _purge_probe; export MM_SIZE_TIMEOUT MM_SIZE_SUDO
     printf '%s\0' "$@" | xargs -0 -P4 -n1 bash -c '
-      g=$(find "$1" -xdev -mindepth 1 \( -name .git -o -type f -name "*-keypair.json" \) -print -quit 2>/dev/null)
-      h=""; case "${g##*/}" in .git) h=git ;; ?*) h=keypair ;; esac
+      h=$(_purge_probe "$1")
       if r=$(mm_size_frees "$1") && [[ "$r" =~ ^[0-9]+\ [0-9]+$ ]]; then s=${r% *} f=${r#* }; else s="?" f="?"; fi
       printf "%s\t%s\t%s\t%s\0" "$s" "$f" "$h" "$1"' _
   )
@@ -527,9 +689,11 @@ _purge_ask() {
 # _purge_kept LABEL REASON — "◎ label · kept (reason)": items deliberately left alone.
 _purge_kept() { printf '  %s◎%s %s · %skept (%s)%s\n' "$C_DIM" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"; }
 
-# _purge_to_trash ARTIFACT — 0 if ARTIFACT goes to the Trash instead of a permanent delete
-# (virtualenvs can hold hand-installed state).
-_purge_to_trash() { [[ "${1##*/}" == venv || "${1##*/}" == .venv ]]; }
+# _purge_to_trash ARTIFACT — 0 if ARTIFACT goes to the Trash instead of a permanent delete: a
+# virtualenv (pyvenv.cfg), whatever it is called, can hold hand-installed or patched packages.
+_purge_to_trash() {
+  [[ "${1##*/}" == venv || "${1##*/}" == .venv || -f "$1/pyvenv.cfg" ]]
+}
 
 # ---------------------------------------------------------------- pnpm store
 # pnpm hard-links every package file from its content-addressed store into node_modules, so
@@ -993,14 +1157,17 @@ _purge_run() {
   for r in "${timed[@]}"; do mm_tilde "$r"; mm_warn "Scan of $REPLY stopped after ${_PURGE_SCAN_TIMEOUT}s: results are partial"; done
 
   # ---- finished and abandoned worktrees (before artifacts: removing one takes its artifacts with it)
-  _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=() _PURGE_GH=""
+  _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=() _PURGE_GH="" _PURGE_SYNCED=()
   [[ "$_PURGE_MODE" == scheduled ]] || _purge_worktrees "$yes" "${roots[@]}"
 
-  # ---- validate artifacts
+  # ---- validate artifacts. picks[i] is why an artifact is only ever removed by hand: a terminal
+  # picker shows it, --yes, a scheduled run and the stale/all answers never touch it.
   local -a kept_out=()
   local -A seen=() gitroot_of=()
-  local -a arts=() projs=() gits=()
-  local art proj anc ok g rc
+  local -a arts=() projs=() gits=() picks=()
+  local art proj anc ok g rc pick
+  local pickable=0
+  [[ "$MM_TTY" == 1 && ( "$_PURGE_MODE" == ask || "$_PURGE_MODE" == all ) ]] && pickable=1
   # shallowest first, so an artifact inside another one is seen as part of it
   mapfile -d '' -t cand_raw < <(for art in "${cand_raw[@]}"; do
       anc="${art//[!\/]/}"; printf '%s\t%s\0' "${#anc}" "$art"
@@ -1023,7 +1190,9 @@ _purge_run() {
     seen[$art]=1
     proj="${art%/*}"; [[ "$art" == */.nx/cache ]] && proj="${art%/.nx/cache}"
     if [[ -z "${gitroot_of[$proj]+x}" ]]; then _purge_gitroot "$proj"; gitroot_of[$proj]=$_PURGE_GITROOT; fi
-    arts+=("$art"); projs+=("$proj"); gits+=("${gitroot_of[$proj]}")
+    pick=""; (( _PURGE_TAGGED )) && pick="tagged as a cache"
+    g=$(_purge_synced "$art" "${roots[@]}") && pick="${pick:+$pick, }synced by $g"
+    arts+=("$art"); projs+=("$proj"); gits+=("${gitroot_of[$proj]}"); picks+=("$pick")
   done
 
   # ---- in-use: artifact, its project, or the project's repository/worktree
@@ -1039,6 +1208,8 @@ _purge_run() {
       key="${gits[$i]:-${projs[$i]}}" nm="${arts[$i]##*/}"
       skip_n[$key]=$(( ${skip_n[$key]:-0} + 1 ))
       [[ ", ${skip_names[$key]:-}, " == *", $nm, "* ]] || skip_names[$key]+="${skip_names[$key]:+, }$nm"
+    elif [[ -n "${picks[$i]}" ]] && (( ! pickable )); then
+      kept_out+=("${arts[$i]}"$'\t'"${picks[$i]}; pick it on a terminal")
     else
       cand+=("$i")
     fi
@@ -1051,16 +1222,16 @@ _purge_run() {
     done < <(printf '%s\n' "${!skip_n[@]}" | sort)
   fi
 
-  # ---- sizes, frees and what an artifact holds that must survive (parallel)
-  local -A size=() frees=() holds=()
-  local b fb h n=0 total=${#cand[@]}
+  # ---- sizes, frees, what an artifact holds that must survive and when it was last written
+  local -A size=() frees=() holds=() written=()
+  local b fb h mt n=0 total=${#cand[@]}
   local -a cand_paths=() keep_cand=() freed_paths=()
   for i in "${cand[@]}"; do cand_paths+=("${arts[$i]}"); done
   if (( total )); then
     while IFS= read -r -d '' rec; do
       b="${rec%%$'\t'*}" rec="${rec#*$'\t'}" fb="${rec%%$'\t'*}" rec="${rec#*$'\t'}"
-      h="${rec%%$'\t'*}" p="${rec#*$'\t'}"
-      size[$p]=$b frees[$p]=$fb holds[$p]=$h; n=$((n + 1))
+      h="${rec%%$'\t'*}" rec="${rec#*$'\t'}" mt="${rec%%$'\t'*}" p="${rec#*$'\t'}"
+      size[$p]=$b frees[$p]=$fb holds[$p]=$h written[$p]=$mt; n=$((n + 1))
       [[ -t 2 ]] && printf '\r  %sMeasuring %d/%d artifacts…%s' "$C_DIM" "$n" "$total" "$C_RESET" >&2
     done < <(_purge_measure "${cand_paths[@]}")
     [[ -t 2 ]] && printf '\r\e[K' >&2
@@ -1070,6 +1241,8 @@ _purge_run() {
     case "${holds[$art]:-}" in
       git) kept_out+=("$art"$'\t'"contains a git repository"); continue ;;
       keypair) kept_out+=("$art"$'\t'"holds a deploy keypair"); continue ;;
+      tfstate) kept_out+=("$art"$'\t'"holds local Terraform state"); continue ;;
+      '?') kept_out+=("$art"$'\t'"could not read what it holds"); continue ;;
     esac
     # unknown size (sizing failed or timed out, or no record) is never counted as 0
     if [[ "${size[$art]:-?}" == "?" || "${frees[$art]:-?}" == "?" ]]; then
@@ -1096,16 +1269,22 @@ _purge_run() {
   for i in "${cand[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
   _purge_activity_load "${pair_of[@]}"
   local now; now=$(date +%s)
-  local -a order=() idle=() stale=() pnpm_art=()
-  local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act shared=0
+  local -a order=() idle=() stale=() kind=() pnpm_art=()
+  local stale_bytes=0 recent_bytes=0 pick_bytes=0 stale_n=0 recent_n=0 pick_n=0 act mt shared=0
   for i in "${cand[@]}"; do
     act="${_PURGE_ACT[${projs[$i]}]:-}"
+    # a write inside the artifact is activity too: a tool is still using it
+    mt="${written[${arts[$i]}]:-?}"
+    if [[ ! "$mt" =~ ^[0-9]+$ ]]; then act=""
+    elif [[ -n "$act" ]] && (( mt > act )); then act=$mt; fi
     # unknown activity counts as recent: never selected by default
     if [[ -n "$act" ]]; then idle[i]=$(( (now - act) / 86400 )); else idle[i]=0; fi
-    if (( idle[i] > days )); then
-      stale[i]=1; stale_n=$((stale_n + 1)); stale_bytes=$((stale_bytes + ${frees[${arts[$i]}]:-0}))
+    if [[ -n "${picks[$i]}" ]]; then
+      stale[i]=0 kind[i]=pick; pick_n=$((pick_n + 1)); pick_bytes=$((pick_bytes + ${frees[${arts[$i]}]:-0}))
+    elif (( idle[i] > days )); then
+      stale[i]=1 kind[i]=stale; stale_n=$((stale_n + 1)); stale_bytes=$((stale_bytes + ${frees[${arts[$i]}]:-0}))
     else
-      stale[i]=0; recent_n=$((recent_n + 1)); recent_bytes=$((recent_bytes + ${frees[${arts[$i]}]:-0}))
+      stale[i]=0 kind[i]=recent; recent_n=$((recent_n + 1)); recent_bytes=$((recent_bytes + ${frees[${arts[$i]}]:-0}))
     fi
     pnpm_art[i]=0; _purge_pnpm_managed "${arts[$i]}" && pnpm_art[i]=1
   done
@@ -1116,21 +1295,29 @@ _purge_run() {
   mm_section "Artifacts (${#order[@]})"
   printf '  %s  %9s  %9s  %5s  %s\n' " " "SIZE" "FREES" "IDLE" "PROJECT/ARTIFACT"
   local mark row hidden_n=0 hidden_bytes=0 sz fr
+  local -a shown=()
   local -A row_of=()
   for i in "${order[@]}"; do
     sz=${size[${arts[$i]}]:-0} fr=${frees[${arts[$i]}]:-0}
     mm_tilde "${arts[$i]}"
     printf -v row '%9s  %9s  %5s  %s' "$(mm_human "$sz")" "$(mm_human "$fr")" "$(_purge_age "${idle[i]}")" "$REPLY"
     _purge_to_trash "${arts[$i]}" && row+=" (to Trash)"
+    [[ -n "${picks[$i]}" ]] && row+=" (${picks[$i]})"
     if (( fr < sz )); then
       shared=1; (( pnpm_art[i] )) && row+=" (rest in the pnpm store)"
     fi
     row_of[$i]="$row"
-    # keep the table readable: recent artifacts freeing under 1MB are summarized, not listed
-    if (( ! stale[i] && fr < 1048576 )); then
+    # keep the table readable: recent artifacts freeing under 1MB are summarized, not listed, and
+    # never removed by an answer that did not name them. --all lists every row it can act on.
+    # Pick-only rows stay too: the picker is the only way to remove them, so they must be seen.
+    shown[i]=0
+    if (( ! stale[i] && fr < 1048576 && ! all )) && [[ "${kind[i]}" != pick ]]; then
       hidden_n=$((hidden_n + 1)) hidden_bytes=$((hidden_bytes + fr)); continue
     fi
-    if (( stale[i] )); then mark="${C_YELLOW}●${C_RESET}"; else mark="${C_DIM}○${C_RESET}"; fi
+    shown[i]=1
+    if [[ "${kind[i]}" == pick ]]; then mark="${C_DIM}◎${C_RESET}"
+    elif (( stale[i] )); then mark="${C_YELLOW}●${C_RESET}"
+    else mark="${C_DIM}○${C_RESET}"; fi
     printf '  %s  %s\n' "$mark" "$row"
   done
   (( hidden_n )) && printf '  %s○  %9s  %9s         … %d more recent artifacts freeing under 1MB%s\n' \
@@ -1139,6 +1326,7 @@ _purge_run() {
   (( shared )) && mm_info "${C_DIM}FREES is what deleting releases: files also hard-linked elsewhere (the pnpm store, other copies) stay on disk.${C_RESET}"
   mm_info "${C_YELLOW}●${C_RESET} stale (idle > ${days}d): $stale_n artifacts, frees $(mm_human "$stale_bytes")"
   mm_info "${C_DIM}○${C_RESET} recent:               $recent_n artifacts, frees $(mm_human "$recent_bytes")"
+  (( pick_n )) && mm_info "${C_DIM}◎${C_RESET} pick only:            $pick_n artifacts, frees $(mm_human "$pick_bytes"); never selected for you"
 
   # ---- selection: dry-run previews the default; --yes is stale only; otherwise ask on the terminal
   local mode=stale; (( all )) && mode=all
@@ -1149,29 +1337,35 @@ _purge_run() {
       _purge_banner "$free_before" 0
       return 0
     fi
-    local reply def="S" opts="[S]tale only / [a]ll / [p]ick / [n]one"
-    (( all )) && { def="A"; opts="[s]tale only / [A]ll / [p]ick / [n]one"; }
+    local reply def="s" opts="[S]tale only / [a]ll / [p]ick / [n]one"
+    (( all )) && { def="a"; opts="[s]tale only / [A]ll / [p]ick / [n]one"; }
     _PURGE_PROMPTED=1
     reply=$(_purge_ask "$opts") || reply=n
+    # whole words only: "abort" and "skip" are not answers, and anything unrecognized is none
     case "${reply:-$def}" in
-      [Ss]*) mode=stale ;;
-      [Aa]*) mode=all ;;
-      [Pp]*) mode=pick ;;
+      s|stale|S|Stale|STALE) mode=stale ;;
+      a|all|A|All|ALL) mode=all ;;
+      p|pick|P|Pick|PICK) mode=pick ;;
       *) mm_info "No artifacts removed."; _purge_banner "$free_before" 0; return 0 ;;
     esac
   fi
 
+  # stale and all take only rows the table named and a rule vouches for: a pick-only row needs
+  # the picker, and a row folded into the "… N more" line was never put to the user
   local -a sel=()
   case "$mode" in
     stale) for i in "${order[@]}"; do (( stale[i] )) && sel+=("$i"); done ;;
-    all) sel=("${order[@]}") ;;
+    all)
+      for i in "${order[@]}"; do (( shown[i] )) && [[ "${kind[i]}" != pick ]] && sel+=("$i"); done
+      (( hidden_n )) && mm_info "The $hidden_n artifact$( (( hidden_n > 1 )) && echo s) the table folded away are kept: run with --all to list and remove them."
+      ;;
     pick)
       local line idx
       while IFS= read -r line; do
         idx="${line%%[[:space:]]*}"
         [[ "$idx" =~ ^[0-9]+$ && -n "${row_of[$idx]:-}" ]] && sel+=("$idx")
       done < <(for i in "${order[@]}"; do
-          printf '%-4s %s  %s\n' "$i" "$( (( stale[i] )) && echo stale || echo recent)" "${row_of[$i]}"
+          printf '%-4s %-6s %s\n' "$i" "${kind[i]}" "${row_of[$i]}"
         done | mm_pick "TAB marks, ctrl-a all, Enter purges")
       ;;
   esac
@@ -1183,21 +1377,26 @@ _purge_run() {
     return 0
   fi
 
-  # ---- delete (re-check in-use and activity for real runs: a prompt may have taken a while, and an
-  # agent may have edited a project meanwhile)
-  local why
+  # ---- delete. A real run asks every question again right before each removal (the listing and
+  # the prompt may be minutes old, and an agent may have been working next to us): the rule, what
+  # git tracks and ignores, what the artifact holds, who uses it and when it was last written.
+  # Anything that changed, or that cannot be answered now, keeps the artifact and says why.
+  local why probe
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_section "Would remove"
   else
     mm_section "Purging"
     mm_inuse_refresh
     busy=()
-    local -a recheck=()
+    local -a recheck=() sel_arts=()
     for i in "${sel[@]}"; do recheck+=("${projs[$i]}"); [[ -n "${gits[$i]}" ]] && recheck+=("${gits[$i]}"); done
     while IFS= read -r p; do [[ -n "$p" ]] && busy[$p]=1; done < <(_purge_busy "${recheck[@]}")
     pair_of=()
-    for i in "${sel[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+    for i in "${sel[@]}"; do
+      pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; sel_arts+=("${arts[$i]}")
+    done
     _purge_activity_load "${pair_of[@]}"
+    _purge_tracked_load "${sel_arts[@]}"
   fi
   local scan_now=$now; now=$(date +%s)
   local -a how=()
@@ -1210,13 +1409,29 @@ _purge_run() {
       MM_SKIPPED=$((MM_SKIPPED + 1))
       continue
     fi
-    # activity since the scan: touched after it, or a stale project no longer idle past the
-    # threshold. Unknown activity keeps the artifact.
     why=""
     if [[ "$MM_DRY_RUN" != 1 ]]; then
-      act="${_PURGE_ACT[$proj]:-}"
-      if [[ ! "$act" =~ ^[0-9]+$ ]]; then why="activity unknown"
-      elif (( act > scan_now || (stale[i] && (now - act) / 86400 <= days) )); then why="active since the scan"; fi
+      rc=0; _purge_valid "$art" "${roots[@]}" || rc=$?
+      if (( rc != 0 )); then why="${_PURGE_WHY:-no longer a rebuildable artifact}"
+      elif (( _PURGE_TAGGED )) && [[ "${kind[i]}" != pick ]]; then why="only a tagged cache now"
+      fi
+      if [[ -z "$why" ]]; then
+        probe=$(_purge_probe "$art"); h="${probe%%$'\t'*}" mt="${probe#*$'\t'}"
+        case "$h" in
+          git) why="contains a git repository" ;;
+          keypair) why="holds a deploy keypair" ;;
+          tfstate) why="holds local Terraform state" ;;
+        esac
+        [[ -n "$why" || "$mt" =~ ^[0-9]+$ ]] || why="could not read what it holds"
+        [[ -n "$why" ]] || (( mt <= scan_now )) || why="written since the scan"
+      fi
+      # activity since the scan: touched after it, or a stale project no longer idle past the
+      # threshold. Unknown activity keeps the artifact.
+      if [[ -z "$why" ]]; then
+        act="${_PURGE_ACT[$proj]:-}"
+        if [[ ! "$act" =~ ^[0-9]+$ ]]; then why="activity unknown"
+        elif (( act > scan_now || (stale[i] && (now - act) / 86400 <= days) )); then why="active since the scan"; fi
+      fi
     fi
     if [[ -n "$why" ]]; then
       mm_tilde "$art"; mm_skip "$REPLY" "$why"
