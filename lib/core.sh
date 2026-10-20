@@ -294,24 +294,33 @@ mm_sudo() {
 
 MM_INUSE=""        # newline-separated snapshot; kept in memory so a killed run leaves no files
 MM_INUSE_REFS=""   # "path<TAB>source" for snapshot paths that only a reference keeps (mm_inuse_why)
-MM_INUSE_TAKEN=0
+MM_INUSE_TAKEN=0 MM_INUSE_AT=0   # whether a snapshot exists, and when it was taken (date +%s)
+MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""   # what the last snapshot could not see, if anything
 # mm_inuse_refresh — snapshot every path any process has as cwd, root, exe, open fd, mapping, or
 # bound unix socket, plus every mount point and bind-mount source (per mount namespace), so a
 # target containing a mount is never removed through it; then add references (_mm_inuse_refs):
 # files that a process's arguments, a launcher, a tool config, a systemd user unit or the crontab name.
-# Sees all processes as root or with passwordless sudo; otherwise only this user's
-# (MM_INUSE_PARTIAL=1, warned). An empty process snapshot is fatal: it would mean "nothing is in use".
+# The scan runs as this user and, as root or through passwordless sudo, again as root for the other
+# users' processes; both are merged, because root without CAP_SYS_PTRACE (a container's default
+# capabilities) may not read this user's process entries. Whatever a scan could not see (a process
+# entry it may not read, a mount it cannot place, no root scan at all) makes the snapshot partial:
+# MM_INUSE_PARTIAL=1, the reason in MM_INUSE_PARTIAL_WHY, warned once. An empty process snapshot is
+# fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
-  local out live refs script
-  script="$(declare -f _mm_inuse_scan); _mm_inuse_scan"
-  MM_INUSE_PARTIAL=0
-  if (( EUID == 0 )) || { [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; }; then
-    out=$(mm_sudo bash -c "$script")
-  else
-    MM_INUSE_PARTIAL=1
-    out=$(bash -c "$script")
-  fi
-  live=$(grep '^/' <<<"$out")
+  local out live refs script root
+  script="$(declare -f _mm_inuse_scan _mm_inuse_live _mm_mounts _mm_mount_paths); _mm_inuse_scan"
+  MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""
+  out=$(bash -c "$script")
+  if (( EUID == 0 )); then
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$out" | cut -f2-)
+  elif [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; then
+    root=$(mm_sudo bash -c "$script")
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$root" | cut -f2-)
+    out+=$'\n'$root
+  elif [[ "$MM_NO_SUDO" == 1 ]]; then MM_INUSE_PARTIAL_WHY="running without sudo, only your own processes are checked"
+  else MM_INUSE_PARTIAL_WHY="no passwordless sudo, only your own processes are checked"; fi
+  [[ -n "$MM_INUSE_PARTIAL_WHY" ]] && MM_INUSE_PARTIAL=1
+  live=$(grep '^/' <<<"$out" | sort -u)
   MM_INUSE_TAKEN=1 MM_INUSE="" MM_INUSE_REFS=""
   [[ -n "$live" ]] || mm_die "could not list in-use paths; refusing to delete anything"
   refs=$(grep '^A' <<<"$out" | _mm_inuse_refs)
@@ -319,25 +328,26 @@ mm_inuse_refresh() {
   MM_INUSE=$({ printf '%s\n' "$live"; [[ -n "$MM_INUSE_REFS" ]] && cut -f1 <<<"$MM_INUSE_REFS"; } | sort -u)
   if [[ "$MM_INUSE_PARTIAL" == 1 && -z "${_MM_PARTIAL_WARNED:-}" ]]; then
     _MM_PARTIAL_WARNED=1
-    if [[ "$MM_NO_SUDO" == 1 ]]; then mm_warn "Running without sudo: only your own processes are checked for in-use paths"
-    else mm_warn "No passwordless sudo: only your own processes are checked for in-use paths"; fi
+    mm_warn "In-use check is partial: $MM_INUSE_PARTIAL_WHY"
   fi
+  MM_INUSE_AT=$(date +%s)
   mm_debug "in-use snapshot: $(mm_inuse_paths | wc -l) paths (partial=$MM_INUSE_PARTIAL)"
 }
 
 # _mm_inuse_scan — every live path (sorted, one per line), then "A<TAB>process PID (comm)<TAB>word"
-# for each argument containing a /. Runs in a child bash (as root when possible), so it uses
-# nothing else from this file. Batch reads: one find, one cat, a few awks, whatever the process count.
+# for each argument containing a /, and "P<TAB>why" when something could not be read: a process
+# entry this user may not open (EACCES; a vanished process is not that), or a mount _mm_mount_paths
+# cannot place. Runs in a child bash (as root when possible), so it uses nothing else from this file
+# but _mm_inuse_live, _mm_mounts and _mm_mount_paths (declared with it).
 _mm_inuse_scan() {
+  export LC_ALL=C   # the errors sifted below are matched in English
   local p w c a=()
-  { find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
-    # cat, not one awk over the files: mawk stops at the first unreadable one
-    cat /proc/[0-9]*/maps | awk '$6 ~ /^\// && !seen[$6]++ { print $6 }'
-    { echo /proc/self/mountinfo
-      find /proc/[0-9]*/ns/mnt -maxdepth 0 -printf '%l %h\n' | awk '!seen[$1]++ { sub(/\/ns$/, "/mountinfo", $2); print $2 }'
-    } | xargs -d '\n' cat | awk '{ print $4; print $5 }'
-    awk 'NR > 1 && $8 ~ /^\// { print $8 }' /proc/net/unix
-  } 2>/dev/null | sed 's/ (deleted)$//' | grep '^/' | sort -u
+  # The live paths go through the filter; _mm_inuse_live's stderr is sifted for refusals and for
+  # the "P" lines of _mm_mount_paths, which reach the output directly (fd 4), not through the filter.
+  { { _mm_inuse_live 2>&1 >&3 | awk -F'\t' '$1 == "P" { print; next } /Permission denied/ { n++ }
+        END { if (n) print "P\t" n " process entries could not be read (no CAP_SYS_PTRACE?)" }' >&4
+    } 3>&1 | sed 's/ (deleted)$//' | grep '^/' | sort -u
+  } 4>&1
   for p in /proc/[0-9]*; do
     [[ "${p#/proc/}" == "$$" || "${p#/proc/}" == "$PPID" ]] && continue   # this scan and its sudo
     { mapfile -d '' -t a <"$p/cmdline" && IFS= read -r c <"$p/comm"; } 2>/dev/null || continue
@@ -346,23 +356,119 @@ _mm_inuse_scan() {
   return 0
 }
 
+# _mm_inuse_live — raw live paths, unsorted: every process's cwd, root, exe, open fds and mappings,
+# every mount (_mm_mounts) and every bound unix socket. Batch reads: one find, one cat, a few awks,
+# whatever the process count. Errors (what could not be read) stay on stderr for the caller.
+_mm_inuse_live() {
+  find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
+  # cat, not one awk over the files: mawk stops at the first unreadable one. A path is the rest
+  # of the line after the fixed fields (five in maps, seven in /proc/net/unix): it may hold spaces.
+  cat /proc/[0-9]*/maps | awk '{ sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\// && !seen[$0]++'
+  _mm_mounts
+  awk 'NR > 1 { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\//' /proc/net/unix
+  return 0
+}
+
+# _mm_mounts — every mount point and bind-mount source of this mount namespace and of every
+# readable /proc/PID/mountinfo (one per namespace where its ns link can be read, else all of them,
+# so a process this user may not inspect still shows its mounts), decoded and mapped into this
+# namespace's paths by _mm_mount_paths.
+_mm_mounts() {
+  { echo /proc/self/mountinfo
+    find /proc/[0-9]*/ns/mnt -maxdepth 0 -printf '%l\t%h\n' 2>/dev/null |
+      awk -F'\t' '$1 == "" || !seen[$1]++ { sub(/\/ns$/, "/mountinfo", $2); print $2 }'
+  } | xargs -d '\n' cat 2>/dev/null | _mm_mount_paths /proc/self/mountinfo
+}
+
+# _mm_mount_paths HOST < MOUNTINFO_LINES — for each line (any namespace's), its root and mount
+# point decoded (mountinfo writes space, tab, newline and backslash as \040 \011 \012 \134), plus
+# the root as a path of this namespace: the root is relative to the filesystem the mount is on
+# (a container's `-v ~/proj:/work` reads root=/tester/proj when /home is its own filesystem), so
+# it is placed through every mount of the same major:minor in HOST (this namespace's mountinfo):
+# HOST's mount point plus the root's remainder below HOST's root. A mount on a filesystem HOST
+# does not have prints "P<TAB>why" on stderr (the snapshot is partial), except filesystems that
+# hold no files of this namespace (proc, sysfs, tmpfs, cgroup, ...).
+_mm_mount_paths() {
+  awk '
+    function unesc(s,   o, i, c) {
+      o = ""
+      while ((i = index(s, "\\")) > 0) {
+        c = substr(s, i + 1, 3); o = o substr(s, 1, i - 1)
+        if (c == "040") o = o " "; else if (c == "011") o = o "\t"; else if (c == "012") o = o "\n"
+        else if (c == "134") o = o "\\"; else { o = o "\\"; s = substr(s, i + 1); continue }
+        s = substr(s, i + 4)
+      }
+      return o s
+    }
+    BEGIN {
+      n = split("proc sysfs devpts devtmpfs tmpfs mqueue cgroup cgroup2 securityfs debugfs tracefs pstore bpf " \
+        "binfmt_misc configfs fusectl hugetlbfs nsfs efivarfs selinuxfs rpc_pipefs autofs", a, " ")
+      for (i = 1; i <= n; i++) pseudo[a[i]] = 1
+    }
+    NR == FNR { k = ++hn[$3]; hroot[$3, k] = unesc($4); hmnt[$3, k] = unesc($5); next }
+    {
+      root = unesc($4); mnt = unesc($5)
+      print root; print mnt
+      if (!($3 in hn)) {
+        for (i = 7; i <= NF && $i != "-"; i++) ;
+        if (!($(i + 1) in pseudo))
+          print "P\tmount " mnt " of another namespace is on a filesystem this one does not have" > "/dev/stderr"
+        next
+      }
+      for (k = 1; k <= hn[$3]; k++) {
+        hr = hroot[$3, k]; hm = hmnt[$3, k]
+        if (root == hr) print hm
+        else if (hr == "/") print (hm == "/" ? "" : hm) root
+        else if (index(root, hr "/") == 1) print hm substr(root, length(hr) + 1)
+      }
+    }' "$1" -
+}
+
+# mm_live_under REAL — 0 if, right now and as this user sees it, a process has REAL or something
+# under it as cwd, root, exe, open fd, mapping or bound socket, or a mount point or bind source
+# (this namespace's and every readable one's) lies there. The last look before the sink, after the
+# snapshot (seconds old by then) and the sizing: a process that started meanwhile is seen, and a
+# mount made meanwhile too (rm --one-file-system descends into a bind mount from the same
+# filesystem and would empty its source). Other users' processes stay with the snapshot's root view.
+# A look that reads nothing at all (not even this namespace's mounts) counts as in use.
+mm_live_under() {
+  MM_P="${1%/}" awk 'BEGIN { p = ENVIRON["MM_P"] } { sub(/ \(deleted\)$/, "") }
+    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !(found || NR == 0) }' < <(_mm_inuse_live 2>/dev/null)
+}
+
 # _mm_inuse_refs < ARGV_LINES — "path<TAB>source" for every existing regular file (never a
 # directory) named by a running process's arguments (stdin, from _mm_inuse_scan); by a launcher in
-# ~/.local/bin, ~/bin or a $PATH dir inside $HOME (symlink target, both as written and resolved, or
-# a path inside a text file up to 64KB); by a tool config (agent state files and *.json/jsonc/toml/
-# yaml/yml at depth <= 2 in agent state dirs outside their session and logs dirs, up to 16MB: a
-# long-used ~/.claude.json holds user-scope MCP servers and grows past 1MB; and files named *mcp*
-# with those extensions up to depth 4 in dot-folders, up to 1MB); by a systemd user unit; or by
-# the crontab.
-# Paths are normalized (~, $HOME, . and .. ) but not resolved through symlinks: a venv's bin/python
-# must keep the venv. Tokens are words starting with / or ~/ cut at quotes, spaces and , = : ; ( ) etc.
+# ~/.local/bin, ~/bin, a $PATH dir inside $HOME or a dir inside $HOME a shell startup file's PATH
+# line names (symlink target, both as written and resolved, or a path inside a text file up to
+# 64KB); by a tool config (agent state files and *.json/jsonc/toml/yaml/yml at depth <= 2 in agent
+# state dirs outside their session and logs dirs, up to 16MB: a long-used ~/.claude.json holds
+# user-scope MCP servers and grows past 1MB; and files named *mcp* with those extensions up to
+# depth 4 in dot-folders, up to 1MB); by a shell startup file (~/.bashrc, ~/.profile, ~/.zshrc,
+# fish's config.fish, ...: an alias, a sourced file); by a systemd user or system unit; or by the
+# crontab. Units and the crontab also name files relative to where the job runs: after `cd DIR &&`,
+# under WorkingDirectory= (default: the home, / for a system unit), with %h for the home.
+# Paths are normalized (~, $HOME, . and ..) and each is also kept with its folders resolved
+# (_mm_refs_resolved): mm_rm compares resolved paths. Tokens are words starting with / or ~/ cut at
+# quotes, spaces and , = : ; ( ) etc.; a relative one is a word with a / inside.
 _mm_inuse_refs() {
   local re='(^|[^A-Za-z0-9_.~/-])(~|\$HOME|\$\{HOME\})?/[^[:space:]"'\''`,=:;(){}<>|&]+'
   local ext=(\( -name '*.json' -o -name '*.jsonc' -o -name '*.toml' -o -name '*.yaml' -o -name '*.yml' \))
-  local d s p bins=() states=() dirs=() dots=() prune=() links=() targets=() parts=()
+  local d s p bins=() states=() dirs=() dots=() prune=() links=() targets=() parts=() startup=() uunits=() sunits=()
+  local -A isbin=()
+  for p in "$HOME"/.bashrc "$HOME"/.bash_profile "$HOME"/.bash_aliases "$HOME"/.profile "$HOME"/.zshrc \
+    "$HOME"/.zprofile "$HOME"/.zshenv "${XDG_CONFIG_HOME:-$HOME/.config}"/fish/config.fish; do
+    [[ -f "$p" ]] && startup+=("$p")
+  done
+  [[ "${XDG_CONFIG_HOME:-$HOME/.config}" != "$HOME/.config" && -f "$HOME/.config/fish/config.fish" ]] &&
+    startup+=("$HOME/.config/fish/config.fish")
   IFS=: read -r -a parts <<<"$PATH"
+  while IFS= read -r d; do
+    [[ "$d" == [~\$/]* ]] || d=${d:1}   # the context character the token regex matched
+    case "$d" in "~"/*) d=$HOME${d:1} ;; '$HOME'/*) d=$HOME${d:5} ;; '${HOME}'/*) d=$HOME${d:7} ;; esac
+    parts+=("$d")
+  done < <((( ${#startup[@]} )) && grep -hs 'PATH=' "${startup[@]}" | grep -oE -- "$re")
   for d in "${parts[@]}" "$HOME/.local/bin" "$HOME/bin"; do
-    [[ "$d" == "$HOME"/* && -d "$d" ]] && bins+=("$d")
+    [[ "$d" == "$HOME"/* && -d "$d" && -z "${isbin[$d]:-}" ]] && { bins+=("$d"); isbin[$d]=1; }
   done
   for s in "${MM_AGENT_STATE[@]}"; do
     for p in $s; do
@@ -377,8 +483,14 @@ _mm_inuse_refs() {
     dots+=("$p")
   done
   for d in "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" "$HOME/.config/systemd/user"; do
-    for p in "$d"/*.service; do [[ -f "$p" ]] && states+=("$p"); done
+    for p in "$d"/*.service; do [[ -f "$p" ]] && uunits+=("$p"); done
   done
+  d=/etc/systemd/system
+  if [[ -n "${MM_TEST_SYSTEMD_SYSTEM:-}" ]]; then   # tests only, and only inside the bats sandbox
+    p=$(realpath -e -- "$MM_TEST_SYSTEMD_SYSTEM" 2>/dev/null) &&
+      s=$(realpath -e -- "${BATS_TEST_TMPDIR:-/nonexistent}" 2>/dev/null) && [[ "$p" == "$s"/?* ]] && d=$p
+  fi
+  for p in "$d"/*.service; do [[ -f "$p" ]] && sunits+=("$p"); done
   {
     cat
     if (( ${#bins[@]} )); then
@@ -391,8 +503,11 @@ _mm_inuse_refs() {
       for p in "${!links[@]}"; do printf 'R\t%s\t%s\n' "${links[$p]}" "${targets[$p]}"; done
     fi
     command -v crontab >/dev/null && crontab -l 2>/dev/null | awk '{ print "S\tcrontab\t" $0 }'
+    _mm_unit_execs user "${uunits[@]}"
+    _mm_unit_execs system "${sunits[@]}"
     {
       (( ${#bins[@]} )) && find "${bins[@]}" -maxdepth 1 -type f -size -65k -print0
+      (( ${#startup[@]} )) && find "${startup[@]}" -maxdepth 0 -size -1025k -print0
       (( ${#states[@]} )) && find "${states[@]}" -maxdepth 0 -size -16385k -print0
       (( ${#dirs[@]} )) && find -H "${dirs[@]}" -maxdepth 2 \( "${prune[@]}" -false \) -prune -o \
         -type f "${ext[@]}" -size -16385k -print0
@@ -414,9 +529,19 @@ _mm_inuse_refs() {
       return o
     }
     function label(f) {
-      if (f ~ /\/systemd\/user\/[^\/]+$/) { sub(/.*\//, "", f); return "systemd unit " f }
+      if (f ~ /\/systemd\/(user|system)\/[^\/]+$/ || f ~ /\.service$/) { sub(/.*\//, "", f); return "systemd unit " f }
       if (index(f, home "/") == 1) return "~" substr(f, length(home) + 1)
       return f
+    }
+    function spec(t,   i, o) {   # systemd %h is the home
+      o = ""; while ((i = index(t, "%h")) > 0) { o = o substr(t, 1, i - 1) home; t = substr(t, i + 2) }
+      return o t
+    }
+    function absdir(d, base) {   # a `cd` or WorkingDirectory= target as an absolute path
+      if (d == "") return base
+      if (d == "~") return home
+      if (d ~ /^(\/|~\/|\$HOME\/|\$\{HOME\}\/)/) return norm(d)
+      return norm(base "/" d)
     }
     function add(t, src,   p) { p = norm(t); if (p != "" && !(p in seen)) { seen[p] = 1; print p "\t" src } }
     function scan(t, src) {
@@ -425,14 +550,64 @@ _mm_inuse_refs() {
         t = substr(t, RSTART + RLENGTH)
       }
     }
+    # scanrel TEXT BASE SRC — words with a / inside that do not start a path, against BASE, which
+    # `cd DIR` moves along the line (a job runs in BASE: the home for cron, WorkingDirectory= for a unit).
+    function scanrel(t, base, src,   w, prev) {
+      prev = ""
+      while (match(t, /[^ \t"\047`,=:;(){}<>|&]+/)) {
+        w = substr(t, RSTART, RLENGTH); t = substr(t, RSTART + RLENGTH)
+        if (prev == "cd") base = absdir(w, base)
+        else if (w ~ /^[A-Za-z0-9_.]/ && index(w, "/")) add(base "/" w, src)
+        prev = w
+      }
+    }
     { text = substr($0, length($1) + length($2) + 3) }
     $1 == "A" { if (substr(text, 1, 1) == "/") add(text, $2); scan(text, $2); next }
-    $1 == "S" { scan(text, $2); next }
+    $1 == "S" { scan(text, $2); scanrel(text, home, $2); next }
+    $1 == "U" {   # U<TAB>user|system<TAB>unit file<TAB>WorkingDirectory<TAB>Exec value
+      text = spec(substr($0, length($1) + length($2) + length($3) + length($4) + 5))
+      scan(text, label($3)); scanrel(text, absdir(spec($4), $2 == "user" ? home : "/"), label($3)); next
+    }
     $1 == "L" { d = $2; sub(/\/[^\/]*$/, "", d); add(substr(text, 1, 1) == "/" ? text : d "/" text, label($2)); next }
     $1 == "R" { add(text, label($2)); next }
     { text = substr($0, length($1) + 2); sub(/^[^~$\/]/, "", text); add(text, label($1)) }   # grep: file<TAB>match
-  ' | while IFS=$'\t' read -r p s; do [[ -f "$p" ]] && printf '%s\t%s\n' "$p" "$s"; done
+  ' | while IFS=$'\t' read -r p s; do [[ -f "$p" ]] && printf '%s\t%s\n' "$p" "$s"; done | _mm_refs_resolved
   return 0
+}
+
+# _mm_unit_execs KIND FILE... — "U<TAB>KIND<TAB>file<TAB>WorkingDirectory<TAB>value" for every
+# Exec*= line of each unit file (up to 16MB), with the unit's WorkingDirectory= wherever it sits in
+# the file; systemd's -, @, :, + and ! prefixes are dropped from the values.
+_mm_unit_execs() {
+  local kind=$1; shift
+  (( $# )) || return 0
+  find "$@" -maxdepth 0 -type f -size -16385k -print0 2>/dev/null | xargs -0r awk -v kind="$kind" '
+    function flush(   i) { for (i = 1; i <= n; i++) print "U\t" kind "\t" f "\t" wd "\t" ex[i]; n = 0; wd = "" }
+    FNR == 1 { flush(); f = FILENAME }
+    /^[ \t]*WorkingDirectory[ \t]*=/ { wd = $0; sub(/^[^=]*=[ \t]*/, "", wd); sub(/^-/, "", wd); sub(/[ \t\r]+$/, "", wd); next }
+    /^[ \t]*Exec[A-Za-z]*[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); sub(/^[-@:+!]+/, ""); sub(/[ \t\r]+$/, ""); ex[++n] = $0; next }
+    END { flush() }'
+}
+
+# _mm_refs_resolved < REFS — REFS ("path<TAB>source" lines) followed by each path with its folders
+# resolved when that differs: mm_rm compares resolved paths, so a crontab line that reaches a file
+# through a symlinked folder (~/code -> ~/Dropbox/code) must keep the real folder too. The file
+# itself is not resolved: a venv's bin/python must keep the venv, not /usr/bin.
+_mm_refs_resolved() {
+  local lines=() dirs=() reals=() i p d
+  mapfile -t lines
+  (( ${#lines[@]} )) || return 0
+  printf '%s\n' "${lines[@]}"
+  for p in "${lines[@]}"; do p=${p%%$'\t'*}; d=${p%/*}; dirs+=("${d:-/}"); done
+  mapfile -d '' -t reals < <(realpath -mz -- "${dirs[@]}" 2>/dev/null)
+  if (( ${#reals[@]} != ${#dirs[@]} )); then   # a symlink loop prints nothing: pair one by one
+    reals=(); for d in "${dirs[@]}"; do reals+=("$(realpath -m -- "$d" 2>/dev/null)"); done
+  fi
+  for i in "${!lines[@]}"; do
+    [[ -n "${reals[$i]}" && "${reals[$i]}" != "${dirs[$i]}" ]] || continue
+    p=${lines[$i]%%$'\t'*}
+    printf '%s/%s\t%s\n' "${reals[$i]%/}" "${p##*/}" "${lines[$i]#*$'\t'}"
+  done
 }
 
 # mm_inuse_paths — print the current snapshot, one path per line (taking one if needed).
@@ -935,7 +1110,8 @@ mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 # mm_rm [--trash] PATH ALLOWED_ROOT — the only way marmot deletes or trashes files.
 # Refuses unless PATH is strictly inside ALLOWED_ROOT (after resolving parent symlinks), has no
 # control characters, is not protected, not whitelisted, not in use, can be sized within
-# MM_SIZE_TIMEOUT, and is still the same object (device/inode/ctime) and location after sizing.
+# MM_SIZE_TIMEOUT, is still the same object (device/inode/ctime) and location after sizing, is
+# still not in use per a snapshot at most a few seconds old, and neither is nor holds a mount.
 # --trash moves it to the XDG Trash instead and never falls back to a permanent delete.
 # Returns 0 done (or would be, in dry-run), 1 refused (MM_SKIP_REASON set), 2 action failed.
 # Updates MM_FREED or MM_TRASHED (by mm_frees), MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals
@@ -1000,6 +1176,14 @@ mm_rm() {
   if [[ "$(realpath -e -- "$(dirname -- "$real")" 2>/dev/null)" != "$parent" || "$(mm_identity "$real")" != "$id" ]]; then
     _mm_refuse "changed while sizing"; return 1
   fi
+  # Purge sizes item after item for up to MM_SIZE_TIMEOUT each: a snapshot more than a few seconds
+  # old (references included) is retaken, and whatever its age this user's processes and the mounts
+  # get a last look right before the sink: a process or mount that appeared since is seen.
+  if (( $(date +%s) - MM_INUSE_AT > 5 )); then
+    mm_inuse_refresh
+    p=$(mm_inuse_why "$real") && { _mm_refuse "$p"; return 1; }
+  fi
+  mm_live_under "$real" && { _mm_refuse "in use"; return 1; }
   if [[ "$MM_DRY_RUN" != 1 ]]; then
     if [[ "$mode" == trash ]]; then
       _mm_trash "$real" "$bytes" || return $?
