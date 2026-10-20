@@ -5,6 +5,9 @@ setup() {
   load helpers/common
   mm_test_setup
   export MARMOT_PREFIX="$SB/share/marmot" MARMOT_BIN="$SB/bin"
+  # --uninstall runs `mm schedule disable`, which asks systemd where its unit folder is; these
+  # tests run without a user systemd (tests that need one install their own double).
+  mm_test_fake systemctl 'exit 1'
 }
 teardown() { mm_test_teardown; }
 
