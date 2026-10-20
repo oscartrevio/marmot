@@ -10,11 +10,12 @@
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")/../.."
 
-image=debian:12 as=user minimal=()
+# A plain string, not an array: macOS still ships bash 3.2, where an empty array trips set -u.
+image=debian:12 as=user minimal=""
 while (( $# )); do
   case "$1" in
     --root) as=root ;;
-    --minimal) minimal=(--minimal) ;;
+    --minimal) minimal=--minimal ;;
     -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
     -*) echo "run.sh: unknown option $1" >&2; exit 2 ;;
     *) image=$1 ;;
@@ -28,7 +29,7 @@ docker run --rm -v "$PWD:/src:ro" \
   --tmpfs /home:rw,exec,size=2g,mode=755 --tmpfs /root:rw,exec,size=2g,mode=700 \
   "$image" bash -c '
   set -e
-  /src/tests/e2e/setup.sh '"${minimal[*]}"' --user e2e
+  /src/tests/e2e/setup.sh '"$minimal"' --user e2e
   cp -r /src /opt/marmot && chown -R e2e /opt/marmot
   if [ '"$as"' = root ]; then exec env MM_E2E=1 HOME=/root /opt/marmot/tests/e2e/agent-vm.sh; fi
   exec runuser -u e2e -- env MM_E2E=1 HOME=/home/e2e USER=e2e /opt/marmot/tests/e2e/agent-vm.sh'

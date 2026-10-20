@@ -444,10 +444,11 @@ wt_commit() {
     git -C "$1" -c user.email=t@t -c user.name=t commit -qm "$2"
 }
 
-# wt_repo — $SB/repo on branch main, one commit 40 days old, node_modules ignored.
+# wt_repo — $SB/repo on branch main, one commit 40 days old: a package.json project with
+# node_modules ignored (a worktree's node_modules is then an artifact the purge rules name).
 wt_repo() {
   git -C "$SB" init -q -b main repo
-  printf 'node_modules/\n' >"$SB/repo/.gitignore"; echo a >"$SB/repo/a"
+  printf 'node_modules/\n' >"$SB/repo/.gitignore"; echo a >"$SB/repo/a"; echo '{}' >"$SB/repo/package.json"
   wt_commit "$SB/repo" init
 }
 
@@ -471,7 +472,7 @@ wt_interactive() {
 
 @test "worktree: merged, clean, idle 15d is offered and removed (branch kept, logged)" {
   wt_repo; wt_add wt -b feat
-  mkdir -p "$SB/wt/node_modules"; touch "$SB/wt/node_modules/x"   # ignored files are fine
+  mkdir -p "$SB/wt/node_modules"; touch "$SB/wt/node_modules/x"   # an ignored artifact goes along
   mm_age "$SB" 15
   wt_interactive "$SB"
   [ "$status" -eq 0 ]
@@ -893,6 +894,108 @@ esac"
   [ -z "$(mm_log_rows worktree)" ]
 }
 
+@test "removing a worktree keeps the records of other worktrees whose folder is away" {
+  wt_repo; wt_add fin -b fin; wt_add away --detach
+  echo staged >"$SB/away/staged"; git -C "$SB/away" add staged
+  mv "$SB/away" "$BATS_TEST_TMPDIR/away"   # an unplugged drive, a path only a dev container has
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/fin" ]
+  mv "$BATS_TEST_TMPDIR/away" "$SB/away"
+  [ "$(git -C "$SB/away" diff --cached --name-only)" = staged ]
+}
+
+@test "a worktree whose HEAD reflog holds commits no branch, tag or remote has is kept" {
+  wt_repo; wt_add det -b det; wt_add reset -b reset; wt_add plain -b plain
+  # made on a detached HEAD, then back on the branch: only the worktree's HEAD reflog holds it
+  git -C "$SB/det" checkout -q --detach; echo x >"$SB/det/x"; wt_commit "$SB/det" "detached work"
+  git -C "$SB/det" checkout -q det
+  echo y >"$SB/reset/y"; wt_commit "$SB/reset" "dropped work"; git -C "$SB/reset" reset -q --hard HEAD~1
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ -d "$SB/det" ]
+  [ -d "$SB/reset" ]
+  never_offered "$SB/det"
+  never_offered "$SB/reset"
+  [ ! -e "$SB/plain" ]
+}
+
+# wt_ignoring PATTERN... — wt_repo whose .gitignore also lists PATTERNs.
+wt_ignoring() {
+  wt_repo; printf '%s\n' node_modules/ "$@" >"$SB/repo/.gitignore"; wt_commit "$SB/repo" ignores
+}
+
+@test "a worktree holding git-ignored files found nowhere else is kept, and the reason names them" {
+  wt_ignoring .env '*.sqlite' notes/
+  wt_add wt -b feat
+  echo 'STRIPE_KEY=only-copy' >"$SB/wt/.env"; echo rows >"$SB/wt/dev.sqlite"
+  mkdir "$SB/wt/notes"; echo plan >"$SB/wt/notes/plan.md"
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ -f "$SB/wt/.env" ]
+  [ -f "$SB/wt/dev.sqlite" ]
+  [ -f "$SB/wt/notes/plan.md" ]
+  never_offered "$SB/wt"
+  [[ "$output" == *dev.sqlite* ]]
+}
+
+@test "a git repository or a deploy keypair anywhere in a worktree keeps it, also inside an artifact" {
+  wt_ignoring target/
+  mkdir "$SB/repo/src"; echo s >"$SB/repo/src/s"; touch "$SB/repo/Cargo.toml"; wt_commit "$SB/repo" src
+  wt_add dep -b dep; wt_add inner -b inner; wt_add key -b key
+  mkdir -p "$SB/dep/node_modules/lib"; echo x >"$SB/dep/node_modules/lib/x"
+  git -C "$SB/dep/node_modules/lib" init -q; wt_commit "$SB/dep/node_modules/lib" unpushed
+  git -C "$SB/inner/src" init -q; wt_commit "$SB/inner/src" unpushed   # git status stays clean
+  mkdir -p "$SB/key/target/deploy"; echo '[1,2]' >"$SB/key/target/deploy/prog-keypair.json"
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ -d "$SB/dep/node_modules/lib/.git" ]
+  [ -d "$SB/inner/src/.git" ]
+  [ -f "$SB/key/target/deploy/prog-keypair.json" ]
+  never_offered "$SB/dep"
+  never_offered "$SB/inner"
+  never_offered "$SB/key"
+}
+
+@test "a worktree's ignored node_modules and copy of the main checkout's .env go with it, named in the prompt" {
+  wt_ignoring .env
+  echo 'KEY=1' >"$SB/repo/.env"
+  wt_add wt -b feat; wt_add edited -b edited
+  cp "$SB/repo/.env" "$SB/wt/.env"; mkdir -p "$SB/wt/node_modules/dep"; echo m >"$SB/wt/node_modules/dep/index.js"
+  echo 'KEY=2' >"$SB/edited/.env"
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/wt" ]
+  [ "$(cat "$SB/repo/.env")" = KEY=1 ]
+  grep -F "$SB/wt" "$BATS_TEST_TMPDIR/offered" | grep -F node_modules | grep -qF .env
+  [ "$(cat "$SB/edited/.env")" = KEY=2 ]
+  never_offered "$SB/edited"
+}
+
+@test "a worktree that gains an ignored file or a reflog-only commit while the prompt waits is kept" {
+  wt_ignoring .env
+  wt_add envwt -b envwt; wt_add logwt -b logwt
+  mm_age "$SB" 15
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  mm_pick() {
+    echo 'KEY=new' >"$SB/envwt/.env"
+    git -C "$SB/logwt" checkout -q --detach; echo x >"$SB/logwt/x"; wt_commit "$SB/logwt" lone 0
+    git -C "$SB/logwt" checkout -q logwt
+    cat
+  }
+  _purge_ask() { printf n; }
+  run mm_cmd_main "$SB"
+  [ "$status" -eq 0 ]
+  [ -f "$SB/envwt/.env" ]
+  [ -d "$SB/logwt" ]
+}
+
 # ---------------------------------------------------------------- more artifact kinds
 
 # cache_tag DIR [FIRST_LINE] — DIR holding a blob and a CACHEDIR.TAG with the standard signature
@@ -905,15 +1008,34 @@ cache_tag() {
 # manifest DIR FILE... — DIR with empty project files.
 manifest() { local d="$1"; shift; mkdir -p "$d"; for f; do echo '{}' >"$d/$f"; done; }
 
-@test "a folder tagged as a cache (CACHEDIR.TAG) inside a project is purged" {
+@test "a folder tagged as a cache is kept unattended and only offered in the picker" {
   manifest "$SB/p" Cargo.toml; cache_tag "$SB/p/out"
   manifest "$SB/q" Makefile; cache_tag "$SB/q/build-cache"
   mm_age "$SB" 30
   run mm purge --yes "$SB"
   [ "$status" -eq 0 ]
+  [ -f "$SB/p/out/blob" ]
+  [ -f "$SB/q/build-cache/blob" ]
+  [ -z "$(mm_log_rows remove)" ]
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  mm_pick() { grep '/p/out'; }
+  _purge_ask() { printf pick; }
+  run mm_cmd_main "$SB"
   [ ! -e "$SB/p/out" ]
-  [ ! -e "$SB/q/build-cache" ]
+  [ -f "$SB/q/build-cache/blob" ]
   [ -f "$SB/q/Makefile" ]
+}
+
+@test "a tagged cache is never selected by stale or all" {
+  manifest "$SB/p" Cargo.toml; cache_tag "$SB/p/out"; node_project "$SB/n"
+  mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  _purge_ask() { printf all; }
+  run mm_cmd_main "$SB"
+  [ -f "$SB/p/out/blob" ]
+  [ ! -e "$SB/n/node_modules" ]
 }
 
 @test "CACHEDIR.TAG alone is not enough: bad signature, symlinked tag, no project, scan root, tracked are kept" {
@@ -923,7 +1045,11 @@ manifest() { local d="$1"; shift; mkdir -p "$d"; for f; do echo '{}' >"$d/$f"; d
   cache_tag "$SB/loose/c"
   manifest "$SB/r" package.json; cache_tag "$SB/r/c"; git_repo "$SB/r"
   mm_age "$SB" 30
-  run mm purge --yes "$SB"
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  mm_pick() { cat; }                 # pick every row the picker is given
+  _purge_ask() { printf pick; }
+  run mm_cmd_main "$SB"
   [ "$status" -eq 0 ]
   [ -f "$SB/bad/c/blob" ]
   [ -L "$SB/link/c/CACHEDIR.TAG" ]
@@ -931,7 +1057,7 @@ manifest() { local d="$1"; shift; mkdir -p "$d"; for f; do echo '{}' >"$d/$f"; d
   [ -f "$SB/loose/c/blob" ]
   [ -f "$SB/r/c/blob" ]
   manifest "$SB/w" package.json; cache_tag "$SB/w/root"; mm_age "$SB/w" 30
-  run mm purge --yes "$SB/w/root"
+  run mm_cmd_main "$SB/w/root"
   [ -f "$SB/w/root/blob" ]
   [ -z "$(mm_log_rows remove)" ]
 }
@@ -973,4 +1099,212 @@ manifest() { local d="$1"; shift; mkdir -p "$d"; for f; do echo '{}' >"$d/$f"; d
   [ ! -e "$SB/docs/.docusaurus" ]
   [ ! -e "$SB/store/.pnpm-store" ]
   [ -f "$SB/nostore/.pnpm-store/blob" ]
+}
+
+# ---------------------------------------------------------------- proof before deleting
+
+@test "always-rebuildable names need a project of the matching type next to them" {
+  mkdir -p "$SB/Documents/insurance/coverage"; echo policy >"$SB/Documents/insurance/coverage/home.pdf"
+  mkdir -p "$SB/sdk/go1.22/src/internal/coverage/cfile"
+  echo 'package cfile' >"$SB/sdk/go1.22/src/internal/coverage/cfile/emit.go"
+  mkdir -p "$SB/deployed/.output/server"; echo app >"$SB/deployed/.output/server/index.mjs"
+  node_project "$SB/web" .output
+  node_project "$SB/jest" coverage; printf 'coverage/\n' >"$SB/jest/.gitignore"; git_repo "$SB/jest"
+  node_project "$SB/plain" coverage        # a project, but nothing says coverage/ is output
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ "$status" -eq 0 ]
+  [ -f "$SB/Documents/insurance/coverage/home.pdf" ]
+  [ -f "$SB/sdk/go1.22/src/internal/coverage/cfile/emit.go" ]
+  [ -f "$SB/deployed/.output/server/index.mjs" ]
+  [ -f "$SB/plain/coverage/blob" ]
+  [ ! -e "$SB/web/.output" ]
+  [ ! -e "$SB/jest/coverage" ]
+}
+
+@test "node_modules only next to a package.json or a deno manifest" {
+  mkdir -p "$SB/n/lib/node_modules/npm/bin"; echo cli >"$SB/n/lib/node_modules/npm/bin/npm-cli.js"
+  node_project "$SB/app"
+  mkdir -p "$SB/deno/node_modules/dep"; echo '{}' >"$SB/deno/deno.jsonc"; touch "$SB/deno/node_modules/dep/x.js"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ -f "$SB/n/lib/node_modules/npm/bin/npm-cli.js" ]
+  [ ! -e "$SB/app/node_modules" ]
+  [ ! -e "$SB/deno/node_modules" ]
+}
+
+@test "__pycache__ only when it holds nothing but compiled modules" {
+  mkdir -p "$SB/py/__pycache__" "$SB/notes/__pycache__"
+  touch "$SB/py/__pycache__/mod.cpython-311.pyc" "$SB/py/__pycache__/old.pyo"
+  echo 'keep me' >"$SB/notes/__pycache__/notes.md"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ ! -e "$SB/py/__pycache__" ]
+  [ -f "$SB/notes/__pycache__/notes.md" ]
+}
+
+@test "python tool caches need a python project or their own cache tag" {
+  manifest "$SB/proj" pyproject.toml; mkdir -p "$SB/proj/.pytest_cache/v"; touch "$SB/proj/.pytest_cache/v/lastfailed"
+  cache_tag "$SB/tagged/.ruff_cache"
+  mkdir -p "$SB/plain/.mypy_cache"; echo data >"$SB/plain/.mypy_cache/notes"
+  mkdir -p "$SB/plain/.tox/env"; echo data >"$SB/plain/.tox/env/notes"
+  manifest "$SB/toxed" tox.ini; mkdir -p "$SB/toxed/.tox/py311"; touch "$SB/toxed/.tox/py311/pyvenv.cfg"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ ! -e "$SB/proj/.pytest_cache" ]
+  [ ! -e "$SB/tagged/.ruff_cache" ]
+  [ -f "$SB/plain/.mypy_cache/notes" ]
+  [ -f "$SB/plain/.tox/env/notes" ]
+  [ ! -e "$SB/toxed/.tox" ]
+}
+
+@test "toolchain caches need their build files (gradle, terragrunt, dart, zig, cxx)" {
+  manifest "$SB/g" build.gradle; mkdir -p "$SB/g/.gradle/caches"; touch "$SB/g/.gradle/caches/x"
+  mkdir -p "$SB/nog/.gradle"; echo data >"$SB/nog/.gradle/keep"
+  manifest "$SB/tf" terragrunt.hcl; mkdir -p "$SB/tf/.terragrunt-cache/a"; touch "$SB/tf/.terragrunt-cache/a/x"
+  mkdir -p "$SB/notf/.terragrunt-cache"; echo data >"$SB/notf/.terragrunt-cache/keep"
+  manifest "$SB/flutter" pubspec.yaml; mkdir -p "$SB/flutter/.dart_tool"; touch "$SB/flutter/.dart_tool/x"
+  mkdir -p "$SB/nodart/.dart_tool"; echo data >"$SB/nodart/.dart_tool/keep"
+  manifest "$SB/zig" build.zig; mkdir -p "$SB/zig/zig-out" "$SB/zig/.zig-cache"
+  touch "$SB/zig/zig-out/x" "$SB/zig/.zig-cache/y"
+  mkdir -p "$SB/nozig/zig-out"; echo data >"$SB/nozig/zig-out/keep"
+  manifest "$SB/ndk" CMakeLists.txt; mkdir -p "$SB/ndk/.cxx"; touch "$SB/ndk/.cxx/x"
+  mkdir -p "$SB/nondk/.cxx"; echo data >"$SB/nondk/.cxx/keep"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ ! -e "$SB/g/.gradle" ]; [ -f "$SB/nog/.gradle/keep" ]
+  [ ! -e "$SB/tf/.terragrunt-cache" ]; [ -f "$SB/notf/.terragrunt-cache/keep" ]
+  [ ! -e "$SB/flutter/.dart_tool" ]; [ -f "$SB/nodart/.dart_tool/keep" ]
+  [ ! -e "$SB/zig/zig-out" ]; [ ! -e "$SB/zig/.zig-cache" ]; [ -f "$SB/nozig/zig-out/keep" ]
+  [ ! -e "$SB/ndk/.cxx" ]; [ -f "$SB/nondk/.cxx/keep" ]
+}
+
+@test "a dotfiles repository at \$HOME does not make build/ or dist/ removable" {
+  node_project "$HOME/apps/desk" build dist
+  echo icon >"$HOME/apps/desk/build/icon.png"
+  git init -q "$HOME"; printf '*\n' >"$HOME/.gitignore"
+  node_project "$HOME/apps/own" build; printf 'build/\n' >"$HOME/apps/own/.gitignore"; git_repo "$HOME/apps/own"
+  mm_age "$HOME/apps" 30
+  run mm purge --yes "$HOME/apps"
+  [ -f "$HOME/apps/desk/build/icon.png" ]
+  [ -f "$HOME/apps/desk/dist/blob" ]
+  [ ! -e "$HOME/apps/own/build" ]
+}
+
+@test "a virtualenv in a python project goes to the Trash whatever it is called" {
+  mkdir -p "$SB/ml/env/lib/python3.11/site-packages/patched" "$SB/ml/env/bin"
+  printf 'home = /usr/bin\nversion = 3.11.2\n' >"$SB/ml/env/pyvenv.cfg"
+  printf 'Signature: 8a477f597d28d172789f06886806bc55\n' >"$SB/ml/env/CACHEDIR.TAG"
+  echo 'PATCHED = True' >"$SB/ml/env/lib/python3.11/site-packages/patched/__init__.py"
+  echo numpy >"$SB/ml/requirements.txt"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ ! -e "$SB/ml/env" ]
+  [ -f "$XDG_DATA_HOME/Trash/files/env/pyvenv.cfg" ]
+  [ -f "$XDG_DATA_HOME/Trash/files/env/lib/python3.11/site-packages/patched/__init__.py" ]
+  [ -z "$(mm_log_rows remove)" ]
+}
+
+@test "an artifact holding local terraform state is kept" {
+  manifest "$SB/infra" terragrunt.hcl; mkdir -p "$SB/infra/.terragrunt-cache/abc/tf"
+  echo '{"version":4}' >"$SB/infra/.terragrunt-cache/abc/tf/terraform.tfstate"
+  manifest "$SB/infra2" terragrunt.hcl; mkdir -p "$SB/infra2/.terragrunt-cache/abc"
+  echo '{"version":4}' >"$SB/infra2/.terragrunt-cache/abc/terraform.tfstate.backup"
+  manifest "$SB/infra3" terragrunt.hcl; mkdir -p "$SB/infra3/.terragrunt-cache/abc"
+  touch "$SB/infra3/.terragrunt-cache/abc/plan"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ -f "$SB/infra/.terragrunt-cache/abc/tf/terraform.tfstate" ]
+  [ -f "$SB/infra2/.terragrunt-cache/abc/terraform.tfstate.backup" ]
+  [ ! -e "$SB/infra3/.terragrunt-cache" ]
+}
+
+@test "an edit deep in a project outside git counts as activity" {
+  node_project "$SB/notes"; mkdir -p "$SB/notes/deep/a"; echo v1 >"$SB/notes/deep/a/b.md"
+  node_project "$SB/idle"
+  mm_age "$SB" 30
+  echo v2 >"$SB/notes/deep/a/b.md"
+  run mm purge --yes "$SB"
+  [ -d "$SB/notes/node_modules" ]
+  [ ! -e "$SB/idle/node_modules" ]
+}
+
+@test "a stale project whose artifact was written today is kept" {
+  node_project "$SB/live"; node_project "$SB/idle"
+  mm_age "$SB" 30
+  touch "$SB/live/node_modules/blob"
+  run mm purge --yes "$SB"
+  [ -d "$SB/live/node_modules" ]
+  [ ! -e "$SB/idle/node_modules" ]
+}
+
+@test "artifacts in a synced folder are only offered in the picker" {
+  mkdir -p "$SB/sync/.stfolder"; node_project "$SB/sync/app"
+  mkdir -p "$SB/box"; touch "$SB/box/.dropbox"; node_project "$SB/box/app"
+  node_project "$SB/local/app"
+  mm_age "$SB" 30
+  run mm purge --yes "$SB"
+  [ -f "$SB/sync/app/node_modules/blob" ]
+  [ -f "$SB/box/app/node_modules/blob" ]
+  [ ! -e "$SB/local/app/node_modules" ]
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  mm_pick() { grep '/sync/app/node_modules'; }
+  _purge_ask() { printf pick; }
+  run mm_cmd_main "$SB"
+  [ ! -e "$SB/sync/app/node_modules" ]
+  [ -f "$SB/box/app/node_modules/blob" ]
+}
+
+@test "the purge prompt takes whole words: anything else removes nothing" {
+  node_project "$SB/a"; node_project "$SB/b"; mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  _purge_ask() { printf abort; }
+  run mm_cmd_main "$SB"
+  [ -d "$SB/a/node_modules" ]
+  [ -d "$SB/b/node_modules" ]
+  _purge_ask() { printf skip; }
+  run mm_cmd_main "$SB"
+  [ -d "$SB/a/node_modules" ]
+  [ -d "$SB/b/node_modules" ]
+  [ -z "$(mm_log_rows remove)" ]
+  _purge_ask() { printf stale; }
+  run mm_cmd_main "$SB"
+  [ ! -e "$SB/a/node_modules" ]
+  [ ! -e "$SB/b/node_modules" ]
+}
+
+@test "an answer never removes rows the table folded away; --all lists every row" {
+  node_project "$SB/big"; head -c 2000000 /dev/urandom >"$SB/big/node_modules/blob"
+  node_project "$SB/tiny1"; node_project "$SB/tiny2"
+  mm_age "$SB/big" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  _purge_ask() { printf all; }
+  run mm_cmd_main "$SB"
+  [ ! -e "$SB/big/node_modules" ]
+  [ -d "$SB/tiny1/node_modules" ]
+  [ -d "$SB/tiny2/node_modules" ]
+  _purge_ask() { printf ''; }
+  run mm_cmd_main --all "$SB"
+  [ ! -e "$SB/tiny1/node_modules" ]
+  [ ! -e "$SB/tiny2/node_modules" ]
+}
+
+@test "an artifact that stops being regenerable while the prompt waits is kept" {
+  node_project "$SB/a"; node_project "$SB/b"; node_project "$SB/c"
+  mm_age "$SB" 30
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  _purge_ask() {
+    rm -f "$SB/a/package.json"                                  # no longer a node project
+    mkdir -p "$SB/b/node_modules/dep/.git"                      # a nested repository appears
+    find "$SB/a" "$SB/b" -exec touch -c -h -d '30 days ago' {} + # ... with no sign in the mtimes
+    printf stale
+  }
+  run mm_cmd_main "$SB"
+  [ -d "$SB/a/node_modules" ]
+  [ -d "$SB/b/node_modules/dep/.git" ]
+  [ ! -e "$SB/c/node_modules" ]
 }

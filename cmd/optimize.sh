@@ -499,15 +499,16 @@ _optimize_orphan_task() {
   fi
 
   # The user chooses each process; there is no unattended path.
-  local picked=() chosen=()
+  local picked=() chosen=() asked=1
   if (( ${#cands[@]} == 1 )) || ! _optimize_have_fzf; then
     # One candidate, or no fzf: ask about each process in turn.
     for row in "${cands[@]}"; do
       mm_confirm "Send SIGTERM to $(_optimize_orphan_line "$row")?" && picked+=("${row%%$'\t'*}")
     done
   else
+    asked=0
     mapfile -t picked < <(for row in "${cands[@]}"; do _optimize_orphan_line "$row"; done |
-      mm_pick "TAB: mark processes to SIGTERM · Enter: confirm · Esc: none" | awk '{ print $1 }')
+      mm_pick "TAB: mark processes to SIGTERM · Enter: continue · Esc: none" | awk '{ print $1 }')
   fi
   for row in "${cands[@]}"; do
     for pid in "${picked[@]}"; do [[ "${row%%$'\t'*}" == "$pid" ]] && chosen+=("$row"); done
@@ -515,6 +516,14 @@ _optimize_orphan_task() {
   if (( ${#chosen[@]} == 0 )); then
     _optimize_skipped "Orphaned processes" "none selected"
     return
+  fi
+  # Enter with nothing marked makes fzf return the highlighted row: list what the picker returned
+  # and ask before any signal.
+  if (( ! asked )); then
+    printf '\n'
+    for row in "${chosen[@]}"; do mm_info "$(_optimize_orphan_line "$row")"; done
+    mm_confirm "Send SIGTERM to ${#chosen[@]} process$( (( ${#chosen[@]} == 1 )) && printf '' || printf es)?" ||
+      { _optimize_skipped "Orphaned processes" "declined"; return; }
   fi
 
   local sent=() starts=() survivors=() freed=0
@@ -698,14 +707,15 @@ _optimize_browser_task() {
     return
   fi
 
-  local picked=() chosen=()
+  local picked=() chosen=() asked=1
   if (( ${#rows[@]} == 1 )) || ! _optimize_have_fzf; then
     for row in "${rows[@]}"; do
       mm_confirm "Stop browser $(_optimize_browser_line "$row")?" && picked+=("${row%%$'\t'*}")
     done
   else
+    asked=0
     mapfile -t picked < <(for row in "${rows[@]}"; do _optimize_browser_line "$row"; done |
-      mm_pick "TAB: mark browsers to stop · Enter: confirm · Esc: none" | awk '{ print $1 }')
+      mm_pick "TAB: mark browsers to stop · Enter: continue · Esc: none" | awk '{ print $1 }')
   fi
   for row in "${rows[@]}"; do
     for pid in "${picked[@]}"; do [[ "${row%%$'\t'*}" == "$pid" ]] && chosen+=("$row"); done
@@ -713,6 +723,13 @@ _optimize_browser_task() {
   if (( ${#chosen[@]} == 0 )); then
     _optimize_skipped "Orphaned browsers" "none selected"
     return
+  fi
+  # As above: what the picker returned is listed and confirmed before any signal.
+  if (( ! asked )); then
+    printf '\n'
+    for row in "${chosen[@]}"; do mm_info "$(_optimize_browser_line "$row")"; done
+    mm_confirm "Stop ${#chosen[@]} browser$( (( ${#chosen[@]} == 1 )) || printf s) (SIGTERM, then SIGKILL)?" ||
+      { _optimize_skipped "Orphaned browsers" "declined"; return; }
   fi
 
   # Every signal goes to a pid only while it still has the start time seen in the scan: a pid

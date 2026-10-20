@@ -46,11 +46,13 @@ automation browsers leave in /tmp when their script dies (playwright_chromiumdev
 puppeteer_dev_chrome_profile-*, playwright-artifacts-*, [.]org.chromium.Chromium.*,
 [.]com.google.Chrome.*), only your own, untouched for 2 hours and not in use, are deleted.
 Entries of the lib/catalog.sh caches used in the last 7 days stay (such as the packages
-\`npx -y\` installs for MCP servers). Model stores, dependency repositories (Maven, the Go module
-cache, ...), Node versions, Docker volumes and agent state are never touched: they are listed
-with their size under "Kept for you to review", along with the biggest folders in your cache
-folder marmot knows nothing about. Steps that cannot be undone (Trash sweep, packages, logs,
-crash dumps, containers, images) ask first and are skipped without a terminal.
+\`npx -y\` installs for MCP servers), and so does an entry a program wrote its own data into after
+it was installed (an MCP server's memory.jsonl); Deno's npm packages are only reported. Model
+stores, dependency repositories (Maven, the Go module cache, ...), Node versions, Docker volumes,
+images no registry has and agent state are never touched: they are listed with their size under
+"Kept for you to review", along with the biggest folders in your cache folder marmot knows
+nothing about. Steps that cannot be undone (Trash sweep, packages, logs, crash dumps,
+containers, images) list every item, ask first and are skipped without a terminal.
 
 Docker is cleaned only when its daemon is this machine's own: not when DOCKER_HOST or the
 current docker context points at another machine, and not from inside a container (a mounted
@@ -63,7 +65,8 @@ Coding agents' own log files (*.log and rotated logs in their documented logs fo
 as ~/.omp/logs or ~/.copilot/logs) last written more than 7 days ago and not in use are removed;
 session folders are not searched. Agent sessions are kept unless you opt in: with a retention
 of N days, session files (and rotated logs in agent state) last written more than N days ago and
-not in use move to the Trash; credentials, whitelisted paths and files in use are never touched.
+not in use move to the Trash; credentials, whitelisted paths, files in use, an agent's memory
+folders, its worktrees and git checkouts are never touched.
 Turn it on with sessions_keep_days=N in $MM_CONFIG_FILE (runs without a terminal act only then),
 or use --sessions N for one run (asks first).
 
@@ -126,18 +129,22 @@ _clean_detail() {
 
 # _clean_contents [--keep-recent] LABEL DIR [FILTER] — permanently empty a regenerable cache DIR
 # via mm_rm (ALLOWED_ROOT=DIR). FILTER: name globs for the entries (catalog cache spec; !GLOB =
-# leave alone). --keep-recent keeps entries used in the last _CLEAN_RECENT_DAYS days: anything
-# inside the entry, at any depth, modified, or a file inside it read, since then. A tool may only
-# read nested files (a cached package's node_modules/x/index.js), so the entry's own times are not
-# enough. Folder access times do not count: listing a folder, as this scan does, sets them.
+# leave alone), plus installed=MARKER, which keeps entries holding a package that was written
+# into after it was installed (see _clean_installed_hold). --keep-recent keeps entries used in the
+# last _CLEAN_RECENT_DAYS days: anything inside the entry, at any depth, modified, or a file
+# inside it read, since then. A tool may only read nested files (a cached package's
+# node_modules/x/index.js), so the entry's own times are not enough. Folder access times do not
+# count: listing a folder, as this scan does, sets them.
 _clean_contents() {
   local keep=0; [[ "$1" == --keep-recent ]] && { keep=1; shift; }
-  local label="$1" dir="$2" w rec since n=0 b=0 kept=0 fail=0 recent=0 note=""
+  local label="$1" dir="$2" w rec why since installed="" n=0 b=0 kept=0 fail=0 recent=0 held=0 note=""
   local -a toks=() sel=() inc=() pick=() young=(-false) depth=(-maxdepth 1)
   local -A used=()
   read -r -a toks <<<"${3:-}"
   for w in "${toks[@]}"; do
-    if [[ "$w" == '!'?* ]]; then sel+=(! -name "${w#!}"); else inc+=(-o -name "$w"); fi
+    if [[ "$w" == installed=?* ]]; then installed=${w#installed=}
+    elif [[ "$w" == '!'?* ]]; then sel+=(! -name "${w#!}")
+    else inc+=(-o -name "$w"); fi
   done
   (( ${#inc[@]} )) && sel+=(\( "${inc[@]:1}" \))
   [[ -d "$dir" ]] || return 0
@@ -157,6 +164,9 @@ _clean_contents() {
     \( "${young[@]}" \) -printf 'R%P\0' 2>/dev/null)
   for w in "${pick[@]}"; do
     if [[ -n "${used[$w]+x}" ]]; then recent=$((recent + 1)); continue; fi
+    if [[ -n "$installed" ]] && why=$(_clean_installed_hold "$dir/$w" "$installed"); then
+      held=$((held + 1)); _clean_review "$label" "$why"; continue
+    fi
     mm_rm "$dir/$w" "$dir"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
@@ -165,8 +175,62 @@ _clean_contents() {
     esac
   done
   (( recent )) && note=", $recent used in the last $_CLEAN_RECENT_DAYS days kept"
+  (( held )) && note+=", $held kept for you to review"
   if (( n + kept + fail == 0 )); then mm_ok "$label" "nothing to clean${note}"; return; fi
   mm_ok "$label" "$(_clean_detail "$n" items "$b" "$kept" "$fail")${note}"
+}
+
+# Packages are installed a few levels down at most: an npx entry keeps one node_modules, a tool
+# that versions its installs one per generation folder.
+_CLEAN_INSTALLED_DEPTH=5
+
+# _clean_installed_hold ENTRY MARKER — print why ENTRY must be kept and return 0; 1 when it holds
+# nothing but what its installs wrote. MARKER is the file a package manager writes when it has
+# finished installing into a folder (npm: node_modules/.package-lock.json). A package that runs
+# can write into its own folder (an MCP server's memory file, a plugin's state), and such a file
+# is newer than the marker, so the entry is kept and listed for review. An install whose marker
+# is missing, or that cannot be read, is kept too: nothing proves what is in it is regenerable.
+_clean_installed_hold() {
+  local entry="$1" marker="$2" base="${2%/*}" m pkg newest
+  local -a marks=()
+  mapfile -d '' -t marks < <(find "$entry" -maxdepth "$_CLEAN_INSTALLED_DEPTH" -type f \
+    -path "*/$marker" -print0 2>/dev/null)
+  if (( ${#marks[@]} == 0 )); then
+    [[ "$base" != "$marker" ]] || return 1
+    [[ "${entry##*/}" == "$base" || -n "$(find "$entry" -maxdepth "$_CLEAN_INSTALLED_DEPTH" \
+      -type d -name "$base" -print -quit 2>/dev/null)" ]] || return 1
+    mm_tilde "$entry"; printf 'an install without its %s: %s' "${marker##*/}" "$REPLY"
+    return 0
+  fi
+  for m in "${marks[@]}"; do
+    pkg=${m%"/$marker"}
+    if ! newest=$(_clean_written_after "$pkg" "$m"); then
+      mm_tilde "$pkg"; printf 'install cannot be checked: %s' "$REPLY"; return 0
+    fi
+    [[ -n "$newest" ]] || continue
+    mm_tilde "$newest"; printf 'files written after install: %s' "$REPLY"; return 0
+  done
+  return 1
+}
+
+# _clean_written_after DIR MARKER — print the newest regular file in DIR that is not older than
+# MARKER (nothing when every file is older, so the install is all there is). Fails when a time
+# cannot be read, so the caller keeps DIR. A file as old as the marker counts as written after it:
+# only a strictly older file proves it was there before the install finished.
+_clean_written_after() {
+  local mt cut out
+  mt=$(find "$2" -maxdepth 0 -printf '%T@' 2>/dev/null) && [[ -n "$mt" ]] || return 1
+  cut=$(awk -v t="$mt" 'BEGIN {
+    s = t; sub(/\..*/, "", s); f = t; sub(/^[0-9]*\.?/, "", f)
+    n = substr(f "000000000", 1, 9) + 0 - 1
+    if (n < 0) { n = 999999999; s = s - 1 }
+    printf "@%.0f.%09d\n", s, n
+  }') || return 1
+  out=$(find "$1" -type f ! -path "$(_clean_find_literal "$2")" -newermt "$cut" \
+    -printf '%T@\t%p\n' 2>/dev/null | sort -rn) || return 1
+  out=${out%%$'\n'*}
+  [[ -n "$out" ]] && printf '%s' "${out#*$'\t'}"
+  return 0
 }
 
 # _clean_busy "PROC..." — print the first listed process that is running (f:REGEX tokens match
@@ -260,17 +324,29 @@ _clean_playwright_refs() {
 # _clean_revisions_row LABEL DIR BUSY SPEC — catalog "revisions" row (see lib/catalog.sh): keep the
 # newest version of every product (plus referenced and in-use builds), remove the older ones.
 _clean_revisions_row() {
-  local label="$1" dir="$2" spec="$4" busy depth regex refs="" rel prod ver n=0 b=0 kept=0 fail=0 refkept=0
+  local label="$1" dir="$2" spec="$4" busy depth regex tok refs="" marker="" rel prod ver n=0 b=0 kept=0 fail=0 refkept=0
   local -A newest=() keep=()
   local -a rels=() prods=() vers=() types=(-type d)
   _clean_home_dir "$label" "$dir" || return 0
   if busy=$(_clean_busy "$3"); then mm_skip "$label" "$busy busy"; return 0; fi
   depth=${spec%%:*} regex=${spec#*:}
-  [[ "$regex" == *:files ]] && { regex=${regex%:files}; types=(\( -type d -o -type f \)); }
-  [[ "$regex" == *:refs=* ]] && { refs=${regex##*:refs=}; regex=${regex%:refs=*}; }
+  # Options are the trailing :NAME[=VALUE] tokens, read right to left; the rest is the regex.
+  while [[ "$regex" == *:* ]]; do
+    tok=${regex##*:}
+    case $tok in
+      files) types=(\( -type d -o -type f \)) ;;
+      refs=*) refs=${tok#refs=} ;;
+      marker=*) marker=${tok#marker=} ;;
+      *) break ;;
+    esac
+    regex=${regex%:*}
+  done
   [[ "$depth" =~ ^[1-9]$ ]] || { mm_debug "$label: bad spec $spec"; return 0; }
   while IFS= read -r -d '' rel; do
     [[ "$rel" != .* && "$rel" != */.* && "$rel" =~ $regex ]] || continue
+    # The tool's own install marker is the proof this is its build and not something else that
+    # happens to be named like one (a browser profile folder): without it, leave the entry alone.
+    [[ -z "$marker" || -f "$dir/$rel/$marker" ]] || continue
     prod=${BASH_REMATCH[1]:-.} ver=${BASH_REMATCH[2]}   # "." = single-product layouts (empty group 1)
     rels+=("$rel") prods+=("$prod") vers+=("$ver")
     if [[ -z "${newest[$prod]+x}" || "$(printf '%s\n%s\n' "${newest[$prod]}" "$ver" | sort -V | tail -1)" == "$ver" ]]; then
@@ -300,12 +376,29 @@ _clean_revisions_row() {
   mm_ok "$label" "$(_clean_detail "$n" "old builds" "$b" "$kept" "$fail")$note"
 }
 
+# _clean_path_versions DIR — the entries of DIR, one per line, that a directory on $PATH resolves
+# into: putting a version's folder on PATH pins it, whatever the launcher points at.
+_clean_path_versions() {
+  local real p d
+  local -a parts=()
+  real=$(realpath -e -- "$1" 2>/dev/null) || return 0
+  IFS=: read -r -a parts <<<"$PATH"
+  for p in "${parts[@]}"; do
+    [[ "$p" == /* ]] || continue
+    d=$(realpath -e -- "$p" 2>/dev/null) || continue
+    [[ "$d" == "$real"/?* ]] || continue
+    d=${d#"$real"/}; printf '%s\n' "${d%%/*}"
+  done
+}
+
 # _clean_versions_row NAME DIR ACTIVE_LINK — an agent that keeps one entry per installed version.
-# Keeps the active version (resolved through ACTIVE_LINK), any newer staged ones, and the newest
-# older one; removes the rest. When the active version cannot be resolved, everything is kept.
+# Keeps the active version (resolved through ACTIVE_LINK), any newer staged ones, the newest older
+# one, and any version a $PATH directory points into (the way a pinned older version is used);
+# removes the rest. When the active version cannot be resolved, everything is kept.
 _clean_versions_row() {
-  local label="$1 old versions" dir="$2" link="$3" real act v n=0 b=0 kept=0 fail=0 prev=""
+  local label="$1 old versions" dir="$2" link="$3" real act v n=0 b=0 kept=0 fail=0 pinned=0 prev=""
   local -a names=() older=()
+  local -A onpath=()
   [[ -d "$dir" ]] || return 0
   mapfile -t names < <(find "$dir" -mindepth 1 -maxdepth 1 \( -type f -o -type d \) -name '[0-9]*' -printf '%f\n' 2>/dev/null | sort -V)
   (( ${#names[@]} > 1 )) || return 0
@@ -317,6 +410,7 @@ _clean_versions_row() {
   if [[ -z "$act" || " ${names[*]} " != *" $act "* ]]; then
     mm_ok "$label" "${#names[@]} installed, all kept (active version unknown)"; return 0
   fi
+  while IFS= read -r v; do [[ -n "$v" ]] && onpath[$v]=1; done < <(_clean_path_versions "$dir")
   for v in "${names[@]}"; do
     [[ "$v" == "$act" ]] && break
     older+=("$v")
@@ -324,6 +418,7 @@ _clean_versions_row() {
   (( ${#older[@]} > 1 )) || { mm_ok "$label" "none (active $act)"; return 0; }
   prev=${older[-1]}
   for v in "${older[@]:0:${#older[@]}-1}"; do
+    if [[ -n "${onpath[$v]+x}" ]]; then pinned=$((pinned + 1)); continue; fi
     mm_rm "$dir/$v" "$dir"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
@@ -331,7 +426,10 @@ _clean_versions_row() {
       *) fail=$((fail + 1)) ;;
     esac
   done
-  mm_ok "$label" "$(_clean_detail "$n" versions "$b" "$kept" "$fail"), kept $act (active) and $prev"
+  local note=""
+  (( pinned )) && note=", $pinned on your PATH"
+  if (( n + kept + fail == 0 )); then mm_ok "$label" "none (active $act$note)"; return 0; fi
+  mm_ok "$label" "$(_clean_detail "$n" versions "$b" "$kept" "$fail"), kept $act (active)$note and $prev"
 }
 
 # ---------------------------------------------------------------- 1. user essentials
@@ -590,12 +688,28 @@ _clean_agent_logs() {
 # ---------------------------------------------------------------- agent sessions (opt-in)
 
 # Session transcripts are the user's conversations: untouched unless they set a retention
-# (sessions_keep_days=N in the config file, or --sessions N for one run). Then files under each
-# agent's session dirs (lib/agents.sh) and rotated logs in its state dirs (outside its logs dirs,
-# which the agent logs step handles), last written more than N days ago and not in use, move to
-# the Trash (restorable); folders they leave empty are removed.
+# (sessions_keep_days=N in the config file, or --sessions N for one run). Then the session files
+# under each agent's session dirs (lib/agents.sh; its session file globs say which files are
+# transcripts) and rotated logs in its state dirs (outside its logs dirs, which the agent logs
+# step handles), last written more than N days ago and not in use, move to the Trash (restorable);
+# folders they leave empty are removed.
+# The walk never enters an agent's logs dirs, a memory folder (Claude Code keeps auto memory in
+# ~/.claude/projects/<project>/memory), an agent worktree dir, or any folder holding a .git entry:
+# those hold what an agent remembers and the user's own projects, not conversations.
 # The config file is standing consent: without a terminal only a configured retention acts.
 _CLEAN_ROTATED_LOGS=('*.log.[0-9]*' '*.log.*.gz' '*.log.old')
+_CLEAN_SESSION_KEEP_DIRS=(memory)
+
+# _clean_repo_prune ROOT — set the `prune` array (the caller's) to a -path test per git checkout
+# under ROOT: a folder holding a .git entry is a repository's work tree, so it holds the user's
+# own files whatever they are named. An unreadable walk leaves every checkout found so far in,
+# and the files it could not see are never listed either, so nothing is lost.
+_clean_repo_prune() {
+  local d
+  prune=()
+  while IFS= read -r -d '' d; do prune+=(-o -path "$(_clean_find_literal "$d")"); done \
+    < <(find "$1" -xdev -name .git -printf '%h\0' 2>/dev/null)
+}
 
 # _clean_trash_dev — device id of the Trash files dir (or its nearest existing ancestor).
 _clean_trash_dev() {
@@ -617,14 +731,16 @@ _clean_agent_root() {
 _clean_sessions() {
   local days="$1" from="$2" now tdev i dir root rec t blk path n b old rc d l
   local total=0 tb=0
-  local -a units=() names=() logs=() match=() skip=(-false)
+  local -a units=() names=() logs=() match=() files=() skip=(-false) prune=()
   # Per agent index: candidates, their bytes, oldest mtime; moved, moved bytes, kept, failed,
   # emptied folders. s_up: every folder above a moved file (inside its root) -> "index<TAB>root".
   local -A seen=() s_cnt=() s_bytes=() s_old=() s_n=() s_b=() s_kept=() s_fail=() s_empty=() s_up=()
   _clean_cat "Agent sessions older than $days days"
   now=$(date +%s) tdev=$(_clean_trash_dev)
   for d in "${_CLEAN_ROTATED_LOGS[@]}"; do logs+=(-o -name "$d"); done
-  for l in "${MM_AGENT_LOGS[@]}"; do
+  for d in "${_CLEAN_SESSION_KEEP_DIRS[@]}"; do skip+=(-o -name "$d"); done
+  # shellcheck disable=SC2153 # set by lib/agents.sh
+  for l in "${MM_AGENT_LOGS[@]}" "${MM_AGENT_WORKTREES[@]}"; do
     for d in $l; do d=$(realpath -e -- "$d" 2>/dev/null) && skip+=(-o -path "$(_clean_find_literal "$d")"); done
   done
   for i in "${!MM_AGENT_NAME[@]}"; do
@@ -634,7 +750,15 @@ _clean_sessions() {
       [[ -d "$dir" ]] || continue
       _clean_agent_root "$dir" "$tdev" || continue
       root=$_CLEAN_ROOT match=(-type f)
-      [[ " ${MM_AGENT_SESSIONS[$i]} " == *" $dir "* ]] || match=(-type f \( "${logs[@]:1}" \))
+      if [[ " ${MM_AGENT_SESSIONS[$i]} " == *" $dir "* ]]; then
+        files=()
+        # shellcheck disable=SC2153 # set by lib/agents.sh
+        for d in ${MM_AGENT_SESSION_FILES[$i]}; do files+=(-o -name "$d"); done
+        (( ${#files[@]} )) && match=(-type f \( "${files[@]:1}" \))
+      else
+        match=(-type f \( "${logs[@]:1}" \))
+      fi
+      _clean_repo_prune "$root"
       while IFS= read -r -d '' rec; do
         t=${rec%% *} rec=${rec#* } blk=${rec%% *} path=${rec#* }
         [[ -z "${seen[$path]+x}" ]] || continue
@@ -642,7 +766,7 @@ _clean_sessions() {
         units+=("$i"$'\t'"$root"$'\t'"$path")
         s_cnt[$i]=$(( ${s_cnt[$i]:-0} + 1 )) s_bytes[$i]=$(( ${s_bytes[$i]:-0} + blk * 512 ))
         t=${t%.*}; (( t < ${s_old[$i]:-$now} )) && s_old[$i]=$t
-      done < <(find "$root" -xdev \( -type d \( "${skip[@]}" \) -prune \) -o \
+      done < <(find "$root" -xdev \( -type d \( "${skip[@]}" "${prune[@]}" \) -prune \) -o \
         \( "${match[@]}" -mmin +$((days * 1440)) -printf '%T@ %b %p\0' \) 2>/dev/null)
     done
   done
@@ -967,12 +1091,11 @@ _clean_ask() {
   return 1
 }
 
-# _clean_confirm_pkgs LABEL QUESTION PKG... — list packages, then _clean_ask.
+# _clean_confirm_pkgs LABEL QUESTION PKG... — list every package the step would act on, then
+# _clean_ask. Nothing is hidden behind a count: one "y" acts on all of them.
 _clean_confirm_pkgs() {
   local label="$1" q="$2"; shift 2
-  local shown=("${@:1:8}") more=""
-  (( $# > 8 )) && more=" (+$(($# - 8)) more)"
-  mm_act "$label: $(IFS=' '; echo "${shown[*]}")$more"
+  mm_act "$label: $(IFS=' '; echo "$*")"
   _clean_ask "$label" "$q"
 }
 
@@ -986,25 +1109,84 @@ _clean_apt_cache() {
   mm_ok "APT package cache" "$(_clean_detail "$n" packages "$b")"
 }
 
+# Packages apt says nothing needs any more. Removed, not purged: --purge would also delete their
+# configuration under /etc, hand-edited files included, which the simulation above does not show
+# and the prompt does not mention. What stays behind lands in the rc state the step below asks
+# about.
 _clean_apt_autoremove() {
   local -a pkgs; local b
   mapfile -t pkgs < <(apt-get -s autoremove 2>/dev/null | awk '/^Remv / { print $2 }')
   if (( ${#pkgs[@]} == 0 )); then mm_ok "Unused packages" "none"; return; fi
   b=$(_clean_pkg_bytes "${pkgs[@]}")
-  _clean_confirm_pkgs "Unused packages" "Autoremove ${#pkgs[@]} packages?" "${pkgs[@]}" || return 0
-  _clean_apt_run "apt-get autoremove" -y autoremove --purge || return 0
+  _clean_confirm_pkgs "Unused packages" "Autoremove ${#pkgs[@]} packages (their config files stay)?" "${pkgs[@]}" || return 0
+  _clean_apt_run "apt-get autoremove" -y autoremove || return 0
   _clean_track "$b" "${#pkgs[@]}"
   mm_ok "Unused packages" "$(_clean_detail "${#pkgs[@]}" packages "$b")"
 }
 
+# Where dpkg keeps the maintainer scripts of installed and removed packages (a plain variable:
+# tests point it at a sandbox, nothing in the environment can change it).
+_CLEAN_DPKG_INFO=/var/lib/dpkg/info
+
+# Config files of packages that were removed but not purged (dpkg state "rc"). Purging runs each
+# package's postrm with "purge", which for many daemons deletes their data as well: docker.io
+# wipes /var/lib/docker, postgresql-* drops its clusters, others remove /var/lib/<package> or a
+# service user's home. Those packages are kept and listed for review; the rest are purged by name
+# (never `~c`, which would take the kept ones too).
 _clean_apt_residual() {
-  local -a pkgs
+  local p note=""
+  local -a pkgs=() pick=() risky=()
   mapfile -t pkgs < <(dpkg -l 2>/dev/null | awk '$1 == "rc" { print $2 }')
   if (( ${#pkgs[@]} == 0 )); then mm_ok "Residual configs" "none"; return; fi
-  _clean_confirm_pkgs "Residual configs" "Purge leftover config files of ${#pkgs[@]} removed packages?" "${pkgs[@]}" || return 0
-  _clean_apt_run "purge residual configs" -y purge '~c' || return 0
-  _clean_track 0 "${#pkgs[@]}"
-  mm_ok "Residual configs" "${#pkgs[@]} packages purged"
+  for p in "${pkgs[@]}"; do
+    if _clean_postrm_deletes_data "$p"; then risky+=("$p"); else pick+=("$p"); fi
+  done
+  if (( ${#risky[@]} )); then
+    note=", ${#risky[@]} kept (their purge scripts delete data)"
+    _clean_review "Config files of removed packages" \
+      "${#risky[@]} kept: $(IFS=', '; echo "${risky[*]}") · purging them runs a script that deletes the package's data" \
+      "to purge one with its data: sudo apt-get purge <package>"
+  fi
+  if (( ${#pick[@]} == 0 )); then mm_ok "Residual configs" "nothing to purge${note}"; return; fi
+  _clean_confirm_pkgs "Residual configs" \
+    "Purge the config files of ${#pick[@]} removed packages (this runs their purge scripts)?" "${pick[@]}" || return 0
+  _clean_apt_run "purge residual configs" -y purge "${pick[@]}" || return 0
+  _clean_track 0 "${#pick[@]}"
+  mm_ok "Residual configs" "${#pick[@]} packages purged${note}"
+}
+
+# _clean_postrm_deletes_data PKG — 0 when purging PKG would run a script that deletes data: it
+# drops a PostgreSQL cluster (pg_dropcluster), wipes a container store (nuke-graph-directory),
+# removes a service user's home (deluser --remove-home), or runs a recursive rm on something
+# under /var/lib (other than dpkg's, systemd's and ucf's bookkeeping), /srv, /home, /var/www or
+# /opt. A path it cannot read as a literal (a variable, a glob) counts as such a delete, and so
+# does an unreadable script: only a script whose deletes are all plainly harmless lets a purge
+# through.
+_clean_postrm_deletes_data() {
+  local p=${1%%:*} f
+  local -a files=()
+  for f in "$_CLEAN_DPKG_INFO/$p.postrm" "$_CLEAN_DPKG_INFO/$p":*.postrm; do
+    [[ -f "$f" ]] || continue
+    [[ -r "$f" ]] || return 0
+    files+=("$f")
+  done
+  (( ${#files[@]} )) || return 1
+  awk '
+    /pg_dropcluster|nuke-graph-directory/ { bad = 1 }
+    /deluser/ && /--remove-home/ { bad = 1 }
+    /(^|[^[:alnum:]_.\/-])rm[[:space:]]+(-[^[:space:]]+[[:space:]]+)*-[^[:space:]]*r/ {
+      n = split($0, w, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        p = w[i]
+        gsub(/^["'\'']+|["'\'']+$/, "", p)
+        if (p ~ /^-/ || p == "") continue
+        if (p ~ /[$*?`]/) { bad = 1; continue }
+        if (p ~ /^\/(srv|home|opt)(\/|$)/ || p ~ /^\/var\/www(\/|$)/) bad = 1
+        if (p ~ /^\/var\/lib\// && p !~ /^\/var\/lib\/(dpkg|systemd|ucf)(\/|$)/) bad = 1
+      }
+    }
+    END { exit(bad ? 0 : 1) }
+  ' "${files[@]}"
 }
 
 # _clean_kernels — kernel packages other than the running and the newest installed one. Nothing
@@ -1089,13 +1271,30 @@ _CLEAN_OLD_DAYS=7   # rotated logs and crash dumps last written longer ago than 
 _CLEAN_OPEN_FDS='find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null; printf -- "-\0"'
 
 # Run as root with MINUTES, then DEV:INODE PATH pairs: delete each PATH that is still the same
-# regular file, still unmodified for MINUTES, and open by no process.
+# regular file, still unmodified for MINUTES, and open by no process. The open set has to be
+# complete, so each process's descriptors are read on their own. A process that ends during the
+# scan holds nothing open any more and is skipped. One that is still there but whose descriptors
+# cannot be read (find fails, or a link target comes back empty) is tried three times, since
+# descriptors open and close while find reads them; after that its open files are unknown and
+# the run deletes nothing. An empty entry is never used as an array key either: that is a bash
+# error, and it used to abandon the scan loop and leave the rest of the open files unseen.
 _CLEAN_ROOT_RM='min=$1; shift; rc=0
 declare -A open=()
-while IFS= read -r -d "" t; do open[$t]=1; done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null)
+for d in /proc/[0-9]*/fd; do
+  for try in 1 2 3; do
+    ok=0 seen=()
+    while IFS= read -r -d "" t; do
+      if [[ "$t" == - ]]; then ok=1; elif [[ -z "$t" ]]; then ok=0; break; else seen+=("$t"); fi
+    done < <(find "$d" -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null && printf -- "-\0")
+    (( ok )) || [[ -e "${d%/fd}" ]] || ok=1 seen=()
+    (( ok )) && break
+  done
+  (( ok )) || { echo "cannot see the open files of ${d%/fd}: nothing removed" >&2; exit 1; }
+  for t in "${seen[@]}"; do open[$t]=1; done
+done
 while (( $# >= 2 )); do
   id=$1 p=$2; shift 2
-  [[ -z ${open[$p]+x} ]] || continue
+  [[ -n "$p" && -z ${open[$p]+x} ]] || continue
   [[ "$(find "$p" -maxdepth 0 -type f -mmin "+$min" -printf "%D:%i" 2>/dev/null)" == "$id" ]] || continue
   rm -f -- "$p" || rc=1 # SAFE: a listed, confirmed old log or dump, re-checked (same inode, still old, not open) just above
 done
@@ -1213,18 +1412,9 @@ _clean_docker() {
     mm_skip "Docker" "$why; MM_DOCKER_PRUNE=1 cleans it anyway"; _clean_cat_end; return
   fi
   if ! timeout 5 docker info >/dev/null 2>&1; then mm_skip "Docker" "daemon not reachable"; _clean_cat_end; return; fi
-  local n b size
+  local b
   _clean_docker_containers
-
-  # Dangling images.
-  n=0 b=0
-  while IFS= read -r size; do
-    n=$((n + 1)) b=$((b + $(_clean_to_bytes "$size")))
-  done < <(timeout 30 docker images -f dangling=true --format '{{.Size}}' 2>/dev/null)
-  if (( n == 0 )); then mm_ok "Dangling images" "none"
-  elif mm_run "docker image prune" timeout 600 docker image prune -f; then
-    _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
-  fi
+  _clean_docker_dangling
 
   _clean_docker_images
 
@@ -1273,6 +1463,33 @@ _clean_dockerd_here() {
   return 1
 }
 
+# Untagged ("dangling") images: layers no tag points at any more, usually left by a rebuild, but
+# also what `docker commit` with no name produces, which can be the only copy of a container's
+# saved state. So they are listed one by one and confirmed like every other image, never pruned
+# on their own: `docker image prune -f` would take the lot with no prompt, including unattended
+# runs. Removal names each id, without -f, so the daemon still refuses one a container uses.
+_clean_docker_dangling() {
+  local out row id size n=0 b=0
+  local -a ids=()
+  if ! out=$(timeout 30 docker images -f dangling=true --no-trunc --format $'{{.ID}}\t{{.Size}}' 2>/dev/null); then
+    mm_skip "Dangling images" "cannot list images"; return
+  fi
+  while IFS=$'\t' read -r id size; do
+    [[ -n "$id" ]] || continue
+    size=$(_clean_to_bytes "$size")
+    ids+=("$id") n=$((n + 1)) b=$((b + size))
+    mm_act "${id#sha256:} · untagged, $(mm_human "$size")"
+  done <<<"$out"
+  if (( n == 0 )); then mm_ok "Dangling images" "none"; return; fi
+  mm_info "  an image you saved with docker commit and never tagged looks like this"
+  _clean_ask "Dangling images" "Remove $n untagged images ($(mm_human "$b"))?" || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"; return
+  fi
+  mm_run "docker image rm $n untagged images" timeout 600 docker image rm "${ids[@]}" || return 0 # SAFE: listed, confirmed untagged images; no -f, so the daemon refuses ones a container uses
+  _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
+}
+
 # Stopped containers whose last run ended 7+ days ago (never-started ones: created 7+ days ago).
 # `container prune --filter until=` goes by creation time and would take a long-lived container
 # stopped minutes ago, so candidates come from inspect data, are listed and confirmed, then removed
@@ -1299,8 +1516,7 @@ _clean_docker_containers() {
     lines+=("${name#/} ($image) · $what $(( (now - t) / 86400 ))d ago, $(mm_human "$size")")
   done
   if (( n == 0 )); then mm_ok "Stopped containers" "none stopped for 7+ days"; return; fi
-  for row in "${lines[@]:0:10}"; do mm_act "$row"; done
-  (( n > 10 )) && mm_act "(+$((n - 10)) more)"
+  for row in "${lines[@]}"; do mm_act "$row"; done
   _clean_ask "Stopped containers" "Remove $n stopped containers ($(mm_human "$b"))?" || return 0
   mm_run "docker rm $n containers" timeout 300 docker rm "${pick[@]}" || return 0 # SAFE: listed, confirmed set of containers stopped 7+ days; no -f, so running ones are refused
   _clean_track "$b" "$n"
@@ -1308,14 +1524,17 @@ _clean_docker_containers() {
 }
 
 # Unused images: tagged images no container (running, stopped or never started) was created from,
-# built and last pulled or tagged 30+ days ago. Listed with the space only they hold (`docker
-# system df -v` unique size), confirmed, then removed one by one with `docker image rm` naming
-# every tag (an ID with several tags would need -f). Without -f the daemon still refuses an image
-# a container uses or that other images build on. Space freed is `docker system df` before/after.
+# built and last pulled or tagged 30+ days ago, and that a registry still has (RepoDigests).
+# An image with no digests was built, committed or loaded here and never pushed, so removing it
+# would be the end of it: those are listed under "Kept for you to review" instead. The rest are
+# listed with the space only they hold (`docker system df -v` unique size), confirmed, then
+# removed one by one with `docker image rm` naming every tag (an ID with several tags would need
+# -f). Without -f the daemon still refuses an image a container uses or that other images build
+# on. Space freed is `docker system df` before/after.
 _clean_docker_images() {
-  local now cutoff out row id tags created tagged t last what n=0 b=0 est before after freed ok=0 fail=0
+  local now cutoff out row id tags created tagged digests t last what n=0 b=0 est before after freed ok=0 fail=0
   local -A used=() uniq=()
-  local -a cids=() ids=() lines=() rm_tags=() argv=()
+  local -a cids=() ids=() lines=() rm_tags=() argv=() only_here=()
   now=$(date +%s); cutoff=$((now - _CLEAN_IMAGE_DAYS * 86400))
   # Fail closed: an image whose container went unseen would be offered.
   if ! out=$(timeout 30 docker ps -aq --no-trunc 2>/dev/null); then mm_skip "Unused images" "cannot list containers"; return; fi
@@ -1331,11 +1550,12 @@ _clean_docker_images() {
   while IFS=$'\t' read -r id est; do [[ -n "$id" ]] && uniq[$id]=$(_clean_to_bytes "$est"); done < <(timeout 60 docker system df -v \
     --format $'{{range .Images}}{{.ID}}\t{{.UniqueSize}}\n{{end}}' 2>/dev/null)
   # `join` rejects RepoTags on older clients (Docker 27 decodes it as []interface{}); range works.
-  if ! out=$(timeout 60 docker image inspect -f $'{{.Id}}\t{{range .RepoTags}}{{.}} {{end}}\t{{.Created}}\t{{.Metadata.LastTagTime}}' \
+  if ! out=$(timeout 60 docker image inspect \
+    -f $'{{.Id}}\t{{range .RepoTags}}{{.}} {{end}}\t{{.Created}}\t{{.Metadata.LastTagTime}}\t{{len .RepoDigests}}' \
     "${ids[@]}" 2>/dev/null); then
     mm_skip "Unused images" "cannot inspect images"; return
   fi
-  while IFS=$'\t' read -r id tags created tagged; do
+  while IFS=$'\t' read -r id tags created tagged digests; do
     tags=${tags% }
     [[ -n "$id" && -n "$tags" && -z "${used[$id]+x}" ]] || continue
     t=$(date -d "$created" +%s 2>/dev/null) || continue
@@ -1347,15 +1567,19 @@ _clean_docker_images() {
       what="last pulled or tagged"; (( last > t )) && t=$last
     fi
     (( t > 0 && t < cutoff )) || continue
-    est=${uniq[$id]:-0}
-    rm_tags+=("$tags") n=$((n + 1)) b=$((b + est))
     read -r row _ <<<"$tags"
     [[ "$tags" == *" "* ]] && row+=" (+$(( $(wc -w <<<"$tags") - 1 )) tags)"
+    est=${uniq[$id]:-0}
+    # No digest means no registry has it: it was built, committed or loaded here, never pushed.
+    if [[ "$digests" == 0 ]]; then only_here+=("$row ($(mm_human "$est"))"); continue; fi
+    rm_tags+=("$tags") n=$((n + 1)) b=$((b + est))
     lines+=("$row · $what $(( (now - t) / 86400 ))d ago, $(mm_human "$est")")
   done <<<"$out"
+  (( ${#only_here[@]} )) && _clean_review "Docker images no registry has" \
+    "${#only_here[@]} unused: $(IFS=', '; echo "${only_here[*]}") · built, committed or loaded here, so they cannot be pulled again" \
+    "docker save <image> -o <file>.tar keeps a copy; docker image rm <image> removes one"
   if (( n == 0 )); then mm_ok "Unused images" "none unused for ${_CLEAN_IMAGE_DAYS}+ days"; return; fi
-  for row in "${lines[@]:0:10}"; do mm_act "$row"; done
-  (( n > 10 )) && mm_act "(+$((n - 10)) more)"
+  for row in "${lines[@]}"; do mm_act "$row"; done
   _clean_ask "Unused images" "Remove $n images no container uses ($(mm_human "$b"))?" || return 0
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     _clean_track "$b" "$n"; mm_ok "Unused images" "$(_clean_detail "$n" images "$b") unused for ${_CLEAN_IMAGE_DAYS}+ days"; return
@@ -1538,11 +1762,26 @@ _clean_browser_tmp_root() {
   echo "$root"
 }
 
+# _clean_browser_live ROOT ENTRY... — 0 if a Playwright browser launched out of ROOT is running:
+# a process has something open in one of its profile folders (playwright_chromiumdev_profile-*,
+# how a live browser shows up, since it holds its own lock there), or was started with a
+# --user-data-dir in ROOT. That run's playwright-artifacts-* folder holds its downloads and
+# traces, and nothing in it is open or named on a command line, so a browser that sits idle for
+# two hours would otherwise look abandoned.
+_clean_browser_live() {
+  local root="$1" e; shift
+  for e in "$@"; do
+    [[ "${e##*/}" == playwright_chromiumdev_profile-* ]] || continue
+    mm_in_use "$e" && return 0
+  done
+  mm_proc_match "" "--user-data-dir[= ]$(_clean_ere_quote "$root")/playwright_chromiumdev_profile-"
+}
+
 # _clean_browser_tmp ROOT — remove ROOT's automation-browser leftovers (above) via mm_rm, with ROOT
 # as the allowed root. Idle time is the newest mtime or ctime of anything inside the entry. The
 # section is shown only when ROOT holds such entries.
 _clean_browser_tmp() {
-  local root="$1" label="Browser temp files in $1" e now newest rc n=0 b=0 kept=0 fail=0 recent=0 note=""
+  local root="$1" label="Browser temp files in $1" e now newest rc live=0 n=0 b=0 kept=0 fail=0 recent=0 busy=0 note=""
   local -a names=() found=()
   [[ -d "$root" ]] || return 0
   for e in "${_CLEAN_BROWSER_TMP_NAMES[@]}"; do
@@ -1554,7 +1793,9 @@ _clean_browser_tmp() {
   (( ${#found[@]} )) || return 0
   _clean_cat "Automation browsers"
   now=$(date +%s)
+  _clean_browser_live "$root" "${found[@]}" && live=1
   for e in "${found[@]}"; do
+    if (( live )) && [[ "${e##*/}" == playwright-artifacts-* ]]; then busy=$((busy + 1)); continue; fi
     newest=$(find "$e" -printf '%T@\n%C@\n' 2>/dev/null | awk '$1 > m { m = $1 } END { printf "%.0f\n", m }')
     if (( newest == 0 || now - newest < _CLEAN_BROWSER_TMP_IDLE )); then recent=$((recent + 1)); continue; fi
     rc=0; mm_rm "$e" "$root" || rc=$?
@@ -1565,6 +1806,7 @@ _clean_browser_tmp() {
     esac
   done
   (( recent )) && note=", $recent used in the last 2 hours kept"
+  (( busy )) && note+=", $busy kept (a Playwright browser is running)"
   if (( n + kept + fail == 0 )); then
     mm_ok "$label" "nothing idle for 2 hours${note}"
   else

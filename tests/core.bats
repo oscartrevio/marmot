@@ -712,3 +712,133 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
   run env MM_CONTAINER=0 bash -c '. "$1/lib/core.sh"; mm_sysline' _ "$MM_SRC"
   [[ "$output" != *container* && "$output" == *" · $(nproc) cores · "*"GB RAM | Free: "* ]]
 }
+
+# ---------------------------------------------------------------- whitelist entries as written
+
+@test "whitelist entries protect what they name: brackets, #, \$HOME, ~user, a BOM, a symlink" {
+  local me p; me=$(id -un)
+  mm_test_fake getent "printf '%s\n' '$me:x:$(id -u):$(id -g)::$HOME:/bin/bash'"
+  local dirs=("$SB/root/[2024] taxes" "$SB/root/C#/app" "$HOME/datasets" "$HOME/notes"
+    "$SB/real/client" "$HOME/globbed/x" "$SB/root/hash" "$SB/root/open")
+  for p in "${dirs[@]}"; do mkdir -p "$p/coverage"; echo personal >"$p/coverage/policy.pdf"; done
+  ln -s "$SB/real" "$HOME/code2"
+  printf '\xef\xbb\xbf%s\n' "$SB/root/[2024] taxes" >"$MM_WHITELIST_FILE"
+  printf '%s\n' "# a whole-line comment" "$SB/root/C#/app" '$HOME/datasets' "~$me/notes" \
+    '~/code2/client' '~/globbed/*' "$SB/root/hash  # and a trailing one" >>"$MM_WHITELIST_FILE"
+  mm_inuse_refresh
+  for p in "${dirs[@]:0:7}"; do
+    run try_rm "$p/coverage" "$p"
+    [ "$output" = "1 whitelisted" ] || { echo "not protected: $p ($output)"; false; }
+    [ -f "$p/coverage/policy.pdf" ]
+  done
+  run try_rm "$SB/root/open/coverage" "$SB/root/open"
+  [ "$output" = "0 " ]
+}
+
+@test "whitelist entries that can protect nothing are reported once, naming the entry" {
+  mkdir -p "$SB/root/x"
+  printf '%s\n' 'projects/keep' "$HOME/Re$(printf '\xcc\x81')sume" "$SB/root/x" >"$MM_WHITELIST_FILE"
+  mm_inuse_refresh
+  MM_SKIPS=()
+  mm_whitelisted "$SB/root/other" || true
+  [ "${#MM_SKIPS[@]}" -eq 1 ]
+  [[ "${MM_SKIPS[*]}" == *"projects/keep"* ]]
+  [[ "${MM_SKIPS[*]}" == *"sume"* ]]
+  mm_whitelisted "$SB/root/other" || true
+  [ "${#MM_SKIPS[@]}" -eq 1 ]
+  run try_rm "$SB/root/x" "$SB/root"
+  [ "$output" = "1 whitelisted" ]
+}
+
+# ---------------------------------------------------------------- dotfiles setups (symlinks)
+
+@test "symlinked ~/.claude, ~/.config and ~/.ssh keep their protection, through the link and behind it" {
+  rm -rf "$HOME/.config"   # stow and dotfiles repos move the whole folder out of the way
+  mkdir -p "$HOME/dotfiles/claude/projects/p" "$HOME/dotfiles/claude/local/node_modules" \
+    "$HOME/dotfiles/config/marmot" "$HOME/dotfiles/config/coc/extensions/node_modules" "$HOME/dotfiles/ssh"
+  echo s >"$HOME/dotfiles/claude/projects/p/s.jsonl"; echo k >"$HOME/dotfiles/ssh/id_ed25519"
+  echo x >"$HOME/dotfiles/config/coc/extensions/node_modules/i.js"
+  ln -s "$HOME/dotfiles/claude" "$HOME/.claude"
+  ln -s "$HOME/dotfiles/config" "$HOME/.config"
+  ln -s "$HOME/dotfiles/ssh" "$HOME/.ssh"
+  mm_core
+  : >"$MM_WHITELIST_FILE"
+  mm_inuse_refresh
+  local p
+  for p in "$HOME/dotfiles/claude" "$HOME/dotfiles/claude/projects/p" "$HOME/.claude/projects/p" \
+           "$HOME/dotfiles/claude/local/node_modules" "$HOME/dotfiles/config/coc" "$HOME/.config/coc" \
+           "$HOME/dotfiles/config/coc/extensions/node_modules"; do
+    run try_rm "$p" "$HOME"
+    [ "$output" = "1 whitelisted" ] || { echo "not protected: $p ($output)"; false; }
+  done
+  run try_rm "$HOME/dotfiles/ssh/id_ed25519" "$HOME"; [ "$output" = "1 protected" ]
+  run try_rm "$HOME/.ssh/id_ed25519" "$HOME";         [ "$output" = "1 protected" ]
+  [ -f "$HOME/dotfiles/ssh/id_ed25519" ]
+  [ -f "$HOME/dotfiles/claude/projects/p/s.jsonl" ]
+  [ -f "$HOME/dotfiles/config/coc/extensions/node_modules/i.js" ]
+}
+
+# ---------------------------------------------------------------- another account's home
+
+@test "another account's home is refused whoever runs marmot; this user's own artifacts still go" {
+  local me; me=$(id -un)
+  mkdir -p "$SB/alice/project/node_modules" "$HOME/proj/node_modules"
+  echo code >"$SB/alice/project/node_modules/i.js"; echo x >"$HOME/proj/node_modules/i.js"
+  mm_test_fake getent "printf '%s\n' 'root:x:0:0::/root:/bin/bash' 'sys:x:1:1::/:/usr/sbin/nologin' \
+    'backup:x:34:34::/var/backups:/usr/sbin/nologin' 'above:x:2:2::$(dirname "$HOME"):/bin/sh' \
+    'alice:x:1001:1001::$SB/alice:/bin/bash' '$me:x:$(id -u):$(id -g)::$HOME:/bin/bash'"
+  mm_inuse_refresh
+  run try_rm "$SB/alice/project/node_modules" "$SB/alice/project"
+  [[ "$output" == "1 another user's home (alice)"* ]]
+  [ -f "$SB/alice/project/node_modules/i.js" ]
+  # a system account whose home is / or a folder above HOME takes nothing of this user's away
+  run try_rm "$HOME/proj/node_modules" "$HOME/proj"
+  [ "$output" = "0 " ]
+  # a home under /home counts even when the password database does not list it
+  run mm_foreign_home /home/bob/code/app
+  [ "$status" -eq 0 ]; [ "$output" = bob ]
+  run mm_foreign_home "$HOME/proj"
+  [ "$status" -eq 1 ]
+}
+
+# ---------------------------------------------------------------- protections and the environment
+
+@test "an exported MM_KEEP_AGENT_STATE or an unusable whitelist path waives nothing" {
+  mkdir -p "$HOME/.claude/projects/p" "$HOME/mine/keep"
+  echo s >"$HOME/.claude/projects/p/s.jsonl"; echo k >"$HOME/mine/keep/f"
+  printf '%s\n' "$HOME/mine/keep" >"$MM_WHITELIST_FILE"
+  run env MM_KEEP_AGENT_STATE=0 bash -c '. "$1/lib/core.sh"; mm_inuse_refresh >/dev/null 2>&1
+    mm_rm "$2/.claude/projects/p" "$2/.claude" >/dev/null 2>&1; echo "$? $MM_SKIP_REASON"
+    echo "${MM_KEEP_AGENT_STATE-unset}"' _ "$MM_SRC" "$HOME"
+  [ "${lines[0]}" = "1 whitelisted" ]
+  [ "${lines[1]}" = unset ]
+  run env MM_WHITELIST_FILE=/dev/null bash -c '. "$1/lib/core.sh"; mm_inuse_refresh >/dev/null 2>&1
+    mm_rm "$2/mine/keep" "$2/mine" >/dev/null 2>&1; echo "$? $MM_SKIP_REASON"' _ "$MM_SRC" "$HOME"
+  [ "$output" = "1 whitelisted" ]
+  [ -f "$HOME/.claude/projects/p/s.jsonl" ]; [ -f "$HOME/mine/keep/f" ]
+  # set for one call by the command that needs it (mm purge, clean worktrees), it still works
+  mm_inuse_refresh
+  MM_KEEP_AGENT_STATE=0 MM_DRY_RUN=1 run try_rm "$HOME/.claude/projects/p" "$HOME/.claude"
+  [ "$output" = "0 " ]
+}
+
+@test "a Trash record that cannot be written is taken back, and the refusal names the space" {
+  mkdir -p "$SB/root/item" "$MM_TRASH_DIR/files" "$MM_TRASH_DIR/info"
+  echo important >"$SB/root/item/doc.txt"
+  mm_whitelist_init
+  # A disk with no room left: the exclusive create of the .trashinfo still works, the write into
+  # it does not (ulimit -f 0 stands in for a full filesystem; XFSZ ignored, so writes just fail).
+  run bash -c 'ulimit -f 0; trap "" XFSZ
+    . "$1/lib/core.sh"; mm_inuse_refresh >/dev/null 2>&1
+    rc=0; mm_rm --trash "$2/root/item" "$2/root" >/dev/null 2>&1 || rc=$?
+    echo "$rc $MM_SKIP_REASON"
+    echo "records $(find "$MM_TRASH_DIR/info" -type f | wc -l)"' _ "$MM_SRC" "$SB"
+  [[ "${lines[0]}" == "1 "*"no space"* ]]
+  [ "${lines[1]}" = "records 0" ]
+  [ "$(cat "$SB/root/item/doc.txt")" = important ]
+  # with room again the same name is free: nothing of the failed call is left to block it
+  mm_inuse_refresh
+  run try_rm --trash "$SB/root/item" "$SB/root"
+  [ "$output" = "0 " ]
+  [ "$(cat "$MM_TRASH_DIR/files/item/doc.txt")" = important ]
+}

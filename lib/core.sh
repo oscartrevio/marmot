@@ -294,24 +294,33 @@ mm_sudo() {
 
 MM_INUSE=""        # newline-separated snapshot; kept in memory so a killed run leaves no files
 MM_INUSE_REFS=""   # "path<TAB>source" for snapshot paths that only a reference keeps (mm_inuse_why)
-MM_INUSE_TAKEN=0
+MM_INUSE_TAKEN=0 MM_INUSE_AT=0   # whether a snapshot exists, and when it was taken (date +%s)
+MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""   # what the last snapshot could not see, if anything
 # mm_inuse_refresh — snapshot every path any process has as cwd, root, exe, open fd, mapping, or
 # bound unix socket, plus every mount point and bind-mount source (per mount namespace), so a
 # target containing a mount is never removed through it; then add references (_mm_inuse_refs):
 # files that a process's arguments, a launcher, a tool config, a systemd user unit or the crontab name.
-# Sees all processes as root or with passwordless sudo; otherwise only this user's
-# (MM_INUSE_PARTIAL=1, warned). An empty process snapshot is fatal: it would mean "nothing is in use".
+# The scan runs as this user and, as root or through passwordless sudo, again as root for the other
+# users' processes; both are merged, because root without CAP_SYS_PTRACE (a container's default
+# capabilities) may not read this user's process entries. Whatever a scan could not see (a process
+# entry it may not read, a mount it cannot place, no root scan at all) makes the snapshot partial:
+# MM_INUSE_PARTIAL=1, the reason in MM_INUSE_PARTIAL_WHY, warned once. An empty process snapshot is
+# fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
-  local out live refs script
-  script="$(declare -f _mm_inuse_scan); _mm_inuse_scan"
-  MM_INUSE_PARTIAL=0
-  if (( EUID == 0 )) || { [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; }; then
-    out=$(mm_sudo bash -c "$script")
-  else
-    MM_INUSE_PARTIAL=1
-    out=$(bash -c "$script")
-  fi
-  live=$(grep '^/' <<<"$out")
+  local out live refs script root
+  script="$(declare -f _mm_inuse_scan _mm_inuse_live _mm_mounts _mm_mount_paths); _mm_inuse_scan"
+  MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""
+  out=$(bash -c "$script")
+  if (( EUID == 0 )); then
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$out" | cut -f2-)
+  elif [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; then
+    root=$(mm_sudo bash -c "$script")
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$root" | cut -f2-)
+    out+=$'\n'$root
+  elif [[ "$MM_NO_SUDO" == 1 ]]; then MM_INUSE_PARTIAL_WHY="running without sudo, only your own processes are checked"
+  else MM_INUSE_PARTIAL_WHY="no passwordless sudo, only your own processes are checked"; fi
+  [[ -n "$MM_INUSE_PARTIAL_WHY" ]] && MM_INUSE_PARTIAL=1
+  live=$(grep '^/' <<<"$out" | sort -u)
   MM_INUSE_TAKEN=1 MM_INUSE="" MM_INUSE_REFS=""
   [[ -n "$live" ]] || mm_die "could not list in-use paths; refusing to delete anything"
   refs=$(grep '^A' <<<"$out" | _mm_inuse_refs)
@@ -319,25 +328,26 @@ mm_inuse_refresh() {
   MM_INUSE=$({ printf '%s\n' "$live"; [[ -n "$MM_INUSE_REFS" ]] && cut -f1 <<<"$MM_INUSE_REFS"; } | sort -u)
   if [[ "$MM_INUSE_PARTIAL" == 1 && -z "${_MM_PARTIAL_WARNED:-}" ]]; then
     _MM_PARTIAL_WARNED=1
-    if [[ "$MM_NO_SUDO" == 1 ]]; then mm_warn "Running without sudo: only your own processes are checked for in-use paths"
-    else mm_warn "No passwordless sudo: only your own processes are checked for in-use paths"; fi
+    mm_warn "In-use check is partial: $MM_INUSE_PARTIAL_WHY"
   fi
+  MM_INUSE_AT=$(date +%s)
   mm_debug "in-use snapshot: $(mm_inuse_paths | wc -l) paths (partial=$MM_INUSE_PARTIAL)"
 }
 
 # _mm_inuse_scan — every live path (sorted, one per line), then "A<TAB>process PID (comm)<TAB>word"
-# for each argument containing a /. Runs in a child bash (as root when possible), so it uses
-# nothing else from this file. Batch reads: one find, one cat, a few awks, whatever the process count.
+# for each argument containing a /, and "P<TAB>why" when something could not be read: a process
+# entry this user may not open (EACCES; a vanished process is not that), or a mount _mm_mount_paths
+# cannot place. Runs in a child bash (as root when possible), so it uses nothing else from this file
+# but _mm_inuse_live, _mm_mounts and _mm_mount_paths (declared with it).
 _mm_inuse_scan() {
+  export LC_ALL=C   # the errors sifted below are matched in English
   local p w c a=()
-  { find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
-    # cat, not one awk over the files: mawk stops at the first unreadable one
-    cat /proc/[0-9]*/maps | awk '$6 ~ /^\// && !seen[$6]++ { print $6 }'
-    { echo /proc/self/mountinfo
-      find /proc/[0-9]*/ns/mnt -maxdepth 0 -printf '%l %h\n' | awk '!seen[$1]++ { sub(/\/ns$/, "/mountinfo", $2); print $2 }'
-    } | xargs -d '\n' cat | awk '{ print $4; print $5 }'
-    awk 'NR > 1 && $8 ~ /^\// { print $8 }' /proc/net/unix
-  } 2>/dev/null | sed 's/ (deleted)$//' | grep '^/' | sort -u
+  # The live paths go through the filter; _mm_inuse_live's stderr is sifted for refusals and for
+  # the "P" lines of _mm_mount_paths, which reach the output directly (fd 4), not through the filter.
+  { { _mm_inuse_live 2>&1 >&3 | awk -F'\t' '$1 == "P" { print; next } /Permission denied/ { n++ }
+        END { if (n) print "P\t" n " process entries could not be read (no CAP_SYS_PTRACE?)" }' >&4
+    } 3>&1 | sed 's/ (deleted)$//' | grep '^/' | sort -u
+  } 4>&1
   for p in /proc/[0-9]*; do
     [[ "${p#/proc/}" == "$$" || "${p#/proc/}" == "$PPID" ]] && continue   # this scan and its sudo
     { mapfile -d '' -t a <"$p/cmdline" && IFS= read -r c <"$p/comm"; } 2>/dev/null || continue
@@ -346,23 +356,119 @@ _mm_inuse_scan() {
   return 0
 }
 
+# _mm_inuse_live — raw live paths, unsorted: every process's cwd, root, exe, open fds and mappings,
+# every mount (_mm_mounts) and every bound unix socket. Batch reads: one find, one cat, a few awks,
+# whatever the process count. Errors (what could not be read) stay on stderr for the caller.
+_mm_inuse_live() {
+  find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
+  # cat, not one awk over the files: mawk stops at the first unreadable one. A path is the rest
+  # of the line after the fixed fields (five in maps, seven in /proc/net/unix): it may hold spaces.
+  cat /proc/[0-9]*/maps | awk '{ sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\// && !seen[$0]++'
+  _mm_mounts
+  awk 'NR > 1 { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\//' /proc/net/unix
+  return 0
+}
+
+# _mm_mounts — every mount point and bind-mount source of this mount namespace and of every
+# readable /proc/PID/mountinfo (one per namespace where its ns link can be read, else all of them,
+# so a process this user may not inspect still shows its mounts), decoded and mapped into this
+# namespace's paths by _mm_mount_paths.
+_mm_mounts() {
+  { echo /proc/self/mountinfo
+    find /proc/[0-9]*/ns/mnt -maxdepth 0 -printf '%l\t%h\n' 2>/dev/null |
+      awk -F'\t' '$1 == "" || !seen[$1]++ { sub(/\/ns$/, "/mountinfo", $2); print $2 }'
+  } | xargs -d '\n' cat 2>/dev/null | _mm_mount_paths /proc/self/mountinfo
+}
+
+# _mm_mount_paths HOST < MOUNTINFO_LINES — for each line (any namespace's), its root and mount
+# point decoded (mountinfo writes space, tab, newline and backslash as \040 \011 \012 \134), plus
+# the root as a path of this namespace: the root is relative to the filesystem the mount is on
+# (a container's `-v ~/proj:/work` reads root=/tester/proj when /home is its own filesystem), so
+# it is placed through every mount of the same major:minor in HOST (this namespace's mountinfo):
+# HOST's mount point plus the root's remainder below HOST's root. A mount on a filesystem HOST
+# does not have prints "P<TAB>why" on stderr (the snapshot is partial), except filesystems that
+# hold no files of this namespace (proc, sysfs, tmpfs, cgroup, ...).
+_mm_mount_paths() {
+  awk '
+    function unesc(s,   o, i, c) {
+      o = ""
+      while ((i = index(s, "\\")) > 0) {
+        c = substr(s, i + 1, 3); o = o substr(s, 1, i - 1)
+        if (c == "040") o = o " "; else if (c == "011") o = o "\t"; else if (c == "012") o = o "\n"
+        else if (c == "134") o = o "\\"; else { o = o "\\"; s = substr(s, i + 1); continue }
+        s = substr(s, i + 4)
+      }
+      return o s
+    }
+    BEGIN {
+      n = split("proc sysfs devpts devtmpfs tmpfs mqueue cgroup cgroup2 securityfs debugfs tracefs pstore bpf " \
+        "binfmt_misc configfs fusectl hugetlbfs nsfs efivarfs selinuxfs rpc_pipefs autofs", a, " ")
+      for (i = 1; i <= n; i++) pseudo[a[i]] = 1
+    }
+    NR == FNR { k = ++hn[$3]; hroot[$3, k] = unesc($4); hmnt[$3, k] = unesc($5); next }
+    {
+      root = unesc($4); mnt = unesc($5)
+      print root; print mnt
+      if (!($3 in hn)) {
+        for (i = 7; i <= NF && $i != "-"; i++) ;
+        if (!($(i + 1) in pseudo))
+          print "P\tmount " mnt " of another namespace is on a filesystem this one does not have" > "/dev/stderr"
+        next
+      }
+      for (k = 1; k <= hn[$3]; k++) {
+        hr = hroot[$3, k]; hm = hmnt[$3, k]
+        if (root == hr) print hm
+        else if (hr == "/") print (hm == "/" ? "" : hm) root
+        else if (index(root, hr "/") == 1) print hm substr(root, length(hr) + 1)
+      }
+    }' "$1" -
+}
+
+# mm_live_under REAL — 0 if, right now and as this user sees it, a process has REAL or something
+# under it as cwd, root, exe, open fd, mapping or bound socket, or a mount point or bind source
+# (this namespace's and every readable one's) lies there. The last look before the sink, after the
+# snapshot (seconds old by then) and the sizing: a process that started meanwhile is seen, and a
+# mount made meanwhile too (rm --one-file-system descends into a bind mount from the same
+# filesystem and would empty its source). Other users' processes stay with the snapshot's root view.
+# A look that reads nothing at all (not even this namespace's mounts) counts as in use.
+mm_live_under() {
+  MM_P="${1%/}" awk 'BEGIN { p = ENVIRON["MM_P"] } { sub(/ \(deleted\)$/, "") }
+    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !(found || NR == 0) }' < <(_mm_inuse_live 2>/dev/null)
+}
+
 # _mm_inuse_refs < ARGV_LINES — "path<TAB>source" for every existing regular file (never a
 # directory) named by a running process's arguments (stdin, from _mm_inuse_scan); by a launcher in
-# ~/.local/bin, ~/bin or a $PATH dir inside $HOME (symlink target, both as written and resolved, or
-# a path inside a text file up to 64KB); by a tool config (agent state files and *.json/jsonc/toml/
-# yaml/yml at depth <= 2 in agent state dirs outside their session and logs dirs, up to 16MB: a
-# long-used ~/.claude.json holds user-scope MCP servers and grows past 1MB; and files named *mcp*
-# with those extensions up to depth 4 in dot-folders, up to 1MB); by a systemd user unit; or by
-# the crontab.
-# Paths are normalized (~, $HOME, . and .. ) but not resolved through symlinks: a venv's bin/python
-# must keep the venv. Tokens are words starting with / or ~/ cut at quotes, spaces and , = : ; ( ) etc.
+# ~/.local/bin, ~/bin, a $PATH dir inside $HOME or a dir inside $HOME a shell startup file's PATH
+# line names (symlink target, both as written and resolved, or a path inside a text file up to
+# 64KB); by a tool config (agent state files and *.json/jsonc/toml/yaml/yml at depth <= 2 in agent
+# state dirs outside their session and logs dirs, up to 16MB: a long-used ~/.claude.json holds
+# user-scope MCP servers and grows past 1MB; and files named *mcp* with those extensions up to
+# depth 4 in dot-folders, up to 1MB); by a shell startup file (~/.bashrc, ~/.profile, ~/.zshrc,
+# fish's config.fish, ...: an alias, a sourced file); by a systemd user or system unit; or by the
+# crontab. Units and the crontab also name files relative to where the job runs: after `cd DIR &&`,
+# under WorkingDirectory= (default: the home, / for a system unit), with %h for the home.
+# Paths are normalized (~, $HOME, . and ..) and each is also kept with its folders resolved
+# (_mm_refs_resolved): mm_rm compares resolved paths. Tokens are words starting with / or ~/ cut at
+# quotes, spaces and , = : ; ( ) etc.; a relative one is a word with a / inside.
 _mm_inuse_refs() {
   local re='(^|[^A-Za-z0-9_.~/-])(~|\$HOME|\$\{HOME\})?/[^[:space:]"'\''`,=:;(){}<>|&]+'
   local ext=(\( -name '*.json' -o -name '*.jsonc' -o -name '*.toml' -o -name '*.yaml' -o -name '*.yml' \))
-  local d s p bins=() states=() dirs=() dots=() prune=() links=() targets=() parts=()
+  local d s p bins=() states=() dirs=() dots=() prune=() links=() targets=() parts=() startup=() uunits=() sunits=()
+  local -A isbin=()
+  for p in "$HOME"/.bashrc "$HOME"/.bash_profile "$HOME"/.bash_aliases "$HOME"/.profile "$HOME"/.zshrc \
+    "$HOME"/.zprofile "$HOME"/.zshenv "${XDG_CONFIG_HOME:-$HOME/.config}"/fish/config.fish; do
+    [[ -f "$p" ]] && startup+=("$p")
+  done
+  [[ "${XDG_CONFIG_HOME:-$HOME/.config}" != "$HOME/.config" && -f "$HOME/.config/fish/config.fish" ]] &&
+    startup+=("$HOME/.config/fish/config.fish")
   IFS=: read -r -a parts <<<"$PATH"
+  while IFS= read -r d; do
+    [[ "$d" == [~\$/]* ]] || d=${d:1}   # the context character the token regex matched
+    case "$d" in "~"/*) d=$HOME${d:1} ;; '$HOME'/*) d=$HOME${d:5} ;; '${HOME}'/*) d=$HOME${d:7} ;; esac
+    parts+=("$d")
+  done < <((( ${#startup[@]} )) && grep -hs 'PATH=' "${startup[@]}" | grep -oE -- "$re")
   for d in "${parts[@]}" "$HOME/.local/bin" "$HOME/bin"; do
-    [[ "$d" == "$HOME"/* && -d "$d" ]] && bins+=("$d")
+    [[ "$d" == "$HOME"/* && -d "$d" && -z "${isbin[$d]:-}" ]] && { bins+=("$d"); isbin[$d]=1; }
   done
   for s in "${MM_AGENT_STATE[@]}"; do
     for p in $s; do
@@ -377,8 +483,14 @@ _mm_inuse_refs() {
     dots+=("$p")
   done
   for d in "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user" "$HOME/.config/systemd/user"; do
-    for p in "$d"/*.service; do [[ -f "$p" ]] && states+=("$p"); done
+    for p in "$d"/*.service; do [[ -f "$p" ]] && uunits+=("$p"); done
   done
+  d=/etc/systemd/system
+  if [[ -n "${MM_TEST_SYSTEMD_SYSTEM:-}" ]]; then   # tests only, and only inside the bats sandbox
+    p=$(realpath -e -- "$MM_TEST_SYSTEMD_SYSTEM" 2>/dev/null) &&
+      s=$(realpath -e -- "${BATS_TEST_TMPDIR:-/nonexistent}" 2>/dev/null) && [[ "$p" == "$s"/?* ]] && d=$p
+  fi
+  for p in "$d"/*.service; do [[ -f "$p" ]] && sunits+=("$p"); done
   {
     cat
     if (( ${#bins[@]} )); then
@@ -391,8 +503,11 @@ _mm_inuse_refs() {
       for p in "${!links[@]}"; do printf 'R\t%s\t%s\n' "${links[$p]}" "${targets[$p]}"; done
     fi
     command -v crontab >/dev/null && crontab -l 2>/dev/null | awk '{ print "S\tcrontab\t" $0 }'
+    _mm_unit_execs user "${uunits[@]}"
+    _mm_unit_execs system "${sunits[@]}"
     {
       (( ${#bins[@]} )) && find "${bins[@]}" -maxdepth 1 -type f -size -65k -print0
+      (( ${#startup[@]} )) && find "${startup[@]}" -maxdepth 0 -size -1025k -print0
       (( ${#states[@]} )) && find "${states[@]}" -maxdepth 0 -size -16385k -print0
       (( ${#dirs[@]} )) && find -H "${dirs[@]}" -maxdepth 2 \( "${prune[@]}" -false \) -prune -o \
         -type f "${ext[@]}" -size -16385k -print0
@@ -414,9 +529,19 @@ _mm_inuse_refs() {
       return o
     }
     function label(f) {
-      if (f ~ /\/systemd\/user\/[^\/]+$/) { sub(/.*\//, "", f); return "systemd unit " f }
+      if (f ~ /\/systemd\/(user|system)\/[^\/]+$/ || f ~ /\.service$/) { sub(/.*\//, "", f); return "systemd unit " f }
       if (index(f, home "/") == 1) return "~" substr(f, length(home) + 1)
       return f
+    }
+    function spec(t,   i, o) {   # systemd %h is the home
+      o = ""; while ((i = index(t, "%h")) > 0) { o = o substr(t, 1, i - 1) home; t = substr(t, i + 2) }
+      return o t
+    }
+    function absdir(d, base) {   # a `cd` or WorkingDirectory= target as an absolute path
+      if (d == "") return base
+      if (d == "~") return home
+      if (d ~ /^(\/|~\/|\$HOME\/|\$\{HOME\}\/)/) return norm(d)
+      return norm(base "/" d)
     }
     function add(t, src,   p) { p = norm(t); if (p != "" && !(p in seen)) { seen[p] = 1; print p "\t" src } }
     function scan(t, src) {
@@ -425,14 +550,64 @@ _mm_inuse_refs() {
         t = substr(t, RSTART + RLENGTH)
       }
     }
+    # scanrel TEXT BASE SRC — words with a / inside that do not start a path, against BASE, which
+    # `cd DIR` moves along the line (a job runs in BASE: the home for cron, WorkingDirectory= for a unit).
+    function scanrel(t, base, src,   w, prev) {
+      prev = ""
+      while (match(t, /[^ \t"\047`,=:;(){}<>|&]+/)) {
+        w = substr(t, RSTART, RLENGTH); t = substr(t, RSTART + RLENGTH)
+        if (prev == "cd") base = absdir(w, base)
+        else if (w ~ /^[A-Za-z0-9_.]/ && index(w, "/")) add(base "/" w, src)
+        prev = w
+      }
+    }
     { text = substr($0, length($1) + length($2) + 3) }
     $1 == "A" { if (substr(text, 1, 1) == "/") add(text, $2); scan(text, $2); next }
-    $1 == "S" { scan(text, $2); next }
+    $1 == "S" { scan(text, $2); scanrel(text, home, $2); next }
+    $1 == "U" {   # U<TAB>user|system<TAB>unit file<TAB>WorkingDirectory<TAB>Exec value
+      text = spec(substr($0, length($1) + length($2) + length($3) + length($4) + 5))
+      scan(text, label($3)); scanrel(text, absdir(spec($4), $2 == "user" ? home : "/"), label($3)); next
+    }
     $1 == "L" { d = $2; sub(/\/[^\/]*$/, "", d); add(substr(text, 1, 1) == "/" ? text : d "/" text, label($2)); next }
     $1 == "R" { add(text, label($2)); next }
     { text = substr($0, length($1) + 2); sub(/^[^~$\/]/, "", text); add(text, label($1)) }   # grep: file<TAB>match
-  ' | while IFS=$'\t' read -r p s; do [[ -f "$p" ]] && printf '%s\t%s\n' "$p" "$s"; done
+  ' | while IFS=$'\t' read -r p s; do [[ -f "$p" ]] && printf '%s\t%s\n' "$p" "$s"; done | _mm_refs_resolved
   return 0
+}
+
+# _mm_unit_execs KIND FILE... — "U<TAB>KIND<TAB>file<TAB>WorkingDirectory<TAB>value" for every
+# Exec*= line of each unit file (up to 16MB), with the unit's WorkingDirectory= wherever it sits in
+# the file; systemd's -, @, :, + and ! prefixes are dropped from the values.
+_mm_unit_execs() {
+  local kind=$1; shift
+  (( $# )) || return 0
+  find "$@" -maxdepth 0 -type f -size -16385k -print0 2>/dev/null | xargs -0r awk -v kind="$kind" '
+    function flush(   i) { for (i = 1; i <= n; i++) print "U\t" kind "\t" f "\t" wd "\t" ex[i]; n = 0; wd = "" }
+    FNR == 1 { flush(); f = FILENAME }
+    /^[ \t]*WorkingDirectory[ \t]*=/ { wd = $0; sub(/^[^=]*=[ \t]*/, "", wd); sub(/^-/, "", wd); sub(/[ \t\r]+$/, "", wd); next }
+    /^[ \t]*Exec[A-Za-z]*[ \t]*=/ { sub(/^[^=]*=[ \t]*/, ""); sub(/^[-@:+!]+/, ""); sub(/[ \t\r]+$/, ""); ex[++n] = $0; next }
+    END { flush() }'
+}
+
+# _mm_refs_resolved < REFS — REFS ("path<TAB>source" lines) followed by each path with its folders
+# resolved when that differs: mm_rm compares resolved paths, so a crontab line that reaches a file
+# through a symlinked folder (~/code -> ~/Dropbox/code) must keep the real folder too. The file
+# itself is not resolved: a venv's bin/python must keep the venv, not /usr/bin.
+_mm_refs_resolved() {
+  local lines=() dirs=() reals=() i p d
+  mapfile -t lines
+  (( ${#lines[@]} )) || return 0
+  printf '%s\n' "${lines[@]}"
+  for p in "${lines[@]}"; do p=${p%%$'\t'*}; d=${p%/*}; dirs+=("${d:-/}"); done
+  mapfile -d '' -t reals < <(realpath -mz -- "${dirs[@]}" 2>/dev/null)
+  if (( ${#reals[@]} != ${#dirs[@]} )); then   # a symlink loop prints nothing: pair one by one
+    reals=(); for d in "${dirs[@]}"; do reals+=("$(realpath -m -- "$d" 2>/dev/null)"); done
+  fi
+  for i in "${!lines[@]}"; do
+    [[ -n "${reals[$i]}" && "${reals[$i]}" != "${dirs[$i]}" ]] || continue
+    p=${lines[$i]%%$'\t'*}
+    printf '%s/%s\t%s\n' "${reals[$i]%/}" "${p##*/}" "${lines[$i]#*$'\t'}"
+  done
 }
 
 # mm_inuse_paths — print the current snapshot, one path per line (taking one if needed).
@@ -482,8 +657,11 @@ mm_proc_age() {
 MM_BUILTIN_KEEP=(~/.ssh ~/.gnupg ~/.password-store ~/.local/share/keyrings ~/.pki ~/.netrc
   ~/.git-credentials ~/.aws ~/.azure ~/.kube ~/.docker ~/.config)
 
-MM_DEFAULT_WHITELIST='# marmot whitelist: your own additions, one path or glob per line; ~ expands.
-# Matching paths, anything under them, and every folder above them are never removed.
+MM_DEFAULT_WHITELIST='# marmot whitelist: your own additions, one path or glob per line.
+# ~, ~user and $HOME expand; an entry must be an absolute path, and # starts a comment only at
+# the start of a line or after a space, so a folder called C# or [2024] taxes protects itself.
+# Matching paths, anything under them, and every folder above them are never removed; an entry
+# that names nothing on this machine is reported when marmot runs.
 # Always protected (built in): ~/.ssh, ~/.gnupg, credentials (~/.aws, ~/.kube, ~/.docker,
 # ~/.netrc, ...), ~/.config, and the state of known coding agents (~/.claude, ~/.codex, ...).
 # Examples:
@@ -491,9 +669,154 @@ MM_DEFAULT_WHITELIST='# marmot whitelist: your own additions, one path or glob p
 #   ~/projects/*/fixtures
 '
 
+# mm_whitelist_init — make sure the config folder and the whitelist file exist; a machine without
+# one gets the explained default. An existing path of any kind is left alone.
 mm_whitelist_init() {
   mkdir -p "$MM_CONFIG_DIR"
-  [[ -f "$MM_WHITELIST_FILE" ]] || printf '%s' "$MM_DEFAULT_WHITELIST" >"$MM_WHITELIST_FILE"
+  [[ -e "$MM_WHITELIST_FILE" ]] || printf '%s' "$MM_DEFAULT_WHITELIST" >"$MM_WHITELIST_FILE"
+}
+
+# No protection is switchable from the environment (AGENTS.md). MM_KEEP_AGENT_STATE waives agent
+# state for one call, and the commands that need it (mm purge, for a git worktree that git reports
+# clean) set it as a prefix of that call, which happens after this file is sourced: an exported
+# one is dropped here, whoever started marmot. `marmot` drops it before sourcing too.
+unset MM_KEEP_AGENT_STATE
+
+# The gate runs for every item, and both resolving a path and reading the password database cost a
+# fork, so each is done once per run and kept here. Sourcing this file again starts over.
+# (-g: commands and tests source this file inside a function, where a plain declare would be local.)
+declare -gA _MM_REAL_CACHE=()
+_MM_PASSWD=() _MM_PASSWD_READY="" _MM_WL_REPORTED=""
+_MM_KEEP=() _MM_AGENT_KEEP=() _MM_AGENT_KEEP_REAL=() _MM_GATE_READY=""
+_MM_OTHER_HOMES=() _MM_HOMES_READY=""
+
+# _mm_real PATH — REPLY is PATH with its symlinks resolved (realpath -m, so PATH need not exist).
+_mm_real() {
+  REPLY=${_MM_REAL_CACHE[$1]:-}
+  [[ -n "$REPLY" ]] && return 0
+  REPLY=$(realpath -m -- "$1" 2>/dev/null)
+  [[ -n "$REPLY" ]] || REPLY=$1
+  _MM_REAL_CACHE[$1]=$REPLY
+}
+
+# _mm_has_link PATH — 0 if PATH or a folder above it (up to $HOME, which is canonical, else /) is
+# a symlink, so resolving it can give another path. Pure bash: resolving every protected entry of
+# every run would be a fork each.
+_mm_has_link() {
+  local p=${1%/}
+  while [[ "$p" == /?* && "$p" != "$HOME" ]]; do
+    [[ -L "$p" ]] && return 0
+    p=${p%/*}
+  done
+  return 1
+}
+
+# _mm_passwd_init — the password database as "ACCOUNT<TAB>HOME" lines in _MM_PASSWD. getent also
+# sees accounts that are not in /etc/passwd (LDAP, SSSD); where it is missing, read the file.
+_mm_passwd_init() {
+  [[ -n "$_MM_PASSWD_READY" ]] && return 0
+  _MM_PASSWD_READY=1
+  local name home
+  while IFS=: read -r name _ _ _ _ home _; do
+    [[ -n "$name" && "$home" == /* ]] || continue
+    _MM_PASSWD+=("$name"$'\t'"$home")
+  done < <(getent passwd 2>/dev/null || cat /etc/passwd 2>/dev/null)
+}
+
+# _mm_user_home ACCOUNT — REPLY is ACCOUNT's home folder; 1 when no account has that name, so a
+# ~user entry naming nobody protects nothing instead of silently meaning $HOME.
+_mm_user_home() {
+  _mm_passwd_init
+  local e
+  REPLY=""
+  for e in ${_MM_PASSWD[@]+"${_MM_PASSWD[@]}"}; do
+    [[ "${e%%$'\t'*}" == "$1" ]] && { REPLY=${e#*$'\t'}; return 0; }
+  done
+  return 1
+}
+
+# _mm_keep_canon ENTRY — REPLY is ENTRY as one absolute pattern: a UTF-8 BOM and a comment removed
+# (# starts one at the start of the line or after a space), surrounding spaces and a trailing
+# slash dropped, ~, ~user and $HOME expanded. Returns 1 for a comment or a blank line (REPLY
+# empty), and for an entry that can protect nothing — relative, or naming an unknown user — with
+# REPLY the entry as written, for the report.
+_mm_keep_canon() {
+  local p=${1#$'\xef\xbb\xbf'} user
+  [[ "$p" == *[[:space:]]"#"* ]] && p=${p%%[[:space:]]"#"*}
+  p=${p#"${p%%[![:space:]]*}"}; p=${p%"${p##*[![:space:]]}"}
+  REPLY=""
+  [[ -z "$p" || "$p" == "#"* ]] && return 1
+  case "$p" in
+    \~) p=$HOME ;;
+    \~/*) p="$HOME${p:1}" ;;
+    \~*)
+      user=${p#\~}; user=${user%%/*}
+      _mm_user_home "$user" || { REPLY=$p; return 1; }
+      p="$REPLY${p:$((${#user} + 1))}" ;;
+    '$HOME' | '${HOME}') p=$HOME ;;
+    '$HOME/'*) p="$HOME${p#\$HOME}" ;;
+    '${HOME}/'*) p="$HOME${p#\$\{HOME\}}" ;;
+  esac
+  REPLY=$p
+  [[ "$p" == /?* ]] || return 1
+  REPLY=${p%/}
+}
+
+# _mm_pattern_exists PATTERN — 0 if something on this machine matches PATTERN: the path itself, or
+# a glob match (* crosses / here, as in the gate's own matching).
+_mm_pattern_exists() {
+  local base
+  [[ -e "$1" || -L "$1" ]] && return 0
+  [[ "$1" == *[*?[]* ]] || return 1
+  compgen -G "$1" >/dev/null 2>&1 && return 0
+  base=${1%%[*?[]*}; base=${base%/*}
+  [[ -d "$base" ]] || return 1
+  [[ -n "$(find "$base" -xdev -path "$1" -print -quit 2>/dev/null)" ]]
+}
+
+# _mm_whitelist_report ENTRY... — say once per run which whitelist entries protect nothing, so a
+# typo, a relative path or a name typed in another Unicode form cannot pass for protection.
+# Unattended runs keep it in MM_SKIPS (mm schedule run writes those down).
+_mm_whitelist_report() {
+  local list="$1" e
+  for e in "${@:2}"; do list+=", $e"; done
+  list="whitelist entries that protect nothing (no such path): $list"
+  mm_warn "$list" >&2
+  MM_SKIPS+=("whitelist"$'\t'"$list")
+}
+
+# _mm_whitelist_entries [--report] — the user's entries as absolute patterns, one per line, each
+# followed by the path it resolves to when a symlink carries it elsewhere (the gate compares
+# resolved paths). --report prints no pattern and instead says, once per run, which entries
+# protect nothing; mm_whitelisted calls it that way in its own shell, because the patterns
+# themselves are read in a subshell, where a warning and MM_SKIPS would be lost. That pass also
+# fills the resolve cache the subshell then inherits.
+_mm_whitelist_entries() {
+  [[ -f "$MM_WHITELIST_FILE" && -r "$MM_WHITELIST_FILE" ]] || return 0
+  local line pat real report=""
+  local -a dead=()
+  if [[ "${1:-}" == --report ]]; then
+    [[ -n "$_MM_WL_REPORTED" ]] && return 0
+    _MM_WL_REPORTED=1 report=1
+  fi
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if ! _mm_keep_canon "$line"; then
+      [[ -n "$REPLY" && -n "$report" ]] && dead+=("$REPLY")
+      continue
+    fi
+    pat=$REPLY real=""
+    if _mm_has_link "$pat"; then
+      _mm_real "$pat"
+      [[ "$REPLY" == "$pat" ]] || real=$REPLY
+    fi
+    if [[ -n "$report" ]]; then
+      _mm_pattern_exists "$pat" || dead+=("$pat")
+    else
+      printf '%s\n' "$pat" ${real:+"$real"}
+    fi
+  done <"$MM_WHITELIST_FILE"
+  (( ${#dead[@]} )) && _mm_whitelist_report "${dead[@]}"
+  return 0
 }
 
 # Carve-outs: folders inside a built-in protected tree that hold only logs or caches, so mm_rm may
@@ -524,47 +847,95 @@ mm_carveout() {
   return 1
 }
 
-# mm_keep_patterns [--carveout] — every protection pattern: built-ins, agent state, then the
-# whitelist file. --carveout leaves the built-ins out (for entries mm_carveout waives).
-# MM_KEEP_AGENT_STATE=0 leaves agent state out; only for removing git worktrees that git reports
-# clean (agents such as Cursor keep their worktrees inside their state dir). _MM_WAIVED (set by
-# mm_rm for MM_AGENT_WAIVER) leaves out only the agent state entries that contain that directory.
+# _mm_gate_init — work out this run's protection paths once: the built-in keeps and the known
+# agents' state paths, each with the path it resolves to when a symlink carries it elsewhere (a
+# dotfiles setup links ~/.claude or ~/.config into ~/dotfiles, and the gate compares resolved
+# paths), and the same for the $HOME trees marmot never deletes inside. mm_rm calls it in its own
+# shell, so the checks that run in a subshell inherit the answers instead of forking per item.
+_mm_gate_init() {
+  [[ -n "$_MM_GATE_READY" ]] && return 0
+  _MM_GATE_READY=1
+  local p
+  _MM_KEEP=() _MM_AGENT_KEEP=() _MM_AGENT_KEEP_REAL=()
+  for p in "${MM_BUILTIN_KEEP[@]}"; do
+    p=${p%/}
+    _MM_KEEP+=("$p")
+    _mm_has_link "$p" || continue
+    _mm_real "$p"
+    [[ "$REPLY" == "$p" ]] || _MM_KEEP+=("$REPLY")
+  done
+  while IFS= read -r p; do
+    [[ "$p" == \~* ]] && p="$HOME${p:1}"
+    p=${p%/}
+    [[ "$p" == /?* ]] || continue
+    _MM_AGENT_KEEP+=("$p")
+    REPLY=""
+    if _mm_has_link "$p"; then
+      _mm_real "$p"
+      [[ "$REPLY" == "$p" ]] && REPLY=""
+    fi
+    _MM_AGENT_KEEP_REAL+=("$REPLY")
+  done < <(mm_agent_state_paths)
+  for p in "${MM_PROTECTED_TREES[@]}"; do
+    [[ "$p" == "$HOME"/?* ]] || continue
+    _mm_has_link "$p" || continue
+    _mm_real "$p"
+    [[ "$REPLY" == "$p" ]] || MM_PROTECTED_TREES+=("$REPLY")
+  done
+  _mm_other_homes_init
+  return 0
+}
+
+# mm_keep_patterns [--carveout] — every protection pattern as an absolute path or glob, one per
+# line: built-ins, agent state, then the whitelist file, each also as the path it resolves to.
+# --carveout leaves the built-ins out (for entries mm_carveout waives). MM_KEEP_AGENT_STATE=0
+# leaves agent state out; only for removing git worktrees that git reports clean (agents such as
+# Cursor keep their worktrees inside their state dir). _MM_WAIVED (set by mm_rm for
+# MM_AGENT_WAIVER) leaves out only the agent state entries that contain that directory.
 mm_keep_patterns() {
-  [[ "${1:-}" == --carveout ]] || printf '%s\n' "${MM_BUILTIN_KEEP[@]}"
+  _mm_gate_init
+  [[ "${1:-}" == --carveout ]] || printf '%s\n' "${_MM_KEEP[@]}"
   if [[ "${MM_KEEP_AGENT_STATE:-1}" != 0 ]]; then
-    local p
-    while IFS= read -r p; do
-      [[ -n "${_MM_WAIVED:-}" && ( "$_MM_WAIVED" == "$HOME${p:1}" || "$_MM_WAIVED" == "$HOME${p:1}"/* ) ]] && continue
-      printf '%s\n' "$p"
-    done < <(mm_agent_state_paths)
+    local i p r
+    for i in "${!_MM_AGENT_KEEP[@]}"; do
+      p=${_MM_AGENT_KEEP[i]} r=${_MM_AGENT_KEEP_REAL[i]}
+      if [[ -n "${_MM_WAIVED:-}" ]] &&
+         { [[ "$_MM_WAIVED" == "$p" || "$_MM_WAIVED" == "$p"/* ]] ||
+           [[ -n "$r" && ( "$_MM_WAIVED" == "$r" || "$_MM_WAIVED" == "$r"/* ) ]]; }; then
+        continue
+      fi
+      printf '%s\n' "$p" ${r:+"$r"}
+    done
   fi
-  cat -- "$MM_WHITELIST_FILE"
+  _mm_whitelist_entries
 }
 
 # mm_whitelisted PATH — 0 if removing PATH would touch a protected entry (built-in, agent state,
-# or whitelist file): PATH or an ancestor matches it, or it lies under PATH. Globs follow [[ == ]]
-# rules (* crosses /). Inside a carve-out the built-ins are skipped (see mm_carveout).
+# or whitelist file): PATH or an ancestor matches it, or it lies under PATH. Every pattern counts
+# both as a glob (* crosses /, [[ == ]] rules) and as the literal name it spells, so a folder
+# called "[2024] taxes" protects itself. Inside a carve-out the built-ins are skipped
+# (see mm_carveout).
 mm_whitelisted() {
   mm_whitelist_init 2>/dev/null
-  # Fail closed: an unreadable whitelist must not mean "nothing is protected".
-  [[ -r "$MM_WHITELIST_FILE" ]] || { mm_err "cannot read whitelist $MM_WHITELIST_FILE: refusing"; return 0; }
+  # Fail closed: a whitelist that cannot be read, or is not a file at all, must not mean
+  # "nothing is protected".
+  [[ -f "$MM_WHITELIST_FILE" && -r "$MM_WHITELIST_FILE" ]] ||
+    { mm_err "cannot read whitelist $MM_WHITELIST_FILE: refusing"; return 0; }
+  _mm_whitelist_entries --report
   local path="${1%/}" pat probe lit carve="" rc=0
   mm_carveout "$path" || rc=$?
   case $rc in 0) carve=--carveout ;; 2) return 0 ;; esac
   while IFS= read -r pat || [[ -n "$pat" ]]; do
-    pat="${pat%%#*}"; pat="${pat%"${pat##*[![:space:]]}"}"; pat="${pat#"${pat%%[![:space:]]*}"}"
-    [[ -n "$pat" ]] || continue
-    [[ "$pat" == "~"* ]] && pat="$HOME${pat:1}"
-    pat="${pat%/}"
     probe="$path"
     while [[ -n "$probe" ]]; do
       # shellcheck disable=SC2053
-      [[ "$probe" == $pat ]] && return 0
+      [[ "$probe" == "$pat" || "$probe" == $pat ]] && return 0
       [[ "$probe" == */* ]] || break
       probe="${probe%/*}"
     done
+    # An entry below PATH: removing PATH would take it along. For a glob, its literal prefix.
     lit="${pat%%[*?[]*}"
-    [[ "$lit" == "$path"/* ]] && return 0
+    [[ "$pat" == "$path"/* || "$lit" == "$path"/* ]] && return 0
     # Glob whose literal prefix is above PATH: look for an actual match underneath.
     if [[ "$lit" != "$pat" && "$path/" == "$lit"* && -d "$path" ]] &&
        [[ -n "$(find "$path" -xdev -path "$pat" -print -quit 2>/dev/null)" ]]; then
@@ -628,14 +999,83 @@ MM_PROTECTED_TREES=(/bin /boot /dev /etc /lib /lib32 /lib64 /libx32 /proc /run /
   "$HOME/.ssh" "$HOME/.gnupg")
 [[ "$HOME" == /root ]] || MM_PROTECTED_TREES+=(/root)
 
-# mm_protected REAL — 0 (and prints why) if the resolved path REAL is a protected path, lies in a
-# protected tree, or is a home directory under /home.
+# mm_protected PATH — 0 (and prints why) if PATH is a protected path, lies in a protected tree, is
+# a home directory under /home, or lies in another account's home. Call it with the target as
+# written and as resolved: a tree is protected under the name it is reached by and under the
+# folder it resolves to (a symlinked ~/.ssh), and neither form may grant what the other refuses.
 mm_protected() {
+  _mm_gate_init
   local p
   for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" || "$1" == "$p" ]] && { echo protected; return 0; }; done
   for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && { echo protected; return 0; }; done
   [[ "$1" == /home/* && "${1#/home/}" != */* ]] && { echo "protected (a home directory)"; return 0; }
+  if mm_foreign_home "$1" >/dev/null; then
+    echo "another user's home ($REPLY): run marmot as $REPLY"; return 0
+  fi
   return 1
+}
+
+# _mm_system_path PATH — 0 if PATH is one of the paths marmot never touches or lies inside one of
+# its trees. A system account's "home" (/, /var/backups, /usr/games) is not a user's home: the
+# trees already cover it, and treating it as one would refuse this user's own files.
+_mm_system_path() {
+  local p
+  for p in "${MM_PROTECTED_EXACT[@]}"; do [[ "$1" == "${p%/}" ]] && return 0; done
+  for p in "${MM_PROTECTED_TREES[@]}"; do [[ "$1" == "$p" || "$1" == "$p"/* ]] && return 0; done
+  return 1
+}
+
+# _mm_other_homes_init — the home folders of the machine's other accounts, "HOME<TAB>ACCOUNT" in
+# _MM_OTHER_HOMES, once per run. Left out: this user's own home and every folder above it (a
+# system account whose home is / would otherwise cover the whole disk), homes that do not exist,
+# and homes that are part of the OS.
+_mm_other_homes_init() {
+  [[ -n "$_MM_HOMES_READY" ]] && return 0
+  _MM_HOMES_READY=1
+  _mm_passwd_init
+  local e home
+  _MM_OTHER_HOMES=()
+  for e in ${_MM_PASSWD[@]+"${_MM_PASSWD[@]}"}; do
+    home=${e#*$'\t'}; home=${home%/}
+    [[ "$home" == /?* ]] || continue
+    [[ "$HOME" == "$home" || "$HOME" == "$home"/* ]] && continue
+    [[ -d "$home" ]] || continue
+    _mm_system_path "$home" && continue
+    _MM_OTHER_HOMES+=("$home"$'\t'"${e%%$'\t'*}")
+  done
+  return 0
+}
+
+# _mm_in_other_home PATH — 0, printing the account (also in REPLY), when PATH is at or below the
+# home folder of another account.
+_mm_in_other_home() {
+  local p=${1%/} e home account
+  # Every direct child of /home belongs to somebody, whether the password database says so or not.
+  if [[ "$p" == /home/?* ]]; then
+    account=${p#/home/}; account=${account%%/*}
+    home=/home/$account
+    if [[ "$HOME" != "$home" && "$HOME" != "$home"/* ]]; then REPLY=$account; echo "$REPLY"; return 0; fi
+  fi
+  for e in ${_MM_OTHER_HOMES[@]+"${_MM_OTHER_HOMES[@]}"}; do
+    home=${e%%$'\t'*}
+    [[ "$p" == "$home" || "$p" == "$home"/* ]] || continue
+    REPLY=${e#*$'\t'}; echo "$REPLY"; return 0
+  done
+  return 1
+}
+
+# mm_foreign_home PATH — 0, printing the account (also in REPLY), when PATH lies in another
+# account's home folder, as written or once resolved. sudo hands marmot root's HOME, so it would
+# be root's whitelist, agent state and credentials that decide over a colleague's files: a run
+# over somebody else's home stops instead of cleaning it by the wrong rules.
+mm_foreign_home() {
+  _mm_other_homes_init
+  REPLY=""
+  _mm_in_other_home "$1" && return 0
+  _mm_has_link "$1" || return 1
+  _mm_real "$1"
+  [[ "$REPLY" == "$1" ]] && return 1
+  _mm_in_other_home "$REPLY"
 }
 
 # mm_credential_like PATH [BASE] — 0 if PATH's name, any name under it, or (when PATH lies inside
@@ -670,7 +1110,8 @@ mm_identity() { stat -c '%d:%i:%Z' -- "$1" 2>/dev/null; }
 # mm_rm [--trash] PATH ALLOWED_ROOT — the only way marmot deletes or trashes files.
 # Refuses unless PATH is strictly inside ALLOWED_ROOT (after resolving parent symlinks), has no
 # control characters, is not protected, not whitelisted, not in use, can be sized within
-# MM_SIZE_TIMEOUT, and is still the same object (device/inode/ctime) and location after sizing.
+# MM_SIZE_TIMEOUT, is still the same object (device/inode/ctime) and location after sizing, is
+# still not in use per a snapshot at most a few seconds old, and neither is nor holds a mount.
 # --trash moves it to the XDG Trash instead and never falls back to a permanent delete.
 # Returns 0 done (or would be, in dry-run), 1 refused (MM_SKIP_REASON set), 2 action failed.
 # Updates MM_FREED or MM_TRASHED (by mm_frees), MM_COUNT, MM_SKIPPED, MM_LAST_BYTES. Refusals
@@ -710,8 +1151,18 @@ mm_rm() {
     fi
     mm_credential_like "$real" && { _mm_refuse "looks like credentials"; return 1; }
   fi
-  p=$(mm_protected "$real") && { _mm_refuse "$p"; return 1; }
-  _MM_WAIVED=$waived mm_whitelisted "$real" && { _mm_refuse "whitelisted"; return 1; }
+  _mm_gate_init   # this run's protection paths, in this shell: the checks below then fork none
+  # A protection denies on either form: a resolved path never grants what the path as written
+  # does not (a symlinked parent must not carry a target out of a protected or whitelisted folder).
+  if p=$(mm_protected "$real"); then
+    _mm_refuse "$p"; return 1
+  elif [[ "$path" != "$real" ]] && p=$(mm_protected "$path"); then
+    _mm_refuse "$p"; return 1
+  fi
+  if _MM_WAIVED=$waived mm_whitelisted "$real" ||
+     { [[ "$path" != "$real" ]] && _MM_WAIVED=$waived mm_whitelisted "$path"; }; then
+    _mm_refuse "whitelisted"; return 1
+  fi
   (( MM_INUSE_TAKEN )) || mm_inuse_refresh   # here, not inside $(...): a failed snapshot must stop marmot
   p=$(mm_inuse_why "$real") && { _mm_refuse "$p"; return 1; }
 
@@ -725,6 +1176,14 @@ mm_rm() {
   if [[ "$(realpath -e -- "$(dirname -- "$real")" 2>/dev/null)" != "$parent" || "$(mm_identity "$real")" != "$id" ]]; then
     _mm_refuse "changed while sizing"; return 1
   fi
+  # Purge sizes item after item for up to MM_SIZE_TIMEOUT each: a snapshot more than a few seconds
+  # old (references included) is retaken, and whatever its age this user's processes and the mounts
+  # get a last look right before the sink: a process or mount that appeared since is seen.
+  if (( $(date +%s) - MM_INUSE_AT > 5 )); then
+    mm_inuse_refresh
+    p=$(mm_inuse_why "$real") && { _mm_refuse "$p"; return 1; }
+  fi
+  mm_live_under "$real" && { _mm_refuse "in use"; return 1; }
   if [[ "$MM_DRY_RUN" != 1 ]]; then
     if [[ "$mode" == trash ]]; then
       _mm_trash "$real" "$bytes" || return $?
@@ -767,8 +1226,16 @@ _mm_trash() {
     _mm_refuse "Trash is on another filesystem"; return 1
   fi
   base=$(basename -- "$real") name=$base enc=$(_mm_url_encode "$real") stamp=$(date +%Y-%m-%dT%H:%M:%S)
-  until [[ ! -e "$files/$name" && ! -L "$files/$name" ]] &&
-        ( set -C; printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$stamp" >"$info/$name.trashinfo" ) 2>/dev/null; do
+  while :; do
+    if [[ ! -e "$files/$name" && ! -L "$files/$name" && ! -e "$info/$name.trashinfo" ]]; then
+      ( set -C; printf '[Trash Info]\nPath=%s\nDeletionDate=%s\n' "$enc" "$stamp" >"$info/$name.trashinfo" ) 2>/dev/null && break
+      # On a full disk the exclusive create succeeds and only the write fails; the empty record
+      # left behind would claim this name for good. Take it back and say what is wrong.
+      if [[ -f "$info/$name.trashinfo" && ! -s "$info/$name.trashinfo" ]]; then
+        rm -f -- "$info/$name.trashinfo" # SAFE: the empty .trashinfo this call just created
+        _mm_refuse "no space for the Trash record ($MM_TRASH_DIR)"; return 1
+      fi
+    fi
     n=$((n + 1)) name="$base.$n"
     (( n > 1000 )) && { _mm_refuse "no free name in Trash"; return 1; }
   done

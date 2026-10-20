@@ -3,12 +3,15 @@
 #
 # `run` is the unattended profile: one process, no terminal, no prompts, no sudo. It does only
 # what is safe with nobody watching, reusing mm clean's and mm purge's steps:
-#   - Trash items deleted more than 30 days ago, thumbnails
+#   - Trash items deleted more than trash_keep_days days ago (only when set in the config file),
+#     and thumbnails
 #   - regenerable caches: catalog cache rows and the tools' own cleans (npm, pnpm, uv, Go, ...),
 #     cache folders of agent browser profiles, gcloud/Azure CLI logs older than 7 days
 #   - old browser and test-runner builds (newest kept), old coding-agent CLI versions
 #   - agent log files older than 7 days
 #   - agent sessions, only when sessions_keep_days is set in the config file
+#   - the Trash sweep and session retention above are the only steps that touch personal files,
+#     and both run only when their config key opts in
 #   - automation-browser leftovers in /tmp, idle 2+ hours
 #   - old editor server builds and their leftovers
 #   - build artifacts of projects idle 14+ days (what `mm purge --yes` removes)
@@ -23,7 +26,6 @@
 # shellcheck source=purge.sh
 . "$MM_HOME/cmd/purge.sh"
 
-_SCHEDULE_TRASH_DAYS=30   # Trash items deleted longer ago than this are removed for good
 _SCHEDULE_PURGE_DAYS=14   # build artifacts of projects idle longer than this are removed
 
 _schedule_usage() {
@@ -34,16 +36,19 @@ Runs a safe part of marmot's cleanup on a timer, with nobody at the terminal.
 
   status    what is scheduled, the next and the last run (default)
   enable    schedule it daily (default) or weekly: a systemd user timer when \`systemctl --user\`
-            works (catches up on missed runs at boot), else a crontab line tagged "$MM_SCHEDULE_CRON_TAG"
+            works (catches up on missed runs at boot), else a crontab line tagged "$MM_SCHEDULE_CRON_TAG";
+            runs get this shell's PATH and folders (XDG_CONFIG_HOME, XDG_STATE_HOME, XDG_DATA_HOME,
+            XDG_CACHE_HOME, MM_CONFIG_DIR, ...), so they read the same whitelist and config
   disable   remove only what enable created
   run       the scheduled cleanup itself, now
 
-What a run cleans: Trash items deleted more than $_SCHEDULE_TRASH_DAYS days ago, thumbnails, regenerable
-caches (lib/catalog.sh cache rows and the tools' own cleans: npm, pnpm, yarn, bun, uv, Go, mise,
-conda, Homebrew), old browser/test-runner builds and old coding-agent CLI versions, agent and
-gcloud/Azure CLI logs older than 7 days, automation-browser leftovers in /tmp, old editor server
-builds and their leftovers, build artifacts of projects idle $_SCHEDULE_PURGE_DAYS+ days (like mm purge --yes),
-and agent sessions only when sessions_keep_days is set in $MM_CONFIG_FILE.
+What a run cleans: thumbnails, regenerable caches (lib/catalog.sh cache rows and the tools' own
+cleans: npm, pnpm, yarn, bun, uv, Go, mise, conda, Homebrew), old browser/test-runner builds and
+old coding-agent CLI versions, agent and gcloud/Azure CLI logs older than 7 days,
+automation-browser leftovers in /tmp, old editor server builds and their leftovers, and build
+artifacts of projects idle $_SCHEDULE_PURGE_DAYS+ days (like mm purge --yes). Personal files only with your
+opt-in in $MM_CONFIG_FILE: Trash items trashed more than
+trash_keep_days days ago, and agent sessions older than sessions_keep_days days.
 Never: anything that needs sudo (apt, kernels, journal, snaps, system logs, crash dumps), Docker,
 git worktrees, uninstalls, process kills or upgrades. It never asks and never runs sudo.
 
@@ -118,6 +123,19 @@ _schedule_abort() {
     "$MM_TRASHED" "$((MM_COUNT + _CLEAN_TOOL_ITEMS))"
 }
 
+# _schedule_trash_days — 0 with _SCHEDULE_TRASH_KEEP set when the config file turns the scheduled
+# Trash sweep on (trash_keep_days=N, N >= 1); 1 when it is unset or off (a value that is not a
+# number of days is ignored with a warning). The Trash holds what people deliberately set aside,
+# so an unattended run deletes there only with this opt-in; mm clean asks instead.
+_schedule_trash_days() {
+  local v
+  _SCHEDULE_TRASH_KEEP=""
+  v=$(mm_config trash_keep_days) || return 1
+  if [[ "$v" =~ ^[0-9]+$ ]] && (( 10#$v >= 1 )); then _SCHEDULE_TRASH_KEEP=$((10#$v)); return 0; fi
+  [[ -n "$v" && "$v" != 0 && "$v" != off ]] && mm_warn "ignoring trash_keep_days=$v in $MM_CONFIG_FILE: not a number of days"
+  return 1
+}
+
 _schedule_run() {
   # No prompts and no sudo, whoever started the run: every confirmation declines, every picker
   # selects nothing, and steps that need root report "needs sudo".
@@ -133,7 +151,15 @@ _schedule_run() {
   local free0 free1 total items delta sign=+
   free0=$(mm_free_bytes /)
 
-  _clean_user --yes "$_SCHEDULE_TRASH_DAYS"
+  if _schedule_trash_days; then
+    _clean_user --yes "$_SCHEDULE_TRASH_KEEP"
+  else
+    _clean_cat "User essentials"
+    mm_tilde "$MM_CONFIG_FILE"
+    mm_skip "Trash" "kept: no trash_keep_days in $REPLY"
+    _clean_contents "Thumbnails" "$(mm_catalog_expand %CACHE%/thumbnails)"
+    _clean_cat_end
+  fi
   _clean_dev
   _clean_builds
   _clean_agent_logs
@@ -175,8 +201,29 @@ _schedule_run() {
 _SCHEDULE_HOUR=3          # runs start at 03:00 local time, plus a random delay
 _SCHEDULE_DELAY=1h        # systemd RandomizedDelaySec: many machines do not all start at once
 
-# _schedule_systemd_ok — 0 when this user's systemd instance answers (`systemctl --user`).
-_schedule_systemd_ok() { command -v systemctl >/dev/null && timeout 10 systemctl --user show-environment >/dev/null 2>&1; }
+_SCHEDULE_SD=""          # 1 or 0 once _schedule_systemd_ok has asked
+_SCHEDULE_SD_ENV=""      # systemd's user environment, "NAME=VALUE" lines: what a unit starts with
+
+# _schedule_systemd_ok — 0 when this user's systemd instance answers (`systemctl --user`); asks
+# once. Its environment goes to _SCHEDULE_SD_ENV, and MM_SCHEDULE_UNIT_DIR follows its
+# XDG_CONFIG_HOME: systemd looks for user units there, whatever this shell sets.
+_schedule_systemd_ok() {
+  local d
+  if [[ -z "$_SCHEDULE_SD" ]]; then
+    _SCHEDULE_SD=0
+    if command -v systemctl >/dev/null && _SCHEDULE_SD_ENV=$(timeout 10 systemctl --user show-environment 2>/dev/null); then
+      _SCHEDULE_SD=1
+      d=$(_schedule_env_get XDG_CONFIG_HOME "$_SCHEDULE_SD_ENV")
+      [[ "$d" == /* ]] || d="$HOME/.config"
+      MM_SCHEDULE_UNIT_DIR="$d/systemd/user"
+    fi
+  fi
+  (( _SCHEDULE_SD ))
+}
+
+# _schedule_env_get NAME ENV — NAME's value in ENV ("NAME=VALUE" lines, the last one counts);
+# empty when ENV does not set it.
+_schedule_env_get() { awk -v k="$1=" 'index($0, k) == 1 { v = substr($0, length(k) + 1) } END { printf "%s", v }' <<<"$2"; }
 
 # _schedule_plain S — 0 if S is a path a unit file or crontab line can carry unquoted.
 _schedule_plain() { [[ "$1" =~ ^/[A-Za-z0-9/._+-]*$ ]]; }
@@ -194,6 +241,73 @@ _schedule_path() {
   printf '%s' "$out"
 }
 
+# The variables that place marmot's whitelist, config, purge_paths, state and log, the Trash and
+# the caches (lib/core.sh, cmd/purge.sh). A scheduled run must see the same values as the shell
+# that ran enable, or it keeps a whitelist the user never wrote.
+_SCHEDULE_DIR_VARS=(XDG_CONFIG_HOME XDG_STATE_HOME XDG_DATA_HOME XDG_CACHE_HOME MM_CONFIG_DIR MM_STATE_DIR
+  MM_CONFIG_FILE MM_WHITELIST_FILE MM_PURGE_PATHS_FILE MM_LOG_FILE)
+
+# _schedule_dir NAME VALUE — the folder VALUE (NAME's value in some environment, empty when
+# unset) stands for: an unset XDG variable means its default.
+_schedule_dir() {
+  local v=$2
+  if [[ -z "$v" ]]; then
+    case "$1" in
+      XDG_CONFIG_HOME) v="$HOME/.config" ;;
+      XDG_STATE_HOME) v="$HOME/.local/state" ;;
+      XDG_DATA_HOME) v="$HOME/.local/share" ;;
+      XDG_CACHE_HOME) v="$HOME/.cache" ;;
+    esac
+  fi
+  printf '%s' "$v"
+}
+
+# _schedule_pins ENV — "NAME=VALUE" for each of _SCHEDULE_DIR_VARS that a scheduled run starting
+# with ENV ("NAME=VALUE" lines) would see differently from this shell, VALUE being this shell's.
+_schedule_pins() {
+  local n mine
+  for n in "${_SCHEDULE_DIR_VARS[@]}"; do
+    # lib/core.sh fills in the MM_ ones: only exported ones came from this shell's environment.
+    mine=""
+    [[ "$n" == XDG_* || "${!n@a}" == *x* ]] && mine=${!n:-}
+    [[ "$(_schedule_dir "$n" "$mine")" == "$(_schedule_dir "$n" "$(_schedule_env_get "$n" "$1")")" ]] && continue
+    printf '%s=%s\n' "$n" "$(_schedule_dir "$n" "${!n:-}")"
+  done
+}
+
+# _schedule_pins_check PINS — stop at the first of PINS ("NAME=VALUE" lines) whose value a unit
+# file or crontab line cannot carry: without it a scheduled run would read other folders.
+_schedule_pins_check() {
+  local n v
+  while IFS='=' read -r n v; do
+    [[ -z "$n" ]] || _schedule_plain "$v" ||
+      mm_die "$n is \"$v\" here, which a unit file or crontab line cannot carry, and without it scheduled runs would use another whitelist, config and Trash. Set it to an absolute path of letters, digits and / . _ + - and run mm schedule enable again."
+  done <<<"$1"
+}
+
+# _schedule_drift ENV — warn about each folder variable a scheduled run starting with ENV
+# ("NAME=VALUE" lines, the unit's or crontab line's own settings last) sees differently from this
+# shell.
+_schedule_drift() {
+  local n v run
+  while IFS='=' read -r n v; do
+    [[ -n "$n" ]] || continue
+    run=$(_schedule_dir "$n" "$(_schedule_env_get "$n" "$1")")
+    mm_warn "Scheduled runs use $n=${run:-(unset)}, this shell $n=$v: run mm schedule enable here to give them this shell's folders"
+  done < <(_schedule_pins "$1")
+}
+
+# _schedule_cron_env CRONTAB — "NAME=VALUE" for the variable settings in CRONTAB, which cron gives
+# the jobs after them (crontab(5): blanks around name and value dropped, one pair of quotes too).
+_schedule_cron_env() {
+  printf '%s\n' "$1" | awk '/^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=/ {
+    i = index($0, "="); k = substr($0, 1, i - 1); v = substr($0, i + 1)
+    gsub(/^[ \t]+|[ \t]+$/, "", k); gsub(/^[ \t]+|[ \t\r]+$/, "", v)
+    if (v ~ /^".*"$/ || v ~ /^'\''.*'\''$/) v = substr(v, 2, length(v) - 2)
+    print k "=" v
+  }'
+}
+
 # _schedule_ours FILE — 0 if FILE is a regular file whose first line is MM_SCHEDULE_MARK.
 _schedule_ours() {
   local first=""
@@ -202,28 +316,43 @@ _schedule_ours() {
   [[ "$first" == "$MM_SCHEDULE_MARK" ]]
 }
 
-# _schedule_crontab — the current crontab (empty when the user has none); 1 if it cannot be read.
+# _schedule_crontab — read the current crontab into _SCHEDULE_CRONTAB, byte for byte (empty when the
+# user has none); 1 if it cannot be read.
 _schedule_crontab() {
   local out rc=0
-  out=$(crontab -l 2>&1) || rc=$?
-  if (( rc )); then [[ "$out" == *"no crontab"* ]] || return 1; out=""; fi
-  [[ -n "$out" ]] && printf '%s\n' "$out"
-  return 0
+  # The dot keeps the trailing newlines $(...) would strip.
+  out=$(crontab -l 2>/dev/null; rc=$?; printf .; exit "$rc") || rc=$?
+  if (( rc )); then [[ "$(crontab -l 2>&1 >/dev/null)" == *"no crontab"* ]] || return 1; out=.; fi
+  _SCHEDULE_CRONTAB=${out%.}
 }
 
-# _schedule_cron_lines — the crontab lines enable added (ending in MM_SCHEDULE_CRON_TAG).
-_schedule_cron_lines() { _schedule_crontab 2>/dev/null | grep -E " $MM_SCHEDULE_CRON_TAG\$"; }
+# _SCHEDULE_CRON_RE — the crontab line enable writes, in every version: five time fields, PATH and
+# the folder variables, the trigger, marmot's path, MM_SCHEDULE_CRON_TAG. A line of the user's
+# that merely ends in the tag does not match.
+_SCHEDULE_CRON_RE="^([^ ]+ ){5}PATH=[^ ]+( [A-Za-z_][A-Za-z0-9_]*=[^ ]+)* MM_SCHEDULE_TRIGGER=cron /[^ ]+ schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG\$"
+
+# _schedule_cron_lines — the crontab lines enable added.
+_schedule_cron_lines() { _schedule_crontab && printf '%s' "$_SCHEDULE_CRONTAB" | grep -E "$_SCHEDULE_CRON_RE"; }
+
+# _schedule_cron_others — _SCHEDULE_CRONTAB without the lines enable added, into
+# _SCHEDULE_CRON_KEEP: every other line byte for byte (a last line without a newline gets one,
+# which crontab requires).
+_schedule_cron_others() {
+  local out
+  out=$(printf '%s' "$_SCHEDULE_CRONTAB" | grep -vE "$_SCHEDULE_CRON_RE"; printf .)
+  _SCHEDULE_CRON_KEEP=${out%.}
+}
 
 # _schedule_cron_set CONTENT DESCRIPTION — install CONTENT as the crontab (through mm_run).
 _schedule_cron_set() { mm_run "$2" crontab - < <(printf '%s' "$1"); }
 
-# _schedule_cron_remove — drop the tagged lines from the crontab, keeping every other line.
+# _schedule_cron_remove — drop the lines enable added from the crontab; with none there the crontab
+# is not rewritten.
 _schedule_cron_remove() {
-  local cur
-  cur=$(_schedule_crontab) || { mm_err "cannot read your crontab"; return 1; }
-  grep -qE " $MM_SCHEDULE_CRON_TAG\$" <<<"$cur" || return 0
-  cur=$(grep -vE " $MM_SCHEDULE_CRON_TAG\$" <<<"$cur")
-  _schedule_cron_set "${cur:+$cur$'\n'}" "remove marmot's crontab line"
+  _schedule_crontab || { mm_err "cannot read your crontab"; return 1; }
+  grep -qE "$_SCHEDULE_CRON_RE" <<<"$_SCHEDULE_CRONTAB" || return 0
+  _schedule_cron_others
+  _schedule_cron_set "$_SCHEDULE_CRON_KEEP" "remove marmot's crontab line"
 }
 
 # _schedule_units_remove — stop and remove the units enable wrote (only files carrying the mark).
@@ -249,11 +378,16 @@ _schedule_write() {
   printf '%s' "$2" >"$tmp" && mv -f -- "$tmp" "$1"
 }
 
+# _schedule_enable FREQ — install the systemd user timer (else the crontab line) that runs `mm
+# schedule run` daily or weekly, with this shell's PATH and folder variables (_schedule_pins).
 _schedule_enable() {
-  local freq=$1 exe="$MM_HOME/marmot" path cal dow svc tim f line cur min
+  local freq=$1 exe="$MM_HOME/marmot" path cal dow svc tim f line min pins p env=""
   _schedule_plain "$exe" || mm_die "marmot's path ($exe) has characters a unit file or crontab line cannot carry: install it with ./install.sh"
   path=$(_schedule_path)
   if _schedule_systemd_ok; then
+    pins=$(_schedule_pins "$_SCHEDULE_SD_ENV")
+    _schedule_pins_check "$pins"
+    while IFS= read -r p; do [[ -n "$p" ]] && env+="Environment=$p"$'\n'; done <<<"$pins"
     cal="*-*-* $(printf '%02d' "$_SCHEDULE_HOUR"):00:00"; [[ "$freq" == weekly ]] && cal="Sun $cal"
     svc="$MM_SCHEDULE_MARK
 [Unit]
@@ -262,7 +396,7 @@ Description=marmot scheduled cleanup (mm schedule run)
 [Service]
 Type=oneshot
 Environment=PATH=$path
-Environment=MM_SCHEDULE_TRIGGER=systemd
+${env}Environment=MM_SCHEDULE_TRIGGER=systemd
 ExecStart=$exe schedule run
 Nice=19
 IOSchedulingClass=idle
@@ -301,12 +435,15 @@ WantedBy=timers.target
     command -v crontab >/dev/null && _schedule_cron_remove   # a cron schedule from before is replaced
     _schedule_note systemd "$freq"
   elif command -v crontab >/dev/null; then
-    cur=$(_schedule_crontab) || mm_die "cannot read your crontab (crontab -l)"
+    _schedule_crontab || mm_die "cannot read your crontab (crontab -l)"
+    _schedule_cron_others
+    # The new line goes last: every variable setting in the crontab applies to it.
+    pins=$(_schedule_pins "$(_schedule_cron_env "$_SCHEDULE_CRON_KEEP")")
+    _schedule_pins_check "$pins"
     min=$((RANDOM % 60)) dow='*'; [[ "$freq" == weekly ]] && dow=0
-    line="$min $_SCHEDULE_HOUR * * $dow PATH=$path MM_SCHEDULE_TRIGGER=cron $exe schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG"
-    cur=$(grep -vE " $MM_SCHEDULE_CRON_TAG\$" <<<"$cur")
+    line="$min $_SCHEDULE_HOUR * * $dow PATH=$path${pins:+ ${pins//$'\n'/ }} MM_SCHEDULE_TRIGGER=cron $exe schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG"
     if [[ "$MM_DRY_RUN" == 1 ]]; then mm_info "Would add to your crontab: $line"; return 0; fi
-    _schedule_cron_set "${cur:+$cur$'\n'}$line"$'\n' "add marmot's crontab line" || mm_die "could not install the crontab line"
+    _schedule_cron_set "$_SCHEDULE_CRON_KEEP$line"$'\n' "add marmot's crontab line" || mm_die "could not install the crontab line"
     _schedule_note cron "$freq"
   else
     mm_err "Cannot schedule: \`systemctl --user\` does not answer here and crontab is not installed."
@@ -349,6 +486,7 @@ _schedule_linger() {
   return 0
 }
 
+# _schedule_status — what is scheduled, whether its runs see this shell's folders, the last run.
 _schedule_status() {
   local svc="$MM_SCHEDULE_UNIT_DIR/$MM_SCHEDULE_UNIT.service" tim="$MM_SCHEDULE_UNIT_DIR/$MM_SCHEDULE_UNIT.timer"
   local any=0 state next cal line linger when
@@ -370,13 +508,14 @@ _schedule_status() {
         no) mm_warn "Linger is off: the timer runs only while you are logged in. To run it logged out: sudo loginctl enable-linger $(id -un)" ;;
         "") mm_info "Linger unknown: if the timer must run while you are logged out: sudo loginctl enable-linger $(id -un)" ;;
       esac
+      _schedule_drift "$_SCHEDULE_SD_ENV"$'\n'"$(awk 'index($0, "Environment=") == 1 { print substr($0, 13) }' "$svc" 2>/dev/null)"
     else
       mm_warn "systemd user timer $MM_SCHEDULE_UNIT.timer installed, but \`systemctl --user\` does not answer here"
     fi
   elif _schedule_ours "$svc"; then
     any=1; mm_warn "$svc is there without its timer: mm schedule enable"
   fi
-  if command -v crontab >/dev/null; then
+  if command -v crontab >/dev/null && _schedule_crontab 2>/dev/null; then
     while IFS= read -r line; do
       [[ -n "$line" ]] || continue
       any=1
@@ -384,7 +523,9 @@ _schedule_status() {
       when="daily at $(printf '%02d:%02d' "${f[1]}" "${f[0]}")"
       [[ "${f[4]}" == '*' ]] || when="weekly (day ${f[4]}) at $(printf '%02d:%02d' "${f[1]}" "${f[0]}")"
       mm_ok "crontab line" "$when"
-    done < <(_schedule_cron_lines)
+      # The run gets the crontab's settings above the line, then the line's own NAME=VALUE words.
+      _schedule_drift "$(_schedule_cron_env "${_SCHEDULE_CRONTAB%%"$line"*}")"$'\n'"$(printf '%s\n' "${f[@]:5}" | awk '/^[A-Za-z_][A-Za-z0-9_]*=/ { print; next } { exit }')"
+    done < <(printf '%s' "$_SCHEDULE_CRONTAB" | grep -E "$_SCHEDULE_CRON_RE")
   fi
   (( any )) || mm_info "Not scheduled. Turn it on with: mm schedule enable (or --weekly)"
   if mm_schedule_last; then
@@ -421,6 +562,8 @@ mm_cmd_main() {
     esac
     shift
   done
+  # Finds the unit folder systemd reads (_schedule_systemd_ok) before anything looks there.
+  [[ "$sub" == run ]] || _schedule_systemd_ok || :
   case "$sub" in
     run) _schedule_run ;;
     status) _schedule_status ;;
