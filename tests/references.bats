@@ -196,12 +196,15 @@ EOF
   [ "$MM_INUSE_PARTIAL" = 1 ]
 }
 
-@test "a snapshot older than a few seconds is retaken right before acting" {
-  mkdir -p "$SB/late/node_modules"
+@test "a process that started after the snapshot is seen right before acting, and an old snapshot is retaken" {
+  mkdir -p "$SB/late/node_modules" "$SB/job"; echo 'x' >"$SB/job/run.sh"
   mm_inuse_refresh >/dev/null 2>&1
   mm_test_bg "$SB/late/node_modules" sleep 30
-  MM_INUSE_AT=$(( $(date +%s) - 10 ))
   run try_rm "$SB/late"; [ "$output" = "1 in use" ]
+  # a reference that appeared since is only seen by a new snapshot, taken once the last is old
+  mm_test_fake crontab "[[ \"\$1\" == -l ]] && echo '0 1 * * * $SB/job/run.sh'"
+  MM_INUSE_AT=$(( $(date +%s) - 10 ))
+  run try_rm "$SB/job"; [ "$output" = "1 used by crontab" ]
 }
 
 @test "a crontab line reaching a script through a symlinked folder keeps the real folder" {

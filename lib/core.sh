@@ -308,7 +308,7 @@ MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""   # what the last snapshot could not 
 # fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
   local out live refs script root
-  script="$(declare -f _mm_inuse_scan _mm_mounts _mm_mount_paths); _mm_inuse_scan"
+  script="$(declare -f _mm_inuse_scan _mm_inuse_live _mm_mounts _mm_mount_paths); _mm_inuse_scan"
   MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""
   out=$(bash -c "$script")
   if (( EUID == 0 )); then
@@ -338,20 +338,13 @@ mm_inuse_refresh() {
 # for each argument containing a /, and "P<TAB>why" when something could not be read: a process
 # entry this user may not open (EACCES; a vanished process is not that), or a mount _mm_mount_paths
 # cannot place. Runs in a child bash (as root when possible), so it uses nothing else from this file
-# but _mm_mounts and _mm_mount_paths (declared with it). Batch reads: one find, one cat, a few awks,
-# whatever the process count.
+# but _mm_inuse_live, _mm_mounts and _mm_mount_paths (declared with it).
 _mm_inuse_scan() {
   export LC_ALL=C   # the errors sifted below are matched in English
   local p w c a=()
-  # The live block's stdout goes through the filter; its stderr is sifted for refusals and for the
-  # "P" lines of _mm_mount_paths, which reach the output directly (fd 4), not through the filter.
-  { { { find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
-        # cat, not one awk over the files: mawk stops at the first unreadable one. A path is the rest
-        # of the line after the fixed fields (five in maps, seven in /proc/net/unix): it may hold spaces.
-        cat /proc/[0-9]*/maps | awk '{ sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\// && !seen[$0]++'
-        _mm_mounts
-        awk 'NR > 1 { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\//' /proc/net/unix
-      } 2>&1 >&3 | awk -F'\t' '$1 == "P" { print; next } /Permission denied/ { n++ }
+  # The live paths go through the filter; _mm_inuse_live's stderr is sifted for refusals and for
+  # the "P" lines of _mm_mount_paths, which reach the output directly (fd 4), not through the filter.
+  { { _mm_inuse_live 2>&1 >&3 | awk -F'\t' '$1 == "P" { print; next } /Permission denied/ { n++ }
         END { if (n) print "P\t" n " process entries could not be read (no CAP_SYS_PTRACE?)" }' >&4
     } 3>&1 | sed 's/ (deleted)$//' | grep '^/' | sort -u
   } 4>&1
@@ -360,6 +353,19 @@ _mm_inuse_scan() {
     { mapfile -d '' -t a <"$p/cmdline" && IFS= read -r c <"$p/comm"; } 2>/dev/null || continue
     for w in "${a[@]}"; do [[ "$w" == */* ]] && printf 'A\tprocess %s (%s)\t%s\n' "${p#/proc/}" "$c" "$w"; done
   done
+  return 0
+}
+
+# _mm_inuse_live — raw live paths, unsorted: every process's cwd, root, exe, open fds and mappings,
+# every mount (_mm_mounts) and every bound unix socket. Batch reads: one find, one cat, a few awks,
+# whatever the process count. Errors (what could not be read) stay on stderr for the caller.
+_mm_inuse_live() {
+  find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
+  # cat, not one awk over the files: mawk stops at the first unreadable one. A path is the rest
+  # of the line after the fixed fields (five in maps, seven in /proc/net/unix): it may hold spaces.
+  cat /proc/[0-9]*/maps | awk '{ sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\// && !seen[$0]++'
+  _mm_mounts
+  awk 'NR > 1 { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\//' /proc/net/unix
   return 0
 }
 
@@ -418,12 +424,16 @@ _mm_mount_paths() {
     }' "$1" -
 }
 
-# mm_mount_under REAL — 0 if a mount point or bind-mount source (this namespace's and every
-# readable one's: _mm_mounts, read afresh) is REAL or lies under it. rm --one-file-system descends
-# into a bind mount from the same filesystem, so removing a folder holding one empties its source.
-mm_mount_under() {
-  MM_P="${1%/}" awk 'BEGIN { p = ENVIRON["MM_P"] }
-    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !found }' < <(_mm_mounts 2>/dev/null)
+# mm_live_under REAL — 0 if, right now and as this user sees it, a process has REAL or something
+# under it as cwd, root, exe, open fd, mapping or bound socket, or a mount point or bind source
+# (this namespace's and every readable one's) lies there. The last look before the sink, after the
+# snapshot (seconds old by then) and the sizing: a process that started meanwhile is seen, and a
+# mount made meanwhile too (rm --one-file-system descends into a bind mount from the same
+# filesystem and would empty its source). Other users' processes stay with the snapshot's root view.
+# A look that reads nothing at all (not even this namespace's mounts) counts as in use.
+mm_live_under() {
+  MM_P="${1%/}" awk 'BEGIN { p = ENVIRON["MM_P"] } { sub(/ \(deleted\)$/, "") }
+    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !(found || NR == 0) }' < <(_mm_inuse_live 2>/dev/null)
 }
 
 # _mm_inuse_refs < ARGV_LINES — "path<TAB>source" for every existing regular file (never a
@@ -892,14 +902,13 @@ mm_rm() {
     _mm_refuse "changed while sizing"; return 1
   fi
   # Purge sizes item after item for up to MM_SIZE_TIMEOUT each: a snapshot more than a few seconds
-  # old is retaken, so a process that started using the item meanwhile is seen.
+  # old (references included) is retaken, and whatever its age this user's processes and the mounts
+  # get a last look right before the sink: a process or mount that appeared since is seen.
   if (( $(date +%s) - MM_INUSE_AT > 5 )); then
     mm_inuse_refresh
     p=$(mm_inuse_why "$real") && { _mm_refuse "$p"; return 1; }
   fi
-  # Last look before the sink: a mount made since the snapshot (--one-file-system does not stop at
-  # a bind mount from the same filesystem, and the mounted source would be emptied).
-  mm_mount_under "$real" && { _mm_refuse "contains a mount"; return 1; }
+  mm_live_under "$real" && { _mm_refuse "in use"; return 1; }
   if [[ "$MM_DRY_RUN" != 1 ]]; then
     if [[ "$mode" == trash ]]; then
       _mm_trash "$real" "$bytes" || return $?
