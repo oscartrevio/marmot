@@ -556,17 +556,33 @@ _purge_busy() {
     - <(mm_inuse_paths) | sort -u
 }
 
+# _purge_probe ART — what ART holds that must survive, from one bounded walk: "git" (a .git entry
+# anywhere inside: a nested repository), "keypair" (a *-keypair.json file: Solana and Anchor keep
+# program keypairs in target/deploy/, and losing one loses the deploy authority), "tfstate"
+# (*.tfstate or *.tfstate.backup: local Terraform state is the only record of what is deployed,
+# and terragrunt runs terraform inside .terragrunt-cache), "?" when the walk failed or timed out
+# (what cannot be read is never purged), else nothing.
+_purge_probe() {
+  local out
+  out=$(timeout "${MM_SIZE_TIMEOUT:-300}" find "$1" -xdev -mindepth 1 -printf '%y\t%p\n' 2>/dev/null |
+    awk -F'\t' 'BEGIN { h = 0 }
+      { n = $NF; sub(/.*\//, "", n)
+        if (n == ".git") h = 3
+        else if ($1 == "f" && n ~ /-keypair\.json$/) { if (h < 2) h = 2 }
+        else if ($1 == "f" && n ~ /\.tfstate(\.backup)?$/) { if (h < 1) h = 1 } }
+      END { split("tfstate keypair git", name, " "); if (h) printf "%s", name[h] }'
+    exit "${PIPESTATUS[0]}") || { printf '?'; return 0; }
+  printf '%s' "$out"
+}
+
 # _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>holds<TAB>path" per artifact (see
-# mm_size_frees), 4 in parallel. size and frees are "?" when sizing failed or timed out (size
-# unknown). holds is what makes the artifact never purged, from one find: "git" when a .git entry
-# exists anywhere inside (a nested repository), "keypair" when a *-keypair.json file does
-# (Solana/Anchor program keypairs in target/deploy/: losing one loses the deploy authority).
+# mm_size_frees and _purge_probe), 4 in parallel. size and frees are "?" when sizing failed or
+# timed out (size unknown).
 _purge_measure() {
   (
-    export -f mm_size_frees; export MM_SIZE_TIMEOUT MM_SIZE_SUDO
+    export -f mm_size_frees _purge_probe; export MM_SIZE_TIMEOUT MM_SIZE_SUDO
     printf '%s\0' "$@" | xargs -0 -P4 -n1 bash -c '
-      g=$(find "$1" -xdev -mindepth 1 \( -name .git -o -type f -name "*-keypair.json" \) -print -quit 2>/dev/null)
-      h=""; case "${g##*/}" in .git) h=git ;; ?*) h=keypair ;; esac
+      h=$(_purge_probe "$1")
       if r=$(mm_size_frees "$1") && [[ "$r" =~ ^[0-9]+\ [0-9]+$ ]]; then s=${r% *} f=${r#* }; else s="?" f="?"; fi
       printf "%s\t%s\t%s\t%s\0" "$s" "$f" "$h" "$1"' _
   )
@@ -1144,6 +1160,8 @@ _purge_run() {
     case "${holds[$art]:-}" in
       git) kept_out+=("$art"$'\t'"contains a git repository"); continue ;;
       keypair) kept_out+=("$art"$'\t'"holds a deploy keypair"); continue ;;
+      tfstate) kept_out+=("$art"$'\t'"holds local Terraform state"); continue ;;
+      '?') kept_out+=("$art"$'\t'"could not read what it holds"); continue ;;
     esac
     # unknown size (sizing failed or timed out, or no record) is never counted as 0
     if [[ "${size[$art]:-?}" == "?" || "${frees[$art]:-?}" == "?" ]]; then
