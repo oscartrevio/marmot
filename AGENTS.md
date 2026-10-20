@@ -39,9 +39,10 @@ coding agents. It must never delete what an agent or tool still uses.
 - Protections compare the path as written and as resolved; a resolved path never grants what
   the literal lacked. Re-check at the sink, right before the deletion, not only at discovery.
 - `--dry-run` changes nothing and reports the same items and numbers as a real run.
-- Without a terminal, prompts decline and pickers select nothing. Prompts list every item they
-  act on (no "+N more"), take whole-word answers, and anything unrecognized means no. Keep it
-  that way.
+- Without a terminal, prompts decline and pickers select nothing. Prompts that remove packages,
+  containers, images, worktrees or build artifacts name every item (no "+N more"); bulk steps
+  (Trash items, logs, crash dumps, sessions) state the count and the size. Answers are whole
+  words, and anything unrecognized means no. Keep it that way.
 - Refusals name their reason (`used by ~/.claude.json`); a user must be able to act on it.
 - Process checks read `/proc`; no `pgrep`, `pkill`, `fuser` (`tests/audit.bats` checks).
 

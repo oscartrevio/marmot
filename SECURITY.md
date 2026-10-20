@@ -65,9 +65,11 @@ The lines it does not cross (`lib/core.sh`, `mm_rm`):
   runs again right before each deletion.
 - Never an item whose size cannot be read, or that changed (device, inode, ctime, location) while
   it was being sized. Trash moves are same-filesystem renames and never fall back to deletion.
-- Without a terminal every prompt declines and every picker selects nothing; prompts list every
-  item they act on. `mm schedule run` never uses sudo, and it touches the Trash and agent
-  sessions only with their config opt-ins (`trash_keep_days`, `sessions_keep_days`).
+- Without a terminal every prompt declines and every picker selects nothing. Prompts that remove
+  packages, containers, images, worktrees or build artifacts name every item; bulk steps (Trash
+  items, logs, crash dumps, sessions) state the count and the size. `mm schedule run` never uses
+  sudo, and it touches the Trash and agent sessions only with their config opt-ins
+  (`trash_keep_days`, `sessions_keep_days`).
 - No environment variable switches a protection off.
 
 Outside `mm_rm`, system state changes only through the owning tool (`apt-get`, `journalctl`,
