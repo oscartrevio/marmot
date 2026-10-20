@@ -44,13 +44,14 @@ trash_item() {
 # fake_docker — containers: c-old/c-never-old (stopped/created long ago), c-recent (postgres:16,
 # stopped an hour ago), c-never-new, and c-running (web:1, listed only without --filter). Images
 # no container uses: old/tool:1 (90 days), multi:a+multi:b (200 days, tag time unknown), base:12
-# (built 90 days ago, pulled 2 days ago), fresh:1 (3 days), and an untagged one. Removing the
-# two old ones drops the `system df` Images total by 2.1GB (estimate from unique sizes: 2.0GB).
+# (built 90 days ago, pulled 2 days ago), fresh:1 (3 days), mydev:snapshot (45 days, no repo
+# digests: built or committed here), and an untagged one. Removing the two old pulled ones drops
+# the `system df` Images total by 2.1GB (estimate from unique sizes: 2.0GB).
 # FAKE_DOCKER_PS_FAIL=1 makes `docker ps` fail.
 fake_docker() {
   fake_rec docker '
 iso() { command date -u -d "$1" +%Y-%m-%dT%H:%M:%S.000000000Z; }
-row() { printf "%s\t%s\t%s\t%s\n" "$@"; }
+row() { printf "%s\t%s\t%s\t%s\t%s\n" "$@"; }
 gone="$CALLS.gone"
 [[ -n "${FAKE_DOCKER_PS_FAIL:-}" && "$1" == ps ]] && exit 1
 case "$1 ${2:-}" in
@@ -69,30 +70,59 @@ case "$1 ${2:-}" in
         c-never-old /never-ran created 0001-01-01T00:00:00Z "$(iso "20 days ago")" alpine 0 \
         c-never-new /fresh created 0001-01-01T00:00:00Z "$(iso "1 day ago")" alpine 0
     fi ;;
-  "image ls") printf "%s\n" sha256:old sha256:multi sha256:pulled sha256:fresh sha256:web sha256:postgres sha256:app \
-    sha256:alpine sha256:dangling sha256:multi ;;
+  "image ls") printf "%s\n" sha256:old sha256:multi sha256:pulled sha256:fresh sha256:local sha256:web \
+    sha256:postgres sha256:app sha256:alpine sha256:dangling sha256:multi ;;
   "image inspect")
-    row sha256:old "old/tool:1" "$(iso "90 days ago")" "$(iso "90 days ago")"
-    row sha256:multi "multi:a multi:b" "$(iso "200 days ago")" 0001-01-01T00:00:00Z
-    row sha256:pulled "base:12" "$(iso "90 days ago")" "$(iso "2 days ago")"
-    row sha256:fresh "fresh:1" "$(iso "3 days ago")" "$(iso "3 days ago")"
+    row sha256:old "old/tool:1" "$(iso "90 days ago")" "$(iso "90 days ago")" 1
+    row sha256:multi "multi:a multi:b" "$(iso "200 days ago")" 0001-01-01T00:00:00Z 1
+    row sha256:pulled "base:12" "$(iso "90 days ago")" "$(iso "2 days ago")" 1
+    row sha256:fresh "fresh:1" "$(iso "3 days ago")" "$(iso "3 days ago")" 1
+    row sha256:local "mydev:snapshot" "$(iso "45 days ago")" "$(iso "45 days ago")" 0
     for i in web:1 postgres:16 app:1 alpine:latest; do
-      row "sha256:${i%%:*}" "$i" "$(iso "200 days ago")" "$(iso "200 days ago")"
+      row "sha256:${i%%:*}" "$i" "$(iso "200 days ago")" "$(iso "200 days ago")" 1
     done
-    row sha256:dangling "" "$(iso "300 days ago")" 0001-01-01T00:00:00Z ;;
+    row sha256:dangling "" "$(iso "300 days ago")" 0001-01-01T00:00:00Z 0 ;;
   "image rm") echo "$*" >>"$gone" ;;
-  "images "*) echo 12MB ;;
+  "images "*) printf "%s\t%s\n" sha256:dangling 12MB ;;
   "builder du") echo "Reclaimable: 1.5GB" ;;
   "volume ls") echo vol-db ;;
   "system df")
     case "$*" in
       *Volumes*) printf "vol-db\t1.8GB\n" ;;
-      *UniqueSize*) printf "%s\t%s\n" sha256:old 1.2GB sha256:multi 800MB sha256:pulled 50MB sha256:web 300MB ;;
+      *UniqueSize*) printf "%s\t%s\n" sha256:old 1.2GB sha256:multi 800MB sha256:pulled 50MB sha256:local 2.0GB sha256:web 300MB ;;
       *) mb=5000
         grep -q "old/tool:1" "$gone" 2>/dev/null && mb=$((mb - 1200))
         grep -q "multi:a multi:b" "$gone" 2>/dev/null && mb=$((mb - 900))
         printf "Images\t%sMB\nContainers\t10MB\n" "$mb" ;;
     esac ;;
+esac'
+}
+
+# fake_docker_many — a stand-in with 12 containers stopped 30 days ago and 12 unused images,
+# more than any listing cap.
+fake_docker_many() {
+  fake_rec docker '
+iso() { command date -u -d "$1" +%Y-%m-%dT%H:%M:%S.000000000Z; }
+case "$1 ${2:-}" in
+  "ps "*) for i in 01 02 03 04 05 06 07 08 09 10 11 12; do echo "c$i"; done ;;
+  "container inspect")
+    if [[ "$*" == *"{{.Image}}"* ]]; then shift 4; for c; do echo "sha256:running-$c"; done
+    else
+      for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+        printf "c%s\t/box-%s\texited\t%s\t%s\tubuntu:24.04\t%s\n" \
+          "$i" "$i" "$(iso "30 days ago")" "$(iso "90 days ago")" "${i#0}0000000"
+      done
+    fi ;;
+  "image ls") for i in 01 02 03 04 05 06 07 08 09 10 11 12; do echo "sha256:im$i"; done ;;
+  "image inspect")
+    for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+      printf "sha256:im%s\tolder/tool:%s \t%s\t%s\t1\n" "$i" "$i" "$(iso "60 days ago")" "$(iso "60 days ago")"
+    done ;;
+  "image rm"|"rm "*) echo "$*" >>"$CALLS.gone" ;;
+  "images "*) ;;
+  "builder du") ;;
+  "volume ls") ;;
+  "system df") printf "Images\t5GB\nContainers\t1GB\n" ;;
 esac'
 }
 
@@ -312,6 +342,43 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   run _clean_docker_images
   none grep -E ' docker image (rm|inspect) ' "$CALLS"
   [[ "$output" == *"Unused images · skipped"* ]]
+}
+
+@test "docker: untagged images are listed and asked about, never pruned unattended" {
+  fake_docker
+  src
+  run _clean_docker                                  # no terminal: every prompt declines
+  none grep -E ' docker image (prune|rm)' "$CALLS"
+  [[ "$output" == *"Dangling images"* ]]             # still listed
+  : >"$CALLS"
+  mm_confirm() { return 0; }
+  _clean_docker >/dev/null
+  grep -qE ' docker image rm sha256:dangling$' "$CALLS"
+  none grep ' docker image prune' "$CALLS"
+  none grep -E ' docker image rm .*(-f|--force)' "$CALLS"
+}
+
+@test "docker: an image no registry has is kept and listed for review, not offered for removal" {
+  fake_docker
+  src
+  mm_confirm() { return 0; }
+  images_then_review() { _clean_docker_images; _clean_review_print; }
+  run images_then_review
+  none grep ' docker image rm mydev:snapshot' "$CALLS"
+  [[ "$output" == *"Kept for you to review"*"mydev:snapshot"* ]]
+}
+
+@test "docker: every container and image that would go is listed, none hidden behind a count" {
+  fake_docker_many
+  src
+  mm_confirm() { return 0; }
+  run _clean_docker
+  local i
+  for i in 01 02 03 04 05 06 07 08 09 10 11 12; do
+    [[ "$output" == *"box-$i"* ]] || { echo "container box-$i not listed"; false; }
+    [[ "$output" == *"older/tool:$i"* ]] || { echo "image older/tool:$i not listed"; false; }
+  done
+  none grep -F '(+' <<<"$output"
 }
 
 # unix_socket PATH — a listening-less unix socket file at PATH (what a mounted docker.sock looks like).

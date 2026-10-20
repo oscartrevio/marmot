@@ -1312,18 +1312,9 @@ _clean_docker() {
     mm_skip "Docker" "$why; MM_DOCKER_PRUNE=1 cleans it anyway"; _clean_cat_end; return
   fi
   if ! timeout 5 docker info >/dev/null 2>&1; then mm_skip "Docker" "daemon not reachable"; _clean_cat_end; return; fi
-  local n b size
+  local b
   _clean_docker_containers
-
-  # Dangling images.
-  n=0 b=0
-  while IFS= read -r size; do
-    n=$((n + 1)) b=$((b + $(_clean_to_bytes "$size")))
-  done < <(timeout 30 docker images -f dangling=true --format '{{.Size}}' 2>/dev/null)
-  if (( n == 0 )); then mm_ok "Dangling images" "none"
-  elif mm_run "docker image prune" timeout 600 docker image prune -f; then
-    _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
-  fi
+  _clean_docker_dangling
 
   _clean_docker_images
 
@@ -1372,6 +1363,34 @@ _clean_dockerd_here() {
   return 1
 }
 
+# Untagged ("dangling") images: layers no tag points at any more, usually left by a rebuild, but
+# also what `docker commit` with no name produces, which can be the only copy of a container's
+# saved state. So they are listed one by one and confirmed like every other image, never pruned
+# on their own: `docker image prune -f` would take the lot with no prompt, including unattended
+# runs. Removal names each id, without -f, so the daemon still refuses one a container uses.
+_clean_docker_dangling() {
+  local out row id size n=0 b=0
+  local -a ids=()
+  if ! out=$(timeout 30 docker images -f dangling=true --no-trunc --format $'{{.ID}}\t{{.Size}}' 2>/dev/null); then
+    mm_skip "Dangling images" "cannot list images"; return
+  fi
+  while IFS=$'\t' read -r id size; do
+    [[ -n "$id" ]] || continue
+    size=$(_clean_to_bytes "$size")
+    ids+=("$id") n=$((n + 1)) b=$((b + size))
+    mm_act "${id#sha256:} · untagged, $(mm_human "$size")"
+  done <<<"$out"
+  if (( n == 0 )); then mm_ok "Dangling images" "none"; return; fi
+  mm_info "  an image you saved with docker commit and never tagged looks like this"
+  _clean_ask "Dangling images" "Remove $n untagged images ($(mm_human "$b"))?" || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"; return
+  fi
+  # SAFE: listed, confirmed untagged images; no -f, so the daemon refuses ones a container uses
+  mm_run "docker image rm $n untagged images" timeout 600 docker image rm "${ids[@]}" || return 0
+  _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
+}
+
 # Stopped containers whose last run ended 7+ days ago (never-started ones: created 7+ days ago).
 # `container prune --filter until=` goes by creation time and would take a long-lived container
 # stopped minutes ago, so candidates come from inspect data, are listed and confirmed, then removed
@@ -1398,8 +1417,7 @@ _clean_docker_containers() {
     lines+=("${name#/} ($image) · $what $(( (now - t) / 86400 ))d ago, $(mm_human "$size")")
   done
   if (( n == 0 )); then mm_ok "Stopped containers" "none stopped for 7+ days"; return; fi
-  for row in "${lines[@]:0:10}"; do mm_act "$row"; done
-  (( n > 10 )) && mm_act "(+$((n - 10)) more)"
+  for row in "${lines[@]}"; do mm_act "$row"; done
   _clean_ask "Stopped containers" "Remove $n stopped containers ($(mm_human "$b"))?" || return 0
   mm_run "docker rm $n containers" timeout 300 docker rm "${pick[@]}" || return 0 # SAFE: listed, confirmed set of containers stopped 7+ days; no -f, so running ones are refused
   _clean_track "$b" "$n"
@@ -1407,14 +1425,17 @@ _clean_docker_containers() {
 }
 
 # Unused images: tagged images no container (running, stopped or never started) was created from,
-# built and last pulled or tagged 30+ days ago. Listed with the space only they hold (`docker
-# system df -v` unique size), confirmed, then removed one by one with `docker image rm` naming
-# every tag (an ID with several tags would need -f). Without -f the daemon still refuses an image
-# a container uses or that other images build on. Space freed is `docker system df` before/after.
+# built and last pulled or tagged 30+ days ago, and that a registry still has (RepoDigests).
+# An image with no digests was built, committed or loaded here and never pushed, so removing it
+# would be the end of it: those are listed under "Kept for you to review" instead. The rest are
+# listed with the space only they hold (`docker system df -v` unique size), confirmed, then
+# removed one by one with `docker image rm` naming every tag (an ID with several tags would need
+# -f). Without -f the daemon still refuses an image a container uses or that other images build
+# on. Space freed is `docker system df` before/after.
 _clean_docker_images() {
-  local now cutoff out row id tags created tagged t last what n=0 b=0 est before after freed ok=0 fail=0
+  local now cutoff out row id tags created tagged digests t last what n=0 b=0 est before after freed ok=0 fail=0
   local -A used=() uniq=()
-  local -a cids=() ids=() lines=() rm_tags=() argv=()
+  local -a cids=() ids=() lines=() rm_tags=() argv=() only_here=()
   now=$(date +%s); cutoff=$((now - _CLEAN_IMAGE_DAYS * 86400))
   # Fail closed: an image whose container went unseen would be offered.
   if ! out=$(timeout 30 docker ps -aq --no-trunc 2>/dev/null); then mm_skip "Unused images" "cannot list containers"; return; fi
@@ -1430,11 +1451,12 @@ _clean_docker_images() {
   while IFS=$'\t' read -r id est; do [[ -n "$id" ]] && uniq[$id]=$(_clean_to_bytes "$est"); done < <(timeout 60 docker system df -v \
     --format $'{{range .Images}}{{.ID}}\t{{.UniqueSize}}\n{{end}}' 2>/dev/null)
   # `join` rejects RepoTags on older clients (Docker 27 decodes it as []interface{}); range works.
-  if ! out=$(timeout 60 docker image inspect -f $'{{.Id}}\t{{range .RepoTags}}{{.}} {{end}}\t{{.Created}}\t{{.Metadata.LastTagTime}}' \
+  if ! out=$(timeout 60 docker image inspect \
+    -f $'{{.Id}}\t{{range .RepoTags}}{{.}} {{end}}\t{{.Created}}\t{{.Metadata.LastTagTime}}\t{{len .RepoDigests}}' \
     "${ids[@]}" 2>/dev/null); then
     mm_skip "Unused images" "cannot inspect images"; return
   fi
-  while IFS=$'\t' read -r id tags created tagged; do
+  while IFS=$'\t' read -r id tags created tagged digests; do
     tags=${tags% }
     [[ -n "$id" && -n "$tags" && -z "${used[$id]+x}" ]] || continue
     t=$(date -d "$created" +%s 2>/dev/null) || continue
@@ -1446,15 +1468,19 @@ _clean_docker_images() {
       what="last pulled or tagged"; (( last > t )) && t=$last
     fi
     (( t > 0 && t < cutoff )) || continue
-    est=${uniq[$id]:-0}
-    rm_tags+=("$tags") n=$((n + 1)) b=$((b + est))
     read -r row _ <<<"$tags"
     [[ "$tags" == *" "* ]] && row+=" (+$(( $(wc -w <<<"$tags") - 1 )) tags)"
+    est=${uniq[$id]:-0}
+    # No digest means no registry has it: it was built, committed or loaded here, never pushed.
+    if [[ "$digests" == 0 ]]; then only_here+=("$row ($(mm_human "$est"))"); continue; fi
+    rm_tags+=("$tags") n=$((n + 1)) b=$((b + est))
     lines+=("$row · $what $(( (now - t) / 86400 ))d ago, $(mm_human "$est")")
   done <<<"$out"
+  (( ${#only_here[@]} )) && _clean_review "Docker images no registry has" \
+    "${#only_here[@]} unused: $(IFS=', '; echo "${only_here[*]}") · built, committed or loaded here, so they cannot be pulled again" \
+    "docker save <image> -o <file>.tar keeps a copy; docker image rm <image> removes one"
   if (( n == 0 )); then mm_ok "Unused images" "none unused for ${_CLEAN_IMAGE_DAYS}+ days"; return; fi
-  for row in "${lines[@]:0:10}"; do mm_act "$row"; done
-  (( n > 10 )) && mm_act "(+$((n - 10)) more)"
+  for row in "${lines[@]}"; do mm_act "$row"; done
   _clean_ask "Unused images" "Remove $n images no container uses ($(mm_human "$b"))?" || return 0
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     _clean_track "$b" "$n"; mm_ok "Unused images" "$(_clean_detail "$n" images "$b") unused for ${_CLEAN_IMAGE_DAYS}+ days"; return
