@@ -494,6 +494,8 @@ MM_DEFAULT_WHITELIST='# marmot whitelist: your own additions, one path or glob p
 #   ~/projects/*/fixtures
 '
 
+# mm_whitelist_init — make sure the config folder and the whitelist file exist; a machine without
+# one gets the explained default. An existing path of any kind is left alone.
 mm_whitelist_init() {
   mkdir -p "$MM_CONFIG_DIR"
   [[ -e "$MM_WHITELIST_FILE" ]] || printf '%s' "$MM_DEFAULT_WHITELIST" >"$MM_WHITELIST_FILE"
