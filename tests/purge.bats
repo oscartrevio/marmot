@@ -893,6 +893,18 @@ esac"
   [ -z "$(mm_log_rows worktree)" ]
 }
 
+@test "removing a worktree keeps the records of other worktrees whose folder is away" {
+  wt_repo; wt_add fin -b fin; wt_add away --detach
+  echo staged >"$SB/away/staged"; git -C "$SB/away" add staged
+  mv "$SB/away" "$BATS_TEST_TMPDIR/away"   # an unplugged drive, a path only a dev container has
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/fin" ]
+  mv "$BATS_TEST_TMPDIR/away" "$SB/away"
+  [ "$(git -C "$SB/away" diff --cached --name-only)" = staged ]
+}
+
 # ---------------------------------------------------------------- more artifact kinds
 
 # cache_tag DIR [FIRST_LINE] — DIR holding a blob and a CACHEDIR.TAG with the standard signature

@@ -782,7 +782,9 @@ _purge_wt_eval() {
 # after a terminal confirmation; never with --yes or in a dry run. Sets _PURGE_WT_DONE /
 # _PURGE_WT_BYTES (removed) and _PURGE_WT_OFFERED / _PURGE_WT_OFFER_BYTES, all counted in frees
 # (mm_size_frees), _PURGE_WT_FINISHED (offered finished ones) and _PURGE_WT_PNPM (offered
-# pnpm-managed worktrees).
+# pnpm-managed worktrees). Never `git worktree prune`: `git worktree remove` drops its own record,
+# and a worktree whose folder is only absent (an unplugged drive, a path that exists only inside
+# a dev container) must keep its record, which holds its index, HEAD and reflog.
 _purge_worktrees() {
   local yes="$1"; shift
   local i n=0 active=0 sz fr pn line idx desc
@@ -846,7 +848,6 @@ _purge_worktrees() {
   # Re-check right before acting: the prompt may have taken a while.
   mm_inuse_refresh
   local w m c rc
-  local -A pruned=()
   for i in "${sel[@]}"; do
     w="${_WT_PATH[$i]}" m="${_WT_MAIN[$i]}" c="${_WT_COMMON[$i]}"
     if mm_in_use "$w"; then mm_tilde "$w"; mm_skip "$REPLY" "$(mm_inuse_why "$w" || echo "in use")"; continue; fi
@@ -863,11 +864,6 @@ _purge_worktrees() {
     mm_ok "$REPLY" "removed, freed $(mm_human "${size[$i]}")${_WT_BRANCH[$i]:+, branch ${_WT_BRANCH[$i]} kept}"
     _PURGE_WT_DONE=$((_PURGE_WT_DONE + 1)) _PURGE_WT_BYTES=$((_PURGE_WT_BYTES + size[$i]))
     [[ -n "${pnpm[$i]:-}" ]] && _PURGE_PNPM_PATHS+=("$w")
-    pruned[$c]=1
-  done
-  # Records of worktrees whose directories are already gone, in the repositories just touched.
-  for c in "${!pruned[@]}"; do
-    mm_run "prune worktree records in $c" timeout 60 git -c core.fsmonitor=false --git-dir="$c" worktree prune
   done
 }
 
