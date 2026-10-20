@@ -295,23 +295,32 @@ mm_sudo() {
 MM_INUSE=""        # newline-separated snapshot; kept in memory so a killed run leaves no files
 MM_INUSE_REFS=""   # "path<TAB>source" for snapshot paths that only a reference keeps (mm_inuse_why)
 MM_INUSE_TAKEN=0
+MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""   # what the last snapshot could not see, if anything
 # mm_inuse_refresh — snapshot every path any process has as cwd, root, exe, open fd, mapping, or
 # bound unix socket, plus every mount point and bind-mount source (per mount namespace), so a
 # target containing a mount is never removed through it; then add references (_mm_inuse_refs):
 # files that a process's arguments, a launcher, a tool config, a systemd user unit or the crontab name.
-# Sees all processes as root or with passwordless sudo; otherwise only this user's
-# (MM_INUSE_PARTIAL=1, warned). An empty process snapshot is fatal: it would mean "nothing is in use".
+# The scan runs as this user and, as root or through passwordless sudo, again as root for the other
+# users' processes; both are merged, because root without CAP_SYS_PTRACE (a container's default
+# capabilities) may not read this user's process entries. Whatever a scan could not see (a process
+# entry it may not read, a mount it cannot place, no root scan at all) makes the snapshot partial:
+# MM_INUSE_PARTIAL=1, the reason in MM_INUSE_PARTIAL_WHY, warned once. An empty process snapshot is
+# fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
-  local out live refs script
+  local out live refs script root
   script="$(declare -f _mm_inuse_scan _mm_mounts _mm_mount_paths); _mm_inuse_scan"
-  MM_INUSE_PARTIAL=0
-  if (( EUID == 0 )) || { [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; }; then
-    out=$(mm_sudo bash -c "$script")
-  else
-    MM_INUSE_PARTIAL=1
-    out=$(bash -c "$script")
-  fi
-  live=$(grep '^/' <<<"$out")
+  MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""
+  out=$(bash -c "$script")
+  if (( EUID == 0 )); then
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$out" | cut -f2-)
+  elif [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; then
+    root=$(mm_sudo bash -c "$script")
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$root" | cut -f2-)
+    out+=$'\n'$root
+  elif [[ "$MM_NO_SUDO" == 1 ]]; then MM_INUSE_PARTIAL_WHY="running without sudo, only your own processes are checked"
+  else MM_INUSE_PARTIAL_WHY="no passwordless sudo, only your own processes are checked"; fi
+  [[ -n "$MM_INUSE_PARTIAL_WHY" ]] && MM_INUSE_PARTIAL=1
+  live=$(grep '^/' <<<"$out" | sort -u)
   MM_INUSE_TAKEN=1 MM_INUSE="" MM_INUSE_REFS=""
   [[ -n "$live" ]] || mm_die "could not list in-use paths; refusing to delete anything"
   refs=$(grep '^A' <<<"$out" | _mm_inuse_refs)
@@ -319,25 +328,32 @@ mm_inuse_refresh() {
   MM_INUSE=$({ printf '%s\n' "$live"; [[ -n "$MM_INUSE_REFS" ]] && cut -f1 <<<"$MM_INUSE_REFS"; } | sort -u)
   if [[ "$MM_INUSE_PARTIAL" == 1 && -z "${_MM_PARTIAL_WARNED:-}" ]]; then
     _MM_PARTIAL_WARNED=1
-    if [[ "$MM_NO_SUDO" == 1 ]]; then mm_warn "Running without sudo: only your own processes are checked for in-use paths"
-    else mm_warn "No passwordless sudo: only your own processes are checked for in-use paths"; fi
+    mm_warn "In-use check is partial: $MM_INUSE_PARTIAL_WHY"
   fi
   mm_debug "in-use snapshot: $(mm_inuse_paths | wc -l) paths (partial=$MM_INUSE_PARTIAL)"
 }
 
 # _mm_inuse_scan — every live path (sorted, one per line), then "A<TAB>process PID (comm)<TAB>word"
-# for each argument containing a /. Runs in a child bash (as root when possible), so it uses
-# nothing else from this file but _mm_mounts and _mm_mount_paths (declared with it). Batch reads:
-# one find, one cat, a few awks, whatever the process count.
+# for each argument containing a /, and "P<TAB>why" when something could not be read: a process
+# entry this user may not open (EACCES; a vanished process is not that), or a mount _mm_mount_paths
+# cannot place. Runs in a child bash (as root when possible), so it uses nothing else from this file
+# but _mm_mounts and _mm_mount_paths (declared with it). Batch reads: one find, one cat, a few awks,
+# whatever the process count.
 _mm_inuse_scan() {
+  export LC_ALL=C   # the errors sifted below are matched in English
   local p w c a=()
-  { find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
-    # cat, not one awk over the files: mawk stops at the first unreadable one. A path is the rest
-    # of the line after the fixed fields (five in maps, seven in /proc/net/unix): it may hold spaces.
-    cat /proc/[0-9]*/maps | awk '{ sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\// && !seen[$0]++'
-    _mm_mounts
-    awk 'NR > 1 { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\//' /proc/net/unix
-  } 2>/dev/null | sed 's/ (deleted)$//' | grep '^/' | sort -u
+  # The live block's stdout goes through the filter; its stderr is sifted for refusals and for the
+  # "P" lines of _mm_mount_paths, which reach the output directly (fd 4), not through the filter.
+  { { { find /proc/[0-9]*/cwd /proc/[0-9]*/root /proc/[0-9]*/exe /proc/[0-9]*/fd -maxdepth 1 -type l -printf '%l\n'
+        # cat, not one awk over the files: mawk stops at the first unreadable one. A path is the rest
+        # of the line after the fixed fields (five in maps, seven in /proc/net/unix): it may hold spaces.
+        cat /proc/[0-9]*/maps | awk '{ sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\// && !seen[$0]++'
+        _mm_mounts
+        awk 'NR > 1 { sub(/^[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +[^ ]+ +/, "") } /^\//' /proc/net/unix
+      } 2>&1 >&3 | awk -F'\t' '$1 == "P" { print; next } /Permission denied/ { n++ }
+        END { if (n) print "P\t" n " process entries could not be read (no CAP_SYS_PTRACE?)" }' >&4
+    } 3>&1 | sed 's/ (deleted)$//' | grep '^/' | sort -u
+  } 4>&1
   for p in /proc/[0-9]*; do
     [[ "${p#/proc/}" == "$$" || "${p#/proc/}" == "$PPID" ]] && continue   # this scan and its sudo
     { mapfile -d '' -t a <"$p/cmdline" && IFS= read -r c <"$p/comm"; } 2>/dev/null || continue

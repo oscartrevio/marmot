@@ -134,3 +134,41 @@ s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(); time.sleep(3
   [ "$(cat "$SB/src/pkg/Button.tsx")" = precious ]
   [ "$(mm_log_rows refused | cut -f2)" = "${output#* }" ]
 }
+
+@test "with sudo but no CAP_SYS_PTRACE this user's processes are still seen and the snapshot is partial" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  mkdir -p "$SB/devsrv/node_modules/vite" "$SB/idle" "$BATS_TEST_TMPDIR/rootbin"
+  mm_test_bg "$SB/devsrv/node_modules/vite" sleep 30
+  # Root without CAP_SYS_PTRACE (a container's default capabilities) lists /proc but cannot read
+  # another user's cwd, root, exe, fd or maps: the sudo double runs the scan with find and cat
+  # that deny exactly the entries of this user's processes, the way the kernel does.
+  cat >"$BATS_TEST_TMPDIR/rootbin/find" <<'EOF'
+#!/usr/bin/env bash
+keep=()
+for a in "$@"; do
+  if [[ "$a" =~ ^/proc/[0-9]+/(cwd|root|exe|fd)$ && "$(stat -c %u "${a%/*}" 2>/dev/null)" == "$UID" ]]; then
+    echo "find: '$a': Permission denied" >&2
+  else keep+=("$a"); fi
+done
+(( ${#keep[@]} )) || exit 1
+exec /usr/bin/find "${keep[@]}"
+EOF
+  cat >"$BATS_TEST_TMPDIR/rootbin/cat" <<'EOF'
+#!/usr/bin/env bash
+keep=()
+for a in "$@"; do
+  if [[ "$a" =~ ^/proc/[0-9]+/maps$ && "$(stat -c %u "${a%/*}" 2>/dev/null)" == "$UID" ]]; then
+    echo "cat: $a: Permission denied" >&2
+  else keep+=("$a"); fi
+done
+(( ${#keep[@]} )) || exit 1
+exec /usr/bin/cat "${keep[@]}"
+EOF
+  chmod +x "$BATS_TEST_TMPDIR/rootbin/find" "$BATS_TEST_TMPDIR/rootbin/cat"
+  mm_test_fake sudo "[[ \"\$1\" == -n ]] && shift; [[ \"\$*\" == true ]] && exit 0
+    PATH=\"$BATS_TEST_TMPDIR/rootbin:\$PATH\" exec \"\$@\""
+  mm_inuse_refresh >/dev/null 2>&1
+  [ "$MM_INUSE_PARTIAL" = 1 ]
+  run try_rm "$SB/devsrv"; [ "$output" = "1 in use" ]
+  run try_rm "$SB/idle";   [ "$output" = "0 " ]
+}
