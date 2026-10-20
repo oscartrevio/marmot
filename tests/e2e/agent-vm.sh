@@ -10,8 +10,9 @@
 # The home: real npm and pnpm installs from the registry (pnpm projects hard-linked into one
 # shared store), a repository whose linked worktrees live in coding agents' worktree folders
 # (merged, squash-merged, uncommitted, in progress), npm, pip and TypeScript caches, Trash items
-# deleted 40, 12 and 3 days ago, agent sessions with a 30-day retention configured, agent and
-# gcloud logs, automation-browser leftovers in /tmp, a whitelisted project and credentials.
+# deleted 40, 12 and 3 days ago with a 30-day Trash retention configured, agent sessions with a
+# 30-day retention configured, agent and gcloud logs, automation-browser leftovers in /tmp, a
+# whitelisted project, an idle project a dev server still runs in, and credentials.
 #
 # Ages: marmot judges projects, worktrees, sessions and logs by modification times, git commit
 # dates and .trashinfo dates, which the scenario sets directly. Browser leftovers it judges by
@@ -131,7 +132,8 @@ build_home() {
   git -C "$P/webapp" init -q && git -C "$P/webapp" add -A && commit "$old" "$P/webapp" commit -qm init
   cp -a "$P/webapp" "$P/keep"
   cp -a "$P/webapp" "$P/active"
-  age "$old" "$P/webapp" "$P/keep"
+  cp -a "$P/webapp" "$P/served"   # idle for 40 days, but a dev server still runs in it (see below)
+  age "$old" "$P/webapp" "$P/keep" "$P/served"
 
   # pnpm: a project idle for 40 days that alone uses rxjs (and its tslib) from the shared store.
   mkdir -p "$P/dashboard"
@@ -178,9 +180,11 @@ build_home() {
   age "$recent" "$P/api" "$CS"
   age "$old" "$PS/api-flaky" "$P/api/.git/worktrees/api-flaky"
 
-  # Caches: npm's (filled by the installs above), pip's and TypeScript's (same layout, filler data).
+  # Caches: npm's (filled by the installs above), pip's and TypeScript's (same layout, filler data,
+  # unused for 40 days: catalog cache entries used within the last 7 days are kept).
   blob "$HOME/.cache/pip/http-v2/a/3/f/0/1/e2e.body" 20
   blob "$HOME/.cache/typescript/5.6/node_modules/types-registry/index.json" 5
+  age "$old" "$HOME/.cache/pip" "$HOME/.cache/typescript"
 
   # The Trash: items deleted 40, 12 and 3 days ago.
   mkdir -p "$TRASH/files" "$TRASH/info"
@@ -227,6 +231,7 @@ build_home() {
   # shellcheck disable=SC2088 # the whitelist expands ~ itself
   printf '~/projects/keep\n' >"$HOME/.config/marmot/whitelist"
   printf '# agent sessions untouched for 30 days go to the Trash\nsessions_keep_days = 30\n' >"$HOME/.config/marmot/config"
+  printf '# Trash items deleted 30+ days ago are removed by scheduled runs\ntrash_keep_days = 30\n' >>"$HOME/.config/marmot/config"
 }
 
 # ---------------------------------------------------------------- run
@@ -238,6 +243,12 @@ for c in ps pgrep fuser ip sudo; do command -v "$c" >/dev/null || printf 'note: 
 SECONDS=0
 build_home
 printf 'home built in %ss\n' "$SECONDS"
+# A dev server an agent left running in an idle project: its cwd is there and it holds a file in
+# node_modules open. As a user with passwordless sudo in a container without CAP_SYS_PTRACE, root
+# cannot read this process's /proc entries; marmot must still see it.
+(cd "$P/served" && exec 7<node_modules/lodash/package.json && exec sleep 3600) &
+SERVED_PID=$!
+trap 'kill "$SERVED_PID" 2>/dev/null || true' EXIT
 
 store=$(cd "$HOME" && pnpm store path)
 unique=$(du_b "$P/dashboard/node_modules/.pnpm/rxjs@"* "$P/dashboard/node_modules/.pnpm/tslib@"* \
@@ -301,6 +312,7 @@ after[tmp]=$(du_b "${LEFTOVERS[@]}") after[npm]=$(du_b "$HOME/.npm/_cacache") af
 say "kept"
 check "whitelisted project keeps its node_modules" present "$P/keep/node_modules/lodash"
 check "project in use today keeps its node_modules" present "$P/active/node_modules/lodash"
+check "idle project a running process uses keeps its node_modules" present "$P/served/node_modules/lodash"
 check "worktree with uncommitted work is kept" grep -qx unfinished "$PS/api-flaky/README.md"
 check "its change is still uncommitted" eval '[[ "$(git -C "$PS/api-flaky" status --porcelain)" == *README.md* ]]'
 check "worktree in progress is kept with its node_modules" present "$PS/api-search/src/search.js" "$PS/api-search/node_modules/lodash"
