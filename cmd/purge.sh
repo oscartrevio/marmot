@@ -1377,21 +1377,26 @@ _purge_run() {
     return 0
   fi
 
-  # ---- delete (re-check in-use and activity for real runs: a prompt may have taken a while, and an
-  # agent may have edited a project meanwhile)
-  local why
+  # ---- delete. A real run asks every question again right before each removal (the listing and
+  # the prompt may be minutes old, and an agent may have been working next to us): the rule, what
+  # git tracks and ignores, what the artifact holds, who uses it and when it was last written.
+  # Anything that changed, or that cannot be answered now, keeps the artifact and says why.
+  local why probe
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_section "Would remove"
   else
     mm_section "Purging"
     mm_inuse_refresh
     busy=()
-    local -a recheck=()
+    local -a recheck=() sel_arts=()
     for i in "${sel[@]}"; do recheck+=("${projs[$i]}"); [[ -n "${gits[$i]}" ]] && recheck+=("${gits[$i]}"); done
     while IFS= read -r p; do [[ -n "$p" ]] && busy[$p]=1; done < <(_purge_busy "${recheck[@]}")
     pair_of=()
-    for i in "${sel[@]}"; do pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; done
+    for i in "${sel[@]}"; do
+      pair_of[${projs[$i]}]="${projs[$i]}"$'\t'"${gits[$i]}"; sel_arts+=("${arts[$i]}")
+    done
     _purge_activity_load "${pair_of[@]}"
+    _purge_tracked_load "${sel_arts[@]}"
   fi
   local scan_now=$now; now=$(date +%s)
   local -a how=()
@@ -1404,13 +1409,29 @@ _purge_run() {
       MM_SKIPPED=$((MM_SKIPPED + 1))
       continue
     fi
-    # activity since the scan: touched after it, or a stale project no longer idle past the
-    # threshold. Unknown activity keeps the artifact.
     why=""
     if [[ "$MM_DRY_RUN" != 1 ]]; then
-      act="${_PURGE_ACT[$proj]:-}"
-      if [[ ! "$act" =~ ^[0-9]+$ ]]; then why="activity unknown"
-      elif (( act > scan_now || (stale[i] && (now - act) / 86400 <= days) )); then why="active since the scan"; fi
+      rc=0; _purge_valid "$art" "${roots[@]}" || rc=$?
+      if (( rc != 0 )); then why="${_PURGE_WHY:-no longer a rebuildable artifact}"
+      elif (( _PURGE_TAGGED )) && [[ "${kind[i]}" != pick ]]; then why="only a tagged cache now"
+      fi
+      if [[ -z "$why" ]]; then
+        probe=$(_purge_probe "$art"); h="${probe%%$'\t'*}" mt="${probe#*$'\t'}"
+        case "$h" in
+          git) why="contains a git repository" ;;
+          keypair) why="holds a deploy keypair" ;;
+          tfstate) why="holds local Terraform state" ;;
+        esac
+        [[ -n "$why" || "$mt" =~ ^[0-9]+$ ]] || why="could not read what it holds"
+        [[ -n "$why" ]] || (( mt <= scan_now )) || why="written since the scan"
+      fi
+      # activity since the scan: touched after it, or a stale project no longer idle past the
+      # threshold. Unknown activity keeps the artifact.
+      if [[ -z "$why" ]]; then
+        act="${_PURGE_ACT[$proj]:-}"
+        if [[ ! "$act" =~ ^[0-9]+$ ]]; then why="activity unknown"
+        elif (( act > scan_now || (stale[i] && (now - act) / 86400 <= days) )); then why="active since the scan"; fi
+      fi
     fi
     if [[ -n "$why" ]]; then
       mm_tilde "$art"; mm_skip "$REPLY" "$why"
