@@ -174,10 +174,25 @@ lacks() { ! grep -q -- "$1" "$2"; }
   orphan_in wt2 sleep 60
   local victim=$ORPHAN
   mm_pick() { grep "^$victim "; }
+  mm_confirm() { return 0; }
   MM_TTY=1 run _optimize_orphan_task
   dead "$victim"
   alive "$keep"
   [ "$(mm_log_rows run | cut -f1)" = "kill -TERM $victim (sleep)" ]
+}
+
+@test "what the picker returns is listed and confirmed before any SIGTERM; declining signals nothing" {
+  load_optimize
+  orphan_in wt sleep 60
+  local a=$ORPHAN
+  orphan_in wt2 sleep 60
+  _optimize_have_fzf() { return 0; }
+  mm_pick() { head -n 1; }   # Enter with nothing marked: fzf --multi returns the highlighted row
+  mm_confirm() { printf 'confirm %s\n' "$1" >>"$CALLS"; return 1; }
+  MM_TTY=1 run _optimize_orphan_task
+  alive "$a"; alive "$ORPHAN"
+  [ "$(grep -c '^confirm' "$CALLS")" -eq 1 ]
+  [ -z "$(mm_log_rows run)" ]
 }
 
 @test "dry run lists orphans but signals nothing" {
@@ -398,9 +413,24 @@ exec 4> >(exec "$0" -c "read -r" "$0" --type=renderer); read -t 600 -u 3'
   local victim=$BROWSER
   _optimize_have_fzf() { return 0; }
   mm_pick() { grep "^$victim "; }
+  mm_confirm() { return 0; }
   MM_TTY=1 run _optimize_browser_task
   dead "$victim"
   alive "$keep"
+}
+
+@test "browsers: what the picker returns is listed and confirmed before any signal; declining stops nothing" {
+  load_browsers
+  fake_browser orphan --headless
+  local a=$BROWSER
+  fake_browser orphan --headless
+  _optimize_have_fzf() { return 0; }
+  mm_pick() { head -n 1; }   # Enter with nothing marked: fzf --multi returns the highlighted row
+  mm_confirm() { printf 'confirm %s\n' "$1" >>"$CALLS"; return 1; }
+  MM_TTY=1 run _optimize_browser_task
+  alive "$a"; alive "$BROWSER"
+  [ "$(grep -c '^confirm' "$CALLS")" -eq 1 ]
+  [ -z "$(mm_log_rows run)" ]
 }
 
 @test "browsers: one that ignores SIGTERM gets SIGKILL" {
