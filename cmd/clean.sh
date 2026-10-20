@@ -46,11 +46,13 @@ automation browsers leave in /tmp when their script dies (playwright_chromiumdev
 puppeteer_dev_chrome_profile-*, playwright-artifacts-*, [.]org.chromium.Chromium.*,
 [.]com.google.Chrome.*), only your own, untouched for 2 hours and not in use, are deleted.
 Entries of the lib/catalog.sh caches used in the last 7 days stay (such as the packages
-\`npx -y\` installs for MCP servers). Model stores, dependency repositories (Maven, the Go module
-cache, ...), Node versions, Docker volumes and agent state are never touched: they are listed
-with their size under "Kept for you to review", along with the biggest folders in your cache
-folder marmot knows nothing about. Steps that cannot be undone (Trash sweep, packages, logs,
-crash dumps, containers, images) ask first and are skipped without a terminal.
+\`npx -y\` installs for MCP servers), and so does an entry a program wrote its own data into after
+it was installed (an MCP server's memory.jsonl); Deno's npm packages are only reported. Model
+stores, dependency repositories (Maven, the Go module cache, ...), Node versions, Docker volumes,
+images no registry has and agent state are never touched: they are listed with their size under
+"Kept for you to review", along with the biggest folders in your cache folder marmot knows
+nothing about. Steps that cannot be undone (Trash sweep, packages, logs, crash dumps,
+containers, images) list every item, ask first and are skipped without a terminal.
 
 Docker is cleaned only when its daemon is this machine's own: not when DOCKER_HOST or the
 current docker context points at another machine, and not from inside a container (a mounted
@@ -63,7 +65,8 @@ Coding agents' own log files (*.log and rotated logs in their documented logs fo
 as ~/.omp/logs or ~/.copilot/logs) last written more than 7 days ago and not in use are removed;
 session folders are not searched. Agent sessions are kept unless you opt in: with a retention
 of N days, session files (and rotated logs in agent state) last written more than N days ago and
-not in use move to the Trash; credentials, whitelisted paths and files in use are never touched.
+not in use move to the Trash; credentials, whitelisted paths, files in use, an agent's memory
+folders, its worktrees and git checkouts are never touched.
 Turn it on with sessions_keep_days=N in $MM_CONFIG_FILE (runs without a terminal act only then),
 or use --sessions N for one run (asks first).
 

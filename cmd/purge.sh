@@ -62,20 +62,33 @@ _purge_usage() {
 Usage: mm purge [DIR...] [options]
 
 1. Finished and abandoned git worktrees: linked worktrees that git reports clean (no untracked
-   files either), that are not locked or in use, and whose commits are on a branch or tag.
-   Finished ones are offered once idle 1+ hour: the branch is merged into the default branch
-   (also squash- or rebase-merged), its upstream branch was deleted, or its pull request is
-   merged or closed (asked through gh when it is installed and logged in). Unmerged ones after
-   ${_PURGE_WT_UNMERGED_DAYS}+ idle days. Removed with \`git worktree remove\` (never --force; the branch is kept),
-   only after you confirm on a terminal.
-2. Build artifacts (node_modules, .next, target, dist, venvs, caches, SwiftPM .build, .NET
-   bin/obj, bower_components, .nx/cache, .docusaurus, a project's .pnpm-store, and folders inside
-   a project that tag themselves as caches with CACHEDIR.TAG). Projects idle longer
-   than --days are selected by default. Never touched: projects with a running process inside
-   them or active since the scan (re-checked right before deleting), anything git tracks,
-   anything whose git state, activity or size can't be read, and artifacts holding a nested
-   git repository or a deploy keypair (*-keypair.json, e.g. Solana's target/deploy/). Virtualenvs
-   (venv, .venv) go to the Trash; everything else is deleted permanently.
+   files either), that are not locked or in use, and whose commits, also those only their HEAD
+   reflog holds, are on a branch, tag or remote branch. Their git-ignored files go with them, so
+   these may only be build artifacts purge recognizes or byte-for-byte copies of the main
+   worktree's files (a copied .env); anything else, or a nested git repository, keeps the
+   worktree, and the prompt names what goes. Finished ones are offered once idle 1+ hour: the
+   branch is merged into the default branch (also squash- or rebase-merged), its upstream branch
+   was deleted, or its pull request is merged or closed (asked through gh when it is installed
+   and logged in). Unmerged ones after ${_PURGE_WT_UNMERGED_DAYS}+ idle days. Removed with \`git worktree
+   remove\` (never --force; the branch is kept, other worktrees' records are left alone), only
+   after you confirm on a terminal.
+2. Build artifacts, each only where a project of the matching type vouches for it: node_modules
+   and the JS framework caches (.next, .nuxt, .output, .turbo, ...) next to a package.json or a
+   deno manifest, target next to Cargo.toml or pom.xml, build/dist/coverage next to a manifest
+   and git-ignored by the project's own repository, venvs (a pyvenv.cfg), SwiftPM .build, .NET
+   bin/obj, bower_components, .nx/cache, .docusaurus, a project's .pnpm-store, python tool caches
+   (.pytest_cache, .mypy_cache, .ruff_cache, .tox, .nox) next to a python project, and the
+   toolchain caches .gradle, .terragrunt-cache, .dart_tool, .zig-cache, zig-out and .cxx next to
+   their build file. Projects idle longer than --days are selected by default.
+   Only in the picker, never by --yes, a scheduled run or the stale/all answers: folders that
+   merely tag themselves with CACHEDIR.TAG, and anything inside a folder synced by Syncthing,
+   Dropbox, Nextcloud/ownCloud or Resilio (deleting there deletes on every device).
+   Never touched: projects with a running process inside them or active since the scan (activity
+   counts edits anywhere in the project and writes inside the artifact), anything git tracks,
+   anything whose rule, git state, activity or size can't be read, and artifacts holding a nested
+   git repository, a deploy keypair (*-keypair.json) or local Terraform state (*.tfstate).
+   Every check is run again right before the deletion. Virtualenvs go to the Trash; everything
+   else is deleted permanently.
 
 Sizes: FREES is what a delete really releases. Files hard-linked from elsewhere (pnpm's store)
 stay on disk, so after removing pnpm-installed node_modules or worktrees marmot runs
@@ -88,7 +101,7 @@ found in a coding agent's worktree folder (~/.cursor/worktrees, ~/.t3/worktrees,
 
 Options:
   --days N       Artifact idle threshold in days (default 14)
-  --all          Also select recently active projects by default (terminal only)
+  --all          Also select recently active projects by default and list every row (terminal only)
   -y, --yes      Unattended: purge the stale artifacts only (never removes worktrees)
   --paths        Edit the scan roots in \$EDITOR (creates the file)
   -n, --dry-run  Show what would be removed
