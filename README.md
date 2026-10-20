@@ -88,7 +88,7 @@ each command.
 | `mm status` | Live health dashboard: agent sessions, CPU, memory, disk, network, lingering dev servers |
 | `mm analyze` | Disk overview, then a read-only explorer; move what you pick to the Trash |
 | `mm optimize` | Upgrades, swap reset, stranded processes, orphaned headless browsers, TRIM, DNS |
-| `mm uninstall` | apt, snap, npm, bun, pipx and `~/.local/bin` packages, plus their leftovers |
+| `mm uninstall` | apt, snap, npm, bun, pipx, uv and `~/.local/bin` packages, plus their caches |
 | `mm schedule` | Run a safe part of clean and purge daily or weekly |
 | `mm history` | Everything marmot removed, moved to the Trash or refused, grouped by run |
 | `mm update` | Update marmot from the git checkout it was installed from |
@@ -100,29 +100,41 @@ Details for each are in [Command reference](#command-reference).
 marmot deletes files, so it refuses rather than guesses.
 
 - **Removed without asking:** developer caches (npm, pnpm, yarn, bun, uv, pip, Go build, Cargo,
-  Gradle, Deno, ...), old browser builds (Playwright, Puppeteer, Cypress), old agent CLI and
-  editor server versions, logs older than 7 days, browser leftovers in `/tmp`; with sudo the apt
-  cache, the journal above 500 MB and old snap revisions; dangling Docker images and old build
-  cache.
-- **Removed after you confirm:** old Trash items, crash reports and dumps, rotated system logs,
-  unused packages and old kernels, stopped containers and unused images, git worktrees, build
-  artifacts, agent sessions (only if you opt in).
+  Gradle, Deno module cache, ...), old browser builds (Playwright, Puppeteer, Cypress), old
+  agent CLI and editor server versions, logs older than 7 days, browser leftovers in `/tmp`;
+  with sudo the apt cache, the journal above 500 MB and old snap revisions.
+- **Removed after you confirm, listed in full first:** old Trash items, crash reports and dumps,
+  rotated system logs, unused packages (removed, not purged) and old kernels, stopped containers,
+  unused and untagged images, git worktrees (with what their git-ignored files would take along),
+  build artifacts, agent sessions and app data (each only if you opt in).
 - **Only reported:** model stores (Hugging Face, Ollama, torch), dependency stores (Maven, the Go
-  module cache, ...), Node versions, Docker volumes, agent state, unknown folders in `~/.cache`,
-  `/tmp`.
+  module cache, ...), Deno's npm packages, Node versions, Docker volumes and images no registry
+  has, cache entries a program wrote its own data into (an MCP server's memory), agent state,
+  unknown folders in `~/.cache`, `/tmp`.
 - **Never:** credentials (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, keyrings, ...), `~/.config`,
-  system folders, other users' homes (unless you name a folder there), anything in use.
+  agent state (also behind dotfiles symlinks), system folders, other accounts' homes, anything
+  in use.
 
 A file is kept, with every folder that contains it, when:
 
-- a running process has it open, runs in it, or names it in its arguments;
+- a running process has it open, runs in it, or names it in its arguments — also through a bind
+  mount from a container, and checked again right before each deletion;
 - a launcher in `~/.local/bin`, `~/bin` or a `$PATH` folder in your home points at it;
 - an agent's config or any `*mcp*` JSON, TOML or YAML config names it, for any tool;
-- a systemd user unit or your crontab names it;
-- git tracks it, or it is in a worktree with uncommitted work or commits on no branch or tag;
+- a systemd unit, your crontab (also `cd DIR && ...` jobs) or a shell startup file (an alias, a
+  `PATH=` line) names it;
+- git tracks it, or it is in a worktree with uncommitted work, git-ignored files of its own,
+  commits on no branch or tag, or commits only its reflog holds;
+- no project of the matching type vouches for it: `node_modules` without a `package.json` next
+  to it, a folder named `coverage` outside a project, a lone `CACHEDIR.TAG` tag, anything in a
+  Syncthing/Dropbox/Nextcloud/Resilio folder (picker only);
+- it holds a nested git repository, a deploy keypair, or local Terraform state;
 - it is a cache entry used in the last 7 days, such as a package `npx -y` installed;
-- its project was touched since the scan, or its size or activity can't be measured;
-- it is in your whitelist, or its name looks like a credential (`*token*`, `*.pem`, ...).
+- its project was touched since the scan — edits anywhere in it count, git or not — or its size
+  or activity can't be measured;
+- it is in your whitelist (entries match as written and through symlinks; `$HOME`, `~user` and
+  brackets work; entries that can match nothing are reported), or its name looks like a
+  credential (`*token*`, `*.pem`, ...).
 
 Every refusal names its reason (`used by ~/.cursor/mcp.json`). Personal files (virtualenvs,
 uninstall leftovers, agent sessions, what you pick in `mm analyze`) go to `~/.local/share/Trash`;
@@ -167,14 +179,23 @@ Agent sessions are kept unless you opt in with `--sessions N` (one run, asks fir
 <summary><b>mm purge</b> [DIR...] [--days N] [--all] [--yes] [--paths]</summary>
 
 1. **Git worktrees.** A linked worktree is offered when git reports it clean, it is not locked or
-   in use, and every commit is on a branch or tag. Finished ones (merged, also squash- or
-   rebase-merged; upstream branch deleted; pull request merged or closed, via `gh`) after an idle
-   hour, unmerged ones after 30 idle days. Removed with `git worktree remove` (never `--force`;
-   the branch stays) after you confirm.
-2. **Build artifacts** of projects idle longer than `--days` (14): `node_modules`, `.next`,
-   `target`, `dist`, virtualenvs, `.build`, .NET `bin`/`obj`, `.nx/cache`, folders tagged with
-   `CACHEDIR.TAG`, ... Folders like `target` or `vendor` count only next to the manifest that
-   rebuilds them. Activity includes unstaged edits anywhere in the project, and it is checked
+   in use, and every commit — also those only its HEAD reflog holds — is on a branch, tag or
+   remote branch. Finished ones (merged, also squash- or rebase-merged; upstream branch deleted;
+   pull request merged or closed, via `gh`) after an idle hour, unmerged ones after 30 idle
+   days. Its git-ignored files go with it, so these may only be build artifacts purge recognizes
+   or byte-for-byte copies of the main worktree's files (a copied `.env`); anything else, or a
+   nested repository, keeps the worktree, and the prompt names what goes. Removed with
+   `git worktree remove` (never `--force`; the branch stays, other worktrees' records are left
+   alone) after you confirm.
+2. **Build artifacts** of projects idle longer than `--days` (14), each only where a project of
+   the matching type vouches for it: `node_modules`, `.next` and friends next to a
+   `package.json`, `target` next to `Cargo.toml` or `pom.xml`, `build`/`dist`/`coverage` with a
+   manifest and git-ignored, virtualenvs (to the Trash, whatever their name), .NET `bin`/`obj`,
+   `.nx/cache`, python tool caches next to a python project, toolchain caches next to their
+   build file. Folders that merely tag themselves `CACHEDIR.TAG`, and anything in a synced
+   folder (Syncthing, Dropbox, Nextcloud, Resilio), are offered only in the picker. Artifacts
+   holding a nested repository, a deploy keypair or local Terraform state are kept. Activity
+   counts edits anywhere in the project and writes inside the artifact, and every check runs
    again right before deleting.
 
 It looks in the DIRs given, else in `~/.config/marmot/purge_paths` (`--paths` edits it), else in
@@ -221,13 +242,16 @@ and never reboots.
 </details>
 
 <details>
-<summary><b>mm uninstall</b> [NAME...] [--list] [--all]</summary>
+<summary><b>mm uninstall</b> [NAME...] [--list] [--all] [--app-data]</summary>
 
-Removes packages from apt, snap, `npm -g`, `bun -g`, pipx and `~/.local/bin`, and moves leftovers
-with the exact name (`~/.config/NAME`, `~/.cache/NAME`, `~/.local/share/NAME`, `~/.NAME`,
-`~/snap/NAME`) to the Trash. apt removals are simulated first. The base system and cloud guest
-agents are never offered; remote-access and VPN software only when you name it, with a separate
-confirmation.
+Removes packages from apt (removed, never purged: config and data such as PostgreSQL clusters
+and `/var/lib/docker` stay), snap (`snap save` first; the restore command is printed), `npm -g`,
+`bun -g`, pipx, `uv tool` and `~/.local/bin`. `~/.cache/NAME` goes to the Trash; `~/.NAME` and
+`~/.local/share/NAME` are app data, kept unless you pass `--app-data`, which asks per folder
+naming its path, file count, size and newest change. Anything changed in the last 30 days or
+credential-like is always kept. apt removals are simulated first and every package apt would
+remove carries its data note. The base system and cloud guest agents are never offered;
+remote-access and VPN software only when you name it, with a separate confirmation.
 
 </details>
 
@@ -236,14 +260,18 @@ confirmation.
 
 `enable` runs `mm schedule run` daily (or weekly) at 03:00 plus up to an hour of random delay,
 through a systemd user timer when `systemctl --user` works, else a crontab line tagged
-`# marmot`. `status` shows the next and last run and warns when linger is off (then
-`sudo loginctl enable-linger $USER`). `disable` removes only what `enable` wrote.
+`# marmot` (only marmot's own line is ever touched). Runs get this shell's PATH and config
+folders, so they read the same whitelist and settings; `enable` refuses values a unit or
+crontab cannot carry. `status` shows the next and last run, warns when linger is off (then
+`sudo loginctl enable-linger $USER`) and when the installed schedule's folders differ from this
+shell's. `disable` removes only what `enable` wrote.
 
-A run never asks and never uses sudo. It cleans Trash items older than 30 days, caches, old
-browser builds and agent CLI versions, logs older than 7 days, `/tmp` browser leftovers, old
-editor server builds, build artifacts of projects idle 14+ days, and agent sessions only with
-`sessions_keep_days` set. It never touches Docker, worktrees, packages, processes or anything that
-needs root. Each run's totals go to `~/.local/state/marmot/last-run.json`, shown by `mm status`.
+A run never asks and never uses sudo. It cleans caches, old browser builds and agent CLI
+versions, logs older than 7 days, `/tmp` browser leftovers, old editor server builds, and build
+artifacts of projects idle 14+ days. Personal files only with your opt-in in the config: Trash
+items older than `trash_keep_days`, agent sessions older than `sessions_keep_days`. It never
+touches Docker, worktrees, packages, processes or anything that needs root. Each run's totals
+go to `~/.local/state/marmot/last-run.json`, shown by `mm status`.
 
 </details>
 
@@ -279,10 +307,11 @@ Everything lives in `~/.config/marmot/` (`$XDG_CONFIG_HOME/marmot`); state in
 | `purge_paths` | project roots for `mm purge` (`mm purge --paths`) |
 | `config` | settings, `key = value` |
 
-Settings in `config`, both off by default:
+Settings in `config`, all off by default:
 
 ```ini
 sessions_keep_days = 30   # agent session files older than N days, not in use, go to the Trash
+trash_keep_days = 30      # scheduled runs remove Trash items trashed more than N days ago
 nix_gc = on               # nix generations older than 30 days, then garbage collection
 ```
 
