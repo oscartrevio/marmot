@@ -52,6 +52,8 @@ profile_tools() {
 # profile_home — a home with something for every step of the profile, and things it must keep.
 profile_home() {
   trash_item old31 31; trash_item new29 29
+  # the Trash sweep runs only with this opt-in; the no-opt-in case has its own test
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'trash_keep_days = 30' >"$XDG_CONFIG_HOME/marmot/config"
   mkdir -p "$HOME/.cache/pip/wheels"; echo w >"$HOME/.cache/pip/wheels/w.whl"   # catalog cache row
   mm_age "$HOME/.cache/pip" 10
   mkdir -p "$HOME/.cache/pip/http-v2"; echo h >"$HOME/.cache/pip/http-v2/h"   # used today: kept
@@ -154,9 +156,27 @@ profile_home() {
   exist "$XDG_DATA_HOME/Trash/files/old.jsonl" "$HOME/.claude/.credentials.json"
 }
 
+@test "run: the Trash is swept only when trash_keep_days is configured" {
+  profile_tools
+  trash_item old31 31
+  run mm schedule run
+  [ "$status" -eq 0 ]
+  exist "$XDG_DATA_HOME/Trash/files/old31" "$XDG_DATA_HOME/Trash/info/old31.trashinfo"
+  [[ "$output" == *"no trash_keep_days"* ]]
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'trash_keep_days = 45' >"$XDG_CONFIG_HOME/marmot/config"
+  run mm schedule run
+  [ "$status" -eq 0 ]
+  exist "$XDG_DATA_HOME/Trash/files/old31"   # 31 days: younger than the 45 the user chose
+  echo 'trash_keep_days = 30' >"$XDG_CONFIG_HOME/marmot/config"
+  run mm schedule run
+  [ "$status" -eq 0 ]
+  gone "$XDG_DATA_HOME/Trash/files/old31" "$XDG_DATA_HOME/Trash/info/old31.trashinfo"
+}
+
 @test "run: a second run while one holds the lock is refused and changes nothing" {
   profile_tools
   trash_item old31 31
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'trash_keep_days = 30' >"$XDG_CONFIG_HOME/marmot/config"
   mkdir -p "$XDG_STATE_HOME/marmot"
   exec 9>>"$XDG_STATE_HOME/marmot/schedule.lock"
   flock -n 9
@@ -296,6 +316,7 @@ esac'
     XDG_DATA_HOME="$HOME/.dotfiles/data"
   mkdir -p "$XDG_CONFIG_HOME/marmot"
   echo '~/work/keep' >"$XDG_CONFIG_HOME/marmot/whitelist"
+  echo 'trash_keep_days = 30' >"$XDG_CONFIG_HOME/marmot/config"
   local p
   for p in keep old; do
     mkdir -p "$HOME/work/$p/node_modules/x"
@@ -418,6 +439,7 @@ exit 0'
   [[ "$output" == *"Last run: none yet"* ]]
   profile_tools
   trash_item old31 31
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'trash_keep_days = 30' >"$XDG_CONFIG_HOME/marmot/config"
   run mm schedule run
   run mm schedule
   [[ "$output" == *"Last run: "*"(0m ago, manual)"*"freed "* ]]
@@ -452,6 +474,7 @@ status_fakes() {
 
   profile_tools; fake_systemd yes; fake_cron
   trash_item old31 31; trash_item big 40; blob "$XDG_DATA_HOME/Trash/files/big"
+  mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'trash_keep_days = 30' >"$XDG_CONFIG_HOME/marmot/config"
   run mm schedule enable --weekly
   run mm schedule run
   [ "$status" -eq 0 ]

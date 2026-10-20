@@ -3,12 +3,15 @@
 #
 # `run` is the unattended profile: one process, no terminal, no prompts, no sudo. It does only
 # what is safe with nobody watching, reusing mm clean's and mm purge's steps:
-#   - Trash items deleted more than 30 days ago, thumbnails
+#   - Trash items deleted more than trash_keep_days days ago (only when set in the config file),
+#     and thumbnails
 #   - regenerable caches: catalog cache rows and the tools' own cleans (npm, pnpm, uv, Go, ...),
 #     cache folders of agent browser profiles, gcloud/Azure CLI logs older than 7 days
 #   - old browser and test-runner builds (newest kept), old coding-agent CLI versions
 #   - agent log files older than 7 days
 #   - agent sessions, only when sessions_keep_days is set in the config file
+#   - the Trash sweep and session retention above are the only steps that touch personal files,
+#     and both run only when their config key opts in
 #   - automation-browser leftovers in /tmp, idle 2+ hours
 #   - old editor server builds and their leftovers
 #   - build artifacts of projects idle 14+ days (what `mm purge --yes` removes)
@@ -23,7 +26,6 @@
 # shellcheck source=purge.sh
 . "$MM_HOME/cmd/purge.sh"
 
-_SCHEDULE_TRASH_DAYS=30   # Trash items deleted longer ago than this are removed for good
 _SCHEDULE_PURGE_DAYS=14   # build artifacts of projects idle longer than this are removed
 
 _schedule_usage() {
@@ -40,12 +42,13 @@ Runs a safe part of marmot's cleanup on a timer, with nobody at the terminal.
   disable   remove only what enable created
   run       the scheduled cleanup itself, now
 
-What a run cleans: Trash items deleted more than $_SCHEDULE_TRASH_DAYS days ago, thumbnails, regenerable
-caches (lib/catalog.sh cache rows and the tools' own cleans: npm, pnpm, yarn, bun, uv, Go, mise,
-conda, Homebrew), old browser/test-runner builds and old coding-agent CLI versions, agent and
-gcloud/Azure CLI logs older than 7 days, automation-browser leftovers in /tmp, old editor server
-builds and their leftovers, build artifacts of projects idle $_SCHEDULE_PURGE_DAYS+ days (like mm purge --yes),
-and agent sessions only when sessions_keep_days is set in $MM_CONFIG_FILE.
+What a run cleans: thumbnails, regenerable caches (lib/catalog.sh cache rows and the tools' own
+cleans: npm, pnpm, yarn, bun, uv, Go, mise, conda, Homebrew), old browser/test-runner builds and
+old coding-agent CLI versions, agent and gcloud/Azure CLI logs older than 7 days,
+automation-browser leftovers in /tmp, old editor server builds and their leftovers, and build
+artifacts of projects idle $_SCHEDULE_PURGE_DAYS+ days (like mm purge --yes). Personal files only with your
+opt-in in $MM_CONFIG_FILE: Trash items trashed more than
+trash_keep_days days ago, and agent sessions older than sessions_keep_days days.
 Never: anything that needs sudo (apt, kernels, journal, snaps, system logs, crash dumps), Docker,
 git worktrees, uninstalls, process kills or upgrades. It never asks and never runs sudo.
 
@@ -120,6 +123,19 @@ _schedule_abort() {
     "$MM_TRASHED" "$((MM_COUNT + _CLEAN_TOOL_ITEMS))"
 }
 
+# _schedule_trash_days — 0 with _SCHEDULE_TRASH_KEEP set when the config file turns the scheduled
+# Trash sweep on (trash_keep_days=N, N >= 1); 1 when it is unset or off (a value that is not a
+# number of days is ignored with a warning). The Trash holds what people deliberately set aside,
+# so an unattended run deletes there only with this opt-in; mm clean asks instead.
+_schedule_trash_days() {
+  local v
+  _SCHEDULE_TRASH_KEEP=""
+  v=$(mm_config trash_keep_days) || return 1
+  if [[ "$v" =~ ^[0-9]+$ ]] && (( 10#$v >= 1 )); then _SCHEDULE_TRASH_KEEP=$((10#$v)); return 0; fi
+  [[ -n "$v" && "$v" != 0 && "$v" != off ]] && mm_warn "ignoring trash_keep_days=$v in $MM_CONFIG_FILE: not a number of days"
+  return 1
+}
+
 _schedule_run() {
   # No prompts and no sudo, whoever started the run: every confirmation declines, every picker
   # selects nothing, and steps that need root report "needs sudo".
@@ -135,7 +151,15 @@ _schedule_run() {
   local free0 free1 total items delta sign=+
   free0=$(mm_free_bytes /)
 
-  _clean_user --yes "$_SCHEDULE_TRASH_DAYS"
+  if _schedule_trash_days; then
+    _clean_user --yes "$_SCHEDULE_TRASH_KEEP"
+  else
+    _clean_cat "User essentials"
+    mm_tilde "$MM_CONFIG_FILE"
+    mm_skip "Trash" "kept: no trash_keep_days in $REPLY"
+    _clean_contents "Thumbnails" "$(mm_catalog_expand %CACHE%/thumbnails)"
+    _clean_cat_end
+  fi
   _clean_dev
   _clean_builds
   _clean_agent_logs
