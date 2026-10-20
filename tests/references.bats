@@ -203,3 +203,58 @@ EOF
   MM_INUSE_AT=$(( $(date +%s) - 10 ))
   run try_rm "$SB/late"; [ "$output" = "1 in use" ]
 }
+
+@test "a crontab line reaching a script through a symlinked folder keeps the real folder" {
+  mkdir -p "$SB/Dropbox/code/reports/dist" "$SB/Dropbox/code/billing/dist"
+  echo 'x' >"$SB/Dropbox/code/reports/dist/job.js"; echo 'x' >"$SB/Dropbox/code/billing/dist/job.js"
+  ln -s "$SB/Dropbox/code" "$SB/code"
+  mm_test_fake crontab "[[ \"\$1\" == -l ]] && printf '%s\n' '0 6 * * * node $SB/code/reports/dist/job.js'"
+  mm_inuse_refresh >/dev/null 2>&1
+  run try_rm "$SB/Dropbox/code/reports/dist"; [ "$output" = "1 used by crontab" ]
+  run try_rm "$SB/Dropbox/code/reports";      [ "$output" = "1 used by crontab" ]
+  run try_rm "$SB/Dropbox/code/billing/dist"; [ "$output" = "0 " ]
+}
+
+@test "relative paths after cd DIR in the crontab keep what the job runs, resolved against that DIR" {
+  mkdir -p "$SB/jobs/a/dist" "$SB/jobs/x/dist" "$SB/bots/rel/node_modules/.bin"
+  echo 'x' >"$SB/jobs/a/dist/job.js"; echo 'x' >"$SB/jobs/x/dist/job.js"
+  echo 'x' >"$SB/bots/rel/node_modules/.bin/tsx"; echo 'x' >"$SB/bots/rel/index.ts"
+  mm_test_fake crontab "[[ \"\$1\" == -l ]] && printf '%s\n' \
+    '0 3 * * * cd $SB/jobs/a && node dist/job.js' \
+    '0 4 * * * cd \"$SB/bots/rel\"; ./node_modules/.bin/tsx index.ts >/dev/null 2>&1'"
+  mm_inuse_refresh >/dev/null 2>&1
+  run try_rm "$SB/jobs/a/dist";           [ "$output" = "1 used by crontab" ]
+  run try_rm "$SB/bots/rel/node_modules"; [ "$output" = "1 used by crontab" ]
+  run try_rm "$SB/jobs/x/dist";           [ "$output" = "0 " ]
+}
+
+@test "systemd units keep what %h and WorkingDirectory-relative Exec lines run, system units included" {
+  mkdir -p "$HOME/jobs/b/dist" "$HOME/jobs/c/dist" "$HOME/jobs/x/dist" "$SB/svc" "$HOME/.config/systemd/user" "$SB/etc-systemd"
+  echo 'x' >"$HOME/jobs/b/dist/job.js"; echo 'x' >"$HOME/jobs/c/dist/job.js"; echo 'x' >"$HOME/jobs/x/dist/job.js"
+  echo 'x' >"$SB/svc/sys.py"
+  printf '[Service]\nType=oneshot\nExecStart=/usr/bin/node %%h/jobs/b/dist/job.js\n' >"$HOME/.config/systemd/user/report-b.service"
+  printf '[Service]\nType=oneshot\nExecStart=-/usr/bin/node dist/job.js\nWorkingDirectory=%%h/jobs/c\n' >"$HOME/.config/systemd/user/report-c.service"
+  printf '[Service]\nExecStart=/usr/bin/python3 %s/svc/sys.py\n' "$SB" >"$SB/etc-systemd/sys.service"
+  MM_TEST_SYSTEMD_SYSTEM="$SB/etc-systemd" mm_inuse_refresh >/dev/null 2>&1
+  why "$HOME/jobs/b/dist"; [ "$status" -eq 0 ]; [ "$output" = "used by systemd unit report-b.service" ]
+  why "$HOME/jobs/c/dist"; [ "$status" -eq 0 ]; [ "$output" = "used by systemd unit report-c.service" ]
+  why "$HOME/jobs/x/dist"; [ "$status" -eq 1 ]
+  run try_rm "$SB/svc"; [ "$output" = "1 used by systemd unit sys.service" ]
+}
+
+@test "shell startup files keep what their aliases, sourced files and PATH exports name" {
+  mkdir -p "$HOME/.local/share/claude/versions/1.0.50" "$HOME/.cargo" "$HOME/n/bin" "$HOME/n/lib/node_modules/codex/bin" \
+    "$HOME/work" "$HOME/.config/fish" "$HOME/tools"
+  echo 'x' >"$HOME/.local/share/claude/versions/1.0.50/claude"; echo 'x' >"$HOME/.cargo/env"
+  echo 'x' >"$HOME/n/lib/node_modules/codex/bin/codex.js"; ln -s ../lib/node_modules/codex/bin/codex.js "$HOME/n/bin/codex"
+  echo 'x' >"$HOME/tools/helper.fish"
+  printf 'alias claude=~/.local/share/claude/versions/1.0.50/claude\nexport PATH="$HOME/n/bin:$PATH"\ncd ~/work\n' >"$HOME/.bashrc"
+  printf '. "${HOME}/.cargo/env"\n' >"$HOME/.zshenv"
+  printf 'source $HOME/tools/helper.fish\n' >"$HOME/.config/fish/config.fish"
+  mm_inuse_refresh >/dev/null 2>&1
+  why "$HOME/.local/share/claude/versions/1.0.50"; [ "$status" -eq 0 ]; [ "$output" = "used by ~/.bashrc" ]
+  why "$HOME/.cargo";                               [ "$status" -eq 0 ]; [ "$output" = "used by ~/.zshenv" ]
+  why "$HOME/tools";                                [ "$status" -eq 0 ]; [ "$output" = "used by ~/.config/fish/config.fish" ]
+  why "$HOME/n/lib/node_modules";                   [ "$status" -eq 0 ]; [ "$output" = "used by ~/n/bin/codex" ]
+  why "$HOME/work";                                 [ "$status" -eq 1 ]   # a folder named in a startup file keeps nothing
+}
