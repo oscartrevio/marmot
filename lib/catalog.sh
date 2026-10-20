@@ -58,7 +58,7 @@
 MM_CATALOG_TABLE='
 # ---- JavaScript / TypeScript
 cache|npx package cache|~/.npm/_npx|npm npm-cli.js npx npx-cli.js||
-cache|Corepack cache|%CACHE%/node/corepack|corepack pnpm yarn||
+cache|Corepack cache|%CACHE%/node/corepack|corepack pnpm yarn|!lastKnownGood.json|
 cache|TypeScript cache|%CACHE%/typescript|tsserver||
 cache|node-gyp headers|%CACHE%/node-gyp|node-gyp npm||
 cache|node-gyp headers (legacy)|~/.node-gyp|node-gyp npm||
@@ -111,7 +111,7 @@ cache|Zig cache|%CACHE%/zig|zig zls||
 cache|GitHub CLI cache|%CACHE%/gh|gh||
 cache|kubectl discovery cache|~/.kube/cache/discovery|kubectl k9s helm||
 cache|kubectl HTTP cache|~/.kube/cache/http|kubectl k9s helm||
-cache|oh-my-zsh cache|~/.oh-my-zsh/cache|||
+cache|oh-my-zsh cache|~/.oh-my-zsh/cache||!dotenv-*.list|
 # ---- downloaded browser and test-runner builds
 revisions|Playwright browsers|%CACHE%/ms-playwright||1:^(.+)-([0-9]+)$:refs=playwright|
 revisions|Puppeteer browsers|%CACHE%/puppeteer||2:^([^/]+)/[^/]*-([0-9][0-9.]*)$|

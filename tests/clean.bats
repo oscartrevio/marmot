@@ -1244,6 +1244,21 @@ logs_run() { src; mm_inuse_refresh >/dev/null 2>&1; _clean_agent_logs; }
   (( est >= 500000 ))
 }
 
+@test "more caches: Corepack's lastKnownGood.json and oh-my-zsh's dotenv lists stay; the caches around them go" {
+  local c="$HOME/.cache/node/corepack" z="$HOME/.oh-my-zsh/cache"
+  mkdir -p "$c/v1/pnpm/8.15.9" "$z/completions"
+  echo '{"pnpm":"8.15.9"}' >"$c/lastKnownGood.json"; echo '{}' >"$c/v1/pnpm/8.15.9/package.json"
+  echo "$HOME/work" >"$z/dotenv-allowed.list"; echo "$HOME/Downloads" >"$z/dotenv-disallowed.list"
+  echo z >"$z/completions/_docker"; echo x >"$z/grep-alias"
+  mm_age "$HOME" 30
+  catalog
+  _clean_busy() { return 1; }
+  run _clean_catalog_caches
+  [ "$status" -eq 0 ]
+  exist "$c/lastKnownGood.json" "$z/dotenv-allowed.list" "$z/dotenv-disallowed.list"
+  gone "$c/v1" "$z/completions" "$z/grep-alias"
+}
+
 # ---------------------------------------------------------------- mise, conda, Homebrew, nix
 
 # fake_pkg_tools — mise, conda and brew doubles that remove what the real commands would: mise a
