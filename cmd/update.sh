@@ -3,7 +3,8 @@
 # install.sh records that checkout in $MM_HOME/.install-source (key=value lines; read, never
 # sourced). An update fetches the branch's upstream, shows what is new, fast-forwards the
 # checkout to exactly the commit it showed, and re-runs the checkout's install.sh. Dirty or
-# diverged checkouts are refused. --check, --dry-run and runs without a terminal only report.
+# diverged checkouts, and ignored files the new commits would overwrite, are refused. --check,
+# --dry-run and runs without a terminal only report.
 
 _UPDATE_AVAILABLE=10   # report-mode exit status: an update is available
 _UPDATE_SHOW=20        # new commits listed by subject
@@ -14,8 +15,9 @@ Usage: mm update [--check | --dry-run]
 
 Updates marmot from the git checkout it was installed from (install.sh records it): fetches
 the branch's upstream, lists the new commits, and after you confirm on a terminal
-fast-forwards the checkout and re-runs its install.sh. A checkout with uncommitted changes or
-with local commits that diverge from upstream is refused, with the reason.
+fast-forwards the checkout and re-runs its install.sh. A checkout with uncommitted changes,
+with local commits that diverge from upstream, or with ignored files the new commits would
+overwrite is refused, with the reason.
 
   --check   Only report (fetches, changes nothing else). Exit 0: up to date,
             $_UPDATE_AVAILABLE: update available, other: error or refused.
@@ -106,6 +108,31 @@ _update_nolock() {
 
 _update_git() { _update_nolock git -C "$_UP_SRC" "$@"; }
 
+# _update_ignored_clash TARGET — print the ignored files in the checkout that a fast-forward to
+# TARGET would overwrite or delete (git merge treats ignored files as expendable): one at a path
+# TARGET adds or changes, below such a path, or a file where TARGET needs a folder. 1 when git
+# cannot list either side.
+_update_ignored_clash() {
+  local f d
+  local -A changed=() ignored=()
+  while IFS= read -r -d '' f; do changed[$f]=1; done < <(git -C "$_UP_SRC" diff --name-only --no-renames -z HEAD "$1")
+  wait "$!" || return 1
+  while IFS= read -r -d '' f; do ignored[$f]=1; done < <(git -C "$_UP_SRC" ls-files -z -o -i --exclude-standard)
+  wait "$!" || return 1
+  for f in "${!ignored[@]}"; do
+    d=$f
+    while [[ -z "${changed[$d]:-}" && "$d" == */* ]]; do d=${d%/*}; done
+    if [[ -n "${changed[$d]:-}" ]]; then printf '%s\n' "$f"; fi
+  done
+  for f in "${!changed[@]}"; do
+    d=$f
+    while [[ "$d" == */* ]]; do
+      d=${d%/*}
+      if [[ -n "${ignored[$d]:-}" ]]; then printf '%s\n' "$d"; fi
+    done
+  done
+}
+
 mm_cmd_main() {
   local report=""
   while (( $# )); do
@@ -172,6 +199,14 @@ mm_cmd_main() {
   if [[ -n "$dirty" ]]; then
     printf '%s\n' "$dirty" | head -5 | sed 's/^/    /'
     mm_die "$_UP_SRC has uncommitted changes: commit or stash them, then run mm update"
+  fi
+  if (( behind > 0 )); then
+    local clash
+    clash=$(_update_ignored_clash "$target") || mm_die "cannot list the files $upstream changes in $_UP_SRC; nothing changed"
+    if [[ -n "$clash" ]]; then
+      printf '%s\n' "$clash" | head -5 | sed 's/^/    /'
+      mm_die "$upstream adds or changes files you keep ignored in $_UP_SRC, and the fast-forward would overwrite them: move them out of the checkout, then run mm update"
+    fi
   fi
 
   local want=$head; (( behind > 0 )) && want=$target

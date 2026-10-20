@@ -71,6 +71,28 @@ unchanged() {
   [ "$(cat "$MARMOT_PREFIX/backup.sh")" = 'echo my backup' ]
 }
 
+@test "an ignored local file that upstream starts tracking stops the update, naming it" {
+  local old; old=$(head_of "$SRC")
+  echo 'API_TOKEN=mine' >"$SRC/local.env"
+  echo 'kept' >"$SRC/notes.local"
+  printf 'local.env\nnotes.local\n' >>"$SRC/.git/info/exclude"
+  echo 'API_TOKEN=' >"$DEV/local.env"
+  mm_test_git "$DEV" add local.env
+  publish "track local.env"
+  on_tty y "$MARMOT_BIN/mm" update
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"local.env"* ]]
+  [ "$(cat "$SRC/local.env")" = 'API_TOKEN=mine' ]
+  unchanged "$old" "$old"
+  run "$MARMOT_BIN/mm" update --check
+  [ "$status" -eq 1 ]
+  mv "$SRC/local.env" "$SB/local.env.mine"
+  on_tty y "$MARMOT_BIN/mm" update
+  [ "$status" -eq 0 ]
+  [ "$(head_of "$SRC")" = "$(head_of "$DEV")" ]
+  [ "$(cat "$SRC/notes.local")" = kept ]
+}
+
 @test "behind: declining the prompt changes nothing" {
   local old; old=$(head_of "$SRC")
   publish "new upstream work"
