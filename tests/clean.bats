@@ -1151,10 +1151,24 @@ old_dirs() { touch -d '20 days ago' "$@"; }
 
 # ---------------------------------------------------------------- system logs and crash dumps
 
-# root_src — source clean with the log and crash roots under $SB and a sudo double that runs the
-# command as the test user.
+# root_src — source clean with the log and crash roots under $SB, a sudo double that runs the
+# command as the test user, and a find double ($ROOT_FIND, also on PATH as find) that leaves out
+# the /proc/PID/fd folders of other accounts' processes: root reads them, the test user cannot,
+# and they hold none of the test's files. Folders that are gone stay in, so find still fails on
+# them like the real one.
 root_src() {
+  local real; real=$(PATH=/usr/bin:/bin command -v find)
   mm_test_fake sudo '[[ "$1" == -n ]] && shift; [[ "$1" == -k ]] && exit 0; exec "$@"'
+  ROOT_FIND="$BATS_TEST_TMPDIR/root-find"
+  cat >"$ROOT_FIND" <<EOF
+#!/usr/bin/env bash
+a=()
+for x; do [[ \$x == /proc/[0-9]*/fd && -e \$x && ! -r \$x ]] || a+=("\$x"); done
+[[ \${1:-} == /proc/[0-9]*/fd && \${a[0]:-} != /proc/[0-9]*/fd ]] && exit 0
+exec $real "\${a[@]}"
+EOF
+  chmod +x "$ROOT_FIND"
+  mm_test_fake find "exec '$ROOT_FIND' \"\$@\""
   src
   _CLEAN_LOG_ROOT="$SB/var/log"
   _CLEAN_CRASH_ROOTS=("$SB/var/crash" "$SB/coredump")
@@ -1216,6 +1230,26 @@ exec $real \"\$@\""
   run bash -c "$_CLEAN_ROOT_RM" _ 10 "$id" "$l/syslog.1"
   [ "$status" -ne 0 ]
   exist "$l/syslog.1"
+}
+
+@test "rotated logs: a process that ends while the root script scans does not stop it" {
+  local l="$SB/var/log" pidf="$BATS_TEST_TMPDIR/gone.pid" x id i
+  root_src
+  file_aged "$l/syslog.1" 9
+  id=$(find "$l/syslog.1" -maxdepth 0 -printf '%D:%i')
+  # A process whose parent reaps it the moment it ends, so its /proc folder goes away for good.
+  bash -c 'sleep 300 & echo $! >"$1"; wait' _ "$pidf" &
+  MM_TEST_PIDS+=("$!")
+  for ((i = 0; i < 100; i++)); do [[ -s "$pidf" ]] && break; sleep 0.05; done
+  x=$(<"$pidf"); MM_TEST_PIDS+=("$x")
+  # The scan reaches that process just as it ends: its fd folder is gone when find reads it.
+  mm_test_fake find "for a; do
+  if [[ \$a == /proc/$x/fd ]]; then kill $x 2>/dev/null; while [[ -e /proc/$x ]]; do sleep 0.05; done; fi
+done
+exec '$ROOT_FIND' \"\$@\""
+  run bash -c "$_CLEAN_ROOT_RM" _ 10 "$id" "$l/syslog.1"
+  [ "$status" -eq 0 ]
+  gone "$l/syslog.1"
 }
 
 @test "rotated logs and crash dumps: nothing is deleted without a terminal" {

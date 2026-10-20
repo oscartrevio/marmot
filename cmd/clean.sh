@@ -1272,16 +1272,26 @@ _CLEAN_OPEN_FDS='find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%
 
 # Run as root with MINUTES, then DEV:INODE PATH pairs: delete each PATH that is still the same
 # regular file, still unmodified for MINUTES, and open by no process. The open set has to be
-# complete: the scan prints "-" only when find succeeded, and a link whose target cannot be read
-# (an empty %l) means some process's open files are unknown, so the run deletes nothing. An empty
-# entry is never used as an array key either: that is a bash error, and it used to abandon the
-# scan loop and leave the rest of the open files unseen.
-_CLEAN_ROOT_RM='min=$1; shift; rc=0 ok=0
+# complete, so each process's descriptors are read on their own. A process that ends during the
+# scan holds nothing open any more and is skipped. One that is still there but whose descriptors
+# cannot be read (find fails, or a link target comes back empty) is tried three times, since
+# descriptors open and close while find reads them; after that its open files are unknown and
+# the run deletes nothing. An empty entry is never used as an array key either: that is a bash
+# error, and it used to abandon the scan loop and leave the rest of the open files unseen.
+_CLEAN_ROOT_RM='min=$1; shift; rc=0
 declare -A open=()
-while IFS= read -r -d "" t; do
-  if [[ "$t" == - ]]; then ok=1; elif [[ -z "$t" ]]; then break; else open[$t]=1; fi
-done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null && printf -- "-\0")
-(( ok )) || { echo "cannot see every open file: nothing removed" >&2; exit 1; }
+for d in /proc/[0-9]*/fd; do
+  for try in 1 2 3; do
+    ok=0 seen=()
+    while IFS= read -r -d "" t; do
+      if [[ "$t" == - ]]; then ok=1; elif [[ -z "$t" ]]; then ok=0; break; else seen+=("$t"); fi
+    done < <(find "$d" -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null && printf -- "-\0")
+    (( ok )) || [[ -e "${d%/fd}" ]] || ok=1 seen=()
+    (( ok )) && break
+  done
+  (( ok )) || { echo "cannot see the open files of ${d%/fd}: nothing removed" >&2; exit 1; }
+  for t in "${seen[@]}"; do open[$t]=1; done
+done
 while (( $# >= 2 )); do
   id=$1 p=$2; shift 2
   [[ -n "$p" && -z ${open[$p]+x} ]] || continue
