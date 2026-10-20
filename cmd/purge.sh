@@ -1295,6 +1295,7 @@ _purge_run() {
   mm_section "Artifacts (${#order[@]})"
   printf '  %s  %9s  %9s  %5s  %s\n' " " "SIZE" "FREES" "IDLE" "PROJECT/ARTIFACT"
   local mark row hidden_n=0 hidden_bytes=0 sz fr
+  local -a shown=()
   local -A row_of=()
   for i in "${order[@]}"; do
     sz=${size[${arts[$i]}]:-0} fr=${frees[${arts[$i]}]:-0}
@@ -1306,11 +1307,14 @@ _purge_run() {
       shared=1; (( pnpm_art[i] )) && row+=" (rest in the pnpm store)"
     fi
     row_of[$i]="$row"
-    # keep the table readable: recent artifacts freeing under 1MB are summarized, not listed.
-    # Pick-only rows stay: the picker is the only way to remove them, so they must be seen.
-    if (( ! stale[i] && fr < 1048576 )) && [[ "${kind[i]}" != pick ]]; then
+    # keep the table readable: recent artifacts freeing under 1MB are summarized, not listed, and
+    # never removed by an answer that did not name them. --all lists every row it can act on.
+    # Pick-only rows stay too: the picker is the only way to remove them, so they must be seen.
+    shown[i]=0
+    if (( ! stale[i] && fr < 1048576 && ! all )) && [[ "${kind[i]}" != pick ]]; then
       hidden_n=$((hidden_n + 1)) hidden_bytes=$((hidden_bytes + fr)); continue
     fi
+    shown[i]=1
     if [[ "${kind[i]}" == pick ]]; then mark="${C_DIM}◎${C_RESET}"
     elif (( stale[i] )); then mark="${C_YELLOW}●${C_RESET}"
     else mark="${C_DIM}○${C_RESET}"; fi
@@ -1333,23 +1337,28 @@ _purge_run() {
       _purge_banner "$free_before" 0
       return 0
     fi
-    local reply def="S" opts="[S]tale only / [a]ll / [p]ick / [n]one"
-    (( all )) && { def="A"; opts="[s]tale only / [A]ll / [p]ick / [n]one"; }
+    local reply def="s" opts="[S]tale only / [a]ll / [p]ick / [n]one"
+    (( all )) && { def="a"; opts="[s]tale only / [A]ll / [p]ick / [n]one"; }
     _PURGE_PROMPTED=1
     reply=$(_purge_ask "$opts") || reply=n
+    # whole words only: "abort" and "skip" are not answers, and anything unrecognized is none
     case "${reply:-$def}" in
-      [Ss]*) mode=stale ;;
-      [Aa]*) mode=all ;;
-      [Pp]*) mode=pick ;;
+      s|stale|S|Stale|STALE) mode=stale ;;
+      a|all|A|All|ALL) mode=all ;;
+      p|pick|P|Pick|PICK) mode=pick ;;
       *) mm_info "No artifacts removed."; _purge_banner "$free_before" 0; return 0 ;;
     esac
   fi
 
-  # stale and all take only what a rule vouches for: a pick-only row needs the picker
+  # stale and all take only rows the table named and a rule vouches for: a pick-only row needs
+  # the picker, and a row folded into the "… N more" line was never put to the user
   local -a sel=()
   case "$mode" in
     stale) for i in "${order[@]}"; do (( stale[i] )) && sel+=("$i"); done ;;
-    all) for i in "${order[@]}"; do [[ "${kind[i]}" == pick ]] || sel+=("$i"); done ;;
+    all)
+      for i in "${order[@]}"; do (( shown[i] )) && [[ "${kind[i]}" != pick ]] && sel+=("$i"); done
+      (( hidden_n )) && mm_info "The $hidden_n artifact$( (( hidden_n > 1 )) && echo s) the table folded away are kept: run with --all to list and remove them."
+      ;;
     pick)
       local line idx
       while IFS= read -r line; do
