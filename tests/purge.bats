@@ -444,10 +444,11 @@ wt_commit() {
     git -C "$1" -c user.email=t@t -c user.name=t commit -qm "$2"
 }
 
-# wt_repo — $SB/repo on branch main, one commit 40 days old, node_modules ignored.
+# wt_repo — $SB/repo on branch main, one commit 40 days old: a package.json project with
+# node_modules ignored (a worktree's node_modules is then an artifact the purge rules name).
 wt_repo() {
   git -C "$SB" init -q -b main repo
-  printf 'node_modules/\n' >"$SB/repo/.gitignore"; echo a >"$SB/repo/a"
+  printf 'node_modules/\n' >"$SB/repo/.gitignore"; echo a >"$SB/repo/a"; echo '{}' >"$SB/repo/package.json"
   wt_commit "$SB/repo" init
 }
 
@@ -471,7 +472,7 @@ wt_interactive() {
 
 @test "worktree: merged, clean, idle 15d is offered and removed (branch kept, logged)" {
   wt_repo; wt_add wt -b feat
-  mkdir -p "$SB/wt/node_modules"; touch "$SB/wt/node_modules/x"   # ignored files are fine
+  mkdir -p "$SB/wt/node_modules"; touch "$SB/wt/node_modules/x"   # an ignored artifact goes along
   mm_age "$SB" 15
   wt_interactive "$SB"
   [ "$status" -eq 0 ]
@@ -891,6 +892,108 @@ esac"
   [ -d "$SB/wt" ]
   never_offered "$SB/wt"
   [ -z "$(mm_log_rows worktree)" ]
+}
+
+@test "removing a worktree keeps the records of other worktrees whose folder is away" {
+  wt_repo; wt_add fin -b fin; wt_add away --detach
+  echo staged >"$SB/away/staged"; git -C "$SB/away" add staged
+  mv "$SB/away" "$BATS_TEST_TMPDIR/away"   # an unplugged drive, a path only a dev container has
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/fin" ]
+  mv "$BATS_TEST_TMPDIR/away" "$SB/away"
+  [ "$(git -C "$SB/away" diff --cached --name-only)" = staged ]
+}
+
+@test "a worktree whose HEAD reflog holds commits no branch, tag or remote has is kept" {
+  wt_repo; wt_add det -b det; wt_add reset -b reset; wt_add plain -b plain
+  # made on a detached HEAD, then back on the branch: only the worktree's HEAD reflog holds it
+  git -C "$SB/det" checkout -q --detach; echo x >"$SB/det/x"; wt_commit "$SB/det" "detached work"
+  git -C "$SB/det" checkout -q det
+  echo y >"$SB/reset/y"; wt_commit "$SB/reset" "dropped work"; git -C "$SB/reset" reset -q --hard HEAD~1
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ -d "$SB/det" ]
+  [ -d "$SB/reset" ]
+  never_offered "$SB/det"
+  never_offered "$SB/reset"
+  [ ! -e "$SB/plain" ]
+}
+
+# wt_ignoring PATTERN... — wt_repo whose .gitignore also lists PATTERNs.
+wt_ignoring() {
+  wt_repo; printf '%s\n' node_modules/ "$@" >"$SB/repo/.gitignore"; wt_commit "$SB/repo" ignores
+}
+
+@test "a worktree holding git-ignored files found nowhere else is kept, and the reason names them" {
+  wt_ignoring .env '*.sqlite' notes/
+  wt_add wt -b feat
+  echo 'STRIPE_KEY=only-copy' >"$SB/wt/.env"; echo rows >"$SB/wt/dev.sqlite"
+  mkdir "$SB/wt/notes"; echo plan >"$SB/wt/notes/plan.md"
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ -f "$SB/wt/.env" ]
+  [ -f "$SB/wt/dev.sqlite" ]
+  [ -f "$SB/wt/notes/plan.md" ]
+  never_offered "$SB/wt"
+  [[ "$output" == *dev.sqlite* ]]
+}
+
+@test "a git repository or a deploy keypair anywhere in a worktree keeps it, also inside an artifact" {
+  wt_ignoring target/
+  mkdir "$SB/repo/src"; echo s >"$SB/repo/src/s"; touch "$SB/repo/Cargo.toml"; wt_commit "$SB/repo" src
+  wt_add dep -b dep; wt_add inner -b inner; wt_add key -b key
+  mkdir -p "$SB/dep/node_modules/lib"; echo x >"$SB/dep/node_modules/lib/x"
+  git -C "$SB/dep/node_modules/lib" init -q; wt_commit "$SB/dep/node_modules/lib" unpushed
+  git -C "$SB/inner/src" init -q; wt_commit "$SB/inner/src" unpushed   # git status stays clean
+  mkdir -p "$SB/key/target/deploy"; echo '[1,2]' >"$SB/key/target/deploy/prog-keypair.json"
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ -d "$SB/dep/node_modules/lib/.git" ]
+  [ -d "$SB/inner/src/.git" ]
+  [ -f "$SB/key/target/deploy/prog-keypair.json" ]
+  never_offered "$SB/dep"
+  never_offered "$SB/inner"
+  never_offered "$SB/key"
+}
+
+@test "a worktree's ignored node_modules and copy of the main checkout's .env go with it, named in the prompt" {
+  wt_ignoring .env
+  echo 'KEY=1' >"$SB/repo/.env"
+  wt_add wt -b feat; wt_add edited -b edited
+  cp "$SB/repo/.env" "$SB/wt/.env"; mkdir -p "$SB/wt/node_modules/dep"; echo m >"$SB/wt/node_modules/dep/index.js"
+  echo 'KEY=2' >"$SB/edited/.env"
+  mm_age "$SB" 15
+  wt_interactive "$SB"
+  [ "$status" -eq 0 ]
+  [ ! -e "$SB/wt" ]
+  [ "$(cat "$SB/repo/.env")" = KEY=1 ]
+  grep -F "$SB/wt" "$BATS_TEST_TMPDIR/offered" | grep -F node_modules | grep -qF .env
+  [ "$(cat "$SB/edited/.env")" = KEY=2 ]
+  never_offered "$SB/edited"
+}
+
+@test "a worktree that gains an ignored file or a reflog-only commit while the prompt waits is kept" {
+  wt_ignoring .env
+  wt_add envwt -b envwt; wt_add logwt -b logwt
+  mm_age "$SB" 15
+  mm_core; . "$MM_SRC/cmd/purge.sh"
+  MM_TTY=1
+  mm_pick() {
+    echo 'KEY=new' >"$SB/envwt/.env"
+    git -C "$SB/logwt" checkout -q --detach; echo x >"$SB/logwt/x"; wt_commit "$SB/logwt" lone 0
+    git -C "$SB/logwt" checkout -q logwt
+    cat
+  }
+  _purge_ask() { printf n; }
+  run mm_cmd_main "$SB"
+  [ "$status" -eq 0 ]
+  [ -f "$SB/envwt/.env" ]
+  [ -d "$SB/logwt" ]
 }
 
 # ---------------------------------------------------------------- more artifact kinds

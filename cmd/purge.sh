@@ -827,12 +827,109 @@ _purge_wt_idle() {
   echo $(( $(date +%s) - newest ))
 }
 
-# _purge_wt_clean WORKTREE — 0 clean (ignored files allowed), 1 has changes, 2 unknown.
+# _purge_wt_clean WORKTREE — 0 clean, 1 has changes, 2 unknown. Clean still allows git-ignored
+# entries, which `git worktree remove` deletes too: they are left in _PURGE_WT_IGN, relative to
+# WORKTREE (a directory matching an ignore pattern is one "dir/" entry), for _purge_wt_ignored.
 _purge_wt_clean() {
-  local out rc=0
-  out=$(_purge_git "$1" status --porcelain --untracked-files=all --ignore-submodules=none) || rc=$?
-  (( rc == 0 )) || return 2
-  [[ -z "$out" ]]
+  local r
+  local -a recs=()
+  _PURGE_WT_IGN=()
+  mapfile -d '' -t recs < <(_purge_git "$1" status --porcelain -z --untracked-files=all \
+    --ignored=matching --ignore-submodules=none && printf '\1\0')
+  [[ "${recs[-1]:-}" == $'\1' ]] || return 2
+  for r in "${recs[@]:0:${#recs[@]}-1}"; do
+    [[ "$r" == '!! '?* ]] || return 1
+    _PURGE_WT_IGN+=("${r:3}")
+  done
+}
+
+# _purge_wt_ignored WORKTREE MAIN ENTRY... — 0 if removing WORKTREE loses nothing with its
+# git-ignored ENTRYs (from _purge_wt_clean): each is an artifact a purge rule names
+# (_purge_wt_artifact) or a regular file MAIN, the main worktree, holds byte for byte at the same
+# path (a copied .env), and no repository hides anywhere in WORKTREE (a nested .git) nor a deploy
+# keypair in one of those artifacts. Sets _PURGE_WT_GOES to what goes along ("node_modules ×2,
+# .env (same as main)"); else 1, and _PURGE_WT_WHY names what would be lost. Vetting stops at three
+# entries that would be lost, or after _PURGE_GIT_TIMEOUT seconds (keep).
+_purge_wt_ignored() {
+  local w="$1" m="$2" wr e p n hit along="" k
+  local -a ents=("${@:3}") arts=() names=() copies=() held=() repos=() hits=() lost=()
+  local -A count=()
+  local -i deadline=$(( SECONDS + _PURGE_GIT_TIMEOUT ))
+  _PURGE_WT_GOES="" _PURGE_WT_WHY="could not verify its files"
+  wr=$(realpath -e -- "$w") || return 1
+  for (( k = 0; k < ${#ents[@]} && ${#held[@]} < 3 && SECONDS <= deadline; k++ )); do
+    e="${ents[k]}" p="$w/${ents[k]%/}"
+    if [[ "$e" == */ ]] && _purge_wt_artifact "$p"; then
+      n="${p##*/}"; [[ "$p" == */.nx/cache ]] && n=.nx/cache
+      arts+=("$p"); [[ -n "${count[$n]:-}" ]] || names+=("$n")
+      count[$n]=$(( ${count[$n]:-0} + 1 ))
+    elif [[ "$e" != */ ]] && _purge_wt_copy "$p" "$m/$e" "$wr"; then copies+=("$e")
+    else held+=("$e")
+    fi
+  done
+  # one walk; the worktree's own .git file is the only .git at depth 1
+  mapfile -d '' -t hits < <(timeout "$_PURGE_SCAN_TIMEOUT" find "$w" -mindepth 2 \( -name .git -prune -print0 \) \
+    -o \( -type f -name '*-keypair.json' -print0 \) 2>/dev/null; printf '\1%s\0' "$?")
+  for hit in "${hits[@]:0:${#hits[@]}-1}"; do
+    if [[ "${hit##*/}" == .git ]]; then p="${hit%/.git}"; repos+=("${p#"$w"/}"); continue; fi
+    for p in "${arts[@]}"; do [[ "$hit" == "$p"/* ]] && { held+=("${hit#"$w"/}"); break; }; done
+  done
+  (( ${#repos[@]} )) && lost+=("holds a git repository: $(_purge_wt_names 0 "${repos[@]}")")
+  (( ${#held[@]} )) && lost+=("ignored files: $(_purge_wt_names $(( ${#ents[@]} - k )) "${held[@]}")")
+  (( ${#held[@]} || k == ${#ents[@]} )) || lost+=("could not check every ignored file")
+  [[ "${hits[-1]}" == $'\1'0 ]] || lost+=("could not read all its folders")
+  if (( ${#lost[@]} )); then
+    printf -v _PURGE_WT_WHY '%s; ' "${lost[@]}"; _PURGE_WT_WHY="${_PURGE_WT_WHY%; }"
+    return 1
+  fi
+  for n in "${names[@]}"; do
+    along+=", ${n//[[:cntrl:]]/?}"; [[ "${count[$n]}" == 1 ]] || along+=" ×${count[$n]}"
+  done
+  for e in "${copies[@]}"; do along+=", ${e//[[:cntrl:]]/?} (same as main)"; done
+  _PURGE_WT_GOES="${along#, }" _PURGE_WT_WHY=""
+}
+
+# _purge_wt_artifact DIR — 0 if DIR, a real directory, is an artifact a purge rule names
+# (_purge_rule; the project is the folder holding it, as for _purge_valid). "Can't tell" is no.
+_purge_wt_artifact() {
+  local proj="${1%/*}"
+  [[ "$1" == */.nx/cache ]] && proj="${1%/.nx/cache}"
+  [[ -d "$1" && ! -L "$1" ]] && _purge_rule "$1" "$proj" "${1##*/}"
+}
+
+# _purge_wt_copy FILE ORIG DIR — 0 if FILE is a regular file and ORIG, resolved, a regular file
+# outside DIR with the same bytes (a .env copied from the main checkout): nothing is lost with FILE.
+_purge_wt_copy() {
+  local o
+  [[ -f "$1" && ! -L "$1" ]] || return 1
+  o=$(realpath -e -- "$2" 2>/dev/null) && [[ -f "$o" && "$o" != "$3"/* ]] || return 1
+  timeout "$_PURGE_GIT_TIMEOUT" cmp -s -- "$1" "$o"
+}
+
+# _purge_wt_names EXTRA ITEM... — "a, b, c +4 more": the first three ITEMs (control characters
+# shown as ?) and how many more there are (the other ITEMs plus EXTRA).
+_purge_wt_names() {
+  local -i more=$(( $1 + ($# > 4 ? $# - 4 : 0) ))
+  local s="" e
+  shift
+  for e in "${@:1:3}"; do s+=", ${e//[[:cntrl:]]/?}"; done
+  (( more )) && s+=" +$more more"
+  printf '%s' "${s#, }"
+}
+
+# _purge_wt_reflog WORKTREE — 0 if every commit in WORKTREE's HEAD reflog is on a branch, tag or
+# remote-tracking branch. `git worktree remove` deletes that reflog, so a commit only it holds (made
+# on a detached HEAD, dropped by a reset) would be orphaned. Else 1, _PURGE_WT_WHY says why.
+_purge_wt_reflog() {
+  local log n
+  _PURGE_WT_WHY="could not verify git state"
+  log=$(_purge_git "$1" rev-list -g HEAD) || return 1
+  if [[ -n "$log" ]]; then
+    n=$(_purge_git "$1" rev-list --count --stdin --not --branches --tags --remotes <<<"$log") || return 1
+    [[ "$n" =~ ^[0-9]+$ ]] || return 1
+    (( n == 0 )) || { _PURGE_WT_WHY="$n commit$( (( n > 1 )) && echo s) only in its HEAD reflog"; return 1; }
+  fi
+  _PURGE_WT_WHY=""
 }
 
 # _purge_wt_landed COMMON HEAD BRANCH — how a worktree's work reached the default branch, by git
@@ -886,17 +983,20 @@ _purge_pr_state() {
     timeout "$_PURGE_GH_TIMEOUT" gh pr view "${name:-$2}" --json state --jq .state </dev/null 2>/dev/null
 }
 
-# _purge_wt_eval I — decide worktree I. Sets _WT_STATE, _WT_WHY (keep reason), _WT_IDLE (seconds)
-# and _WT_MERGE (a _purge_wt_landed label, "PR merged", "PR closed" or "unmerged"):
-#   offer   clean, unlocked, not in use, commits reachable, idle >= 1h, and finished (its work
-#           landed) or unmerged and idle >= 30 days
+# _purge_wt_eval I — decide worktree I. Sets _WT_STATE, _WT_WHY (keep reason), _WT_IDLE (seconds),
+# _WT_MERGE (a _purge_wt_landed label, "PR merged", "PR closed" or "unmerged") and _WT_GOES (the
+# git-ignored artifacts and copies that would go with it, per _purge_wt_ignored):
+#   offer   clean, nothing git-ignored but artifacts and copies of the main worktree's files, no
+#           nested repository, unlocked, not in use, no commit that only its HEAD or HEAD reflog
+#           holds, idle >= 1h, and finished (its work landed) or unmerged and idle >= 30 days
 #   keep    would be offered but one of those checks fails (_WT_WHY says which)
 #   active  idle < 1h, or unmerged and idle < 30 days (not shown)
 #   skip    the main worktree, or not a worktree of this repository
 _purge_wt_eval() {
   local i="$1" w="${_WT_PATH[$1]}" c="${_WT_COMMON[$1]}" head="${_WT_HEAD[$1]}" br="${_WT_BRANCH[$1]}"
   local rc why="" holders
-  _WT_STATE=skip _WT_WHY="" _WT_IDLE=0 _WT_MERGE=""
+  local -a ign=()
+  _WT_STATE=skip _WT_WHY="" _WT_IDLE=0 _WT_MERGE="" _WT_GOES=""
   [[ "${_WT_IS_MAIN[$i]}" == 0 ]] || return 0
   [[ "$w" == /?* && "$w" != *[[:cntrl:]]* && -d "$w" && ! -L "$w" ]] || return 0
   # the directory must really be a worktree of this repository
@@ -911,7 +1011,7 @@ _purge_wt_eval() {
   else
     rc=0; _purge_wt_clean "$w" || rc=$?
     case "$rc" in
-      0) ;;
+      0) ign=("${_PURGE_WT_IGN[@]}") ;;
       1) why="uncommitted or untracked changes" ;;
       *) why="could not verify git state" ;;
     esac
@@ -925,6 +1025,7 @@ _purge_wt_eval() {
       why="detached HEAD with commits on no branch or tag"
     fi
   fi
+  [[ -n "$why" ]] || _purge_wt_reflog "$w" || why="$_PURGE_WT_WHY"
   _WT_MERGE=unmerged
   [[ "$head" =~ ^[0-9a-f]{7,64}$ ]] && _WT_MERGE=$(_purge_wt_landed "$c" "$head" "$br")
   # gh is a network call: only for worktrees that could be offered
@@ -937,8 +1038,10 @@ _purge_wt_eval() {
   if [[ "$_WT_MERGE" == unmerged ]] && (( _WT_IDLE < _PURGE_WT_UNMERGED_DAYS * 86400 )); then
     _WT_STATE=active; return 0
   fi
+  # what else `git worktree remove` deletes (ignored files, nested repositories): a walk, so last
+  [[ -n "$why" ]] || _purge_wt_ignored "$w" "${_WT_MAIN[$i]}" "${ign[@]}" || why="$_PURGE_WT_WHY"
   if [[ -n "$why" ]]; then _WT_STATE=keep _WT_WHY="$why"; return 0; fi
-  _WT_STATE=offer
+  _WT_STATE=offer _WT_GOES="$_PURGE_WT_GOES"
 }
 
 # _purge_worktrees YES ROOT... — the worktrees section for every linked worktree reachable from
@@ -946,12 +1049,14 @@ _purge_wt_eval() {
 # after a terminal confirmation; never with --yes or in a dry run. Sets _PURGE_WT_DONE /
 # _PURGE_WT_BYTES (removed) and _PURGE_WT_OFFERED / _PURGE_WT_OFFER_BYTES, all counted in frees
 # (mm_size_frees), _PURGE_WT_FINISHED (offered finished ones) and _PURGE_WT_PNPM (offered
-# pnpm-managed worktrees).
+# pnpm-managed worktrees). Never `git worktree prune`: `git worktree remove` drops its own record,
+# and a worktree whose folder is only absent (an unplugged drive, a path that exists only inside
+# a dev container) must keep its record, which holds its index, HEAD and reflog.
 _purge_worktrees() {
   local yes="$1"; shift
   local i n=0 active=0 sz fr pn line idx desc
   local -a offer=() lines=() sel=()
-  local -A size=() label=() pnpm=()
+  local -A size=() label=() pnpm=() goes=()
   _PURGE_WT_DONE=0 _PURGE_WT_BYTES=0 _PURGE_WT_OFFERED=0 _PURGE_WT_OFFER_BYTES=0 _PURGE_WT_PNPM=()
   _PURGE_WT_FINISHED=0
   for i in "${!_WT_PATH[@]}"; do
@@ -977,6 +1082,7 @@ _purge_worktrees() {
         _purge_pnpm_managed "${_WT_PATH[$i]}" && { pn=1 pnpm[$i]=1; _PURGE_WT_PNPM+=("${_WT_PATH[$i]}"); }
         mm_tilde "${_WT_PATH[$i]}"
         label[$i]="$REPLY · $desc · idle $(_purge_idle_label "$_WT_IDLE") · $(_purge_size_label "$sz" "${size[$i]}" "$pn")"
+        goes[$i]="$_WT_GOES" label[$i]+="${_WT_GOES:+ · ignored: $_WT_GOES}"
         printf '  %s●%s %s\n' "$C_YELLOW" "$C_RESET" "${label[$i]}"
         offer+=("$i")
         _PURGE_WT_OFFERED=$((_PURGE_WT_OFFERED + 1)) _PURGE_WT_OFFER_BYTES=$((_PURGE_WT_OFFER_BYTES + size[$i]))
@@ -996,26 +1102,28 @@ _purge_worktrees() {
 
   _PURGE_PROMPTED=1
   if (( ${#offer[@]} == 1 )); then
-    mm_tilde "${_WT_PATH[${offer[0]}]}"
-    mm_confirm "Remove worktree $REPLY? (git worktree remove; branch kept)" && sel=("${offer[0]}")
+    i="${offer[0]}"; mm_tilde "${_WT_PATH[$i]}"
+    mm_confirm "Remove worktree $REPLY${goes[$i]:+ and its ignored ${goes[$i]}}? (git worktree remove; branch kept)" && sel=("$i")
   else
     for i in "${offer[@]}"; do lines+=("$i  ${label[$i]}"); done
     while IFS= read -r line; do
       idx="${line%%[[:space:]]*}"
       [[ "$idx" =~ ^[0-9]+$ && -n "${label[$idx]:-}" ]] && sel+=("$idx")
-    done < <(printf '%s\n' "${lines[@]}" | mm_pick "TAB marks worktrees to remove (git worktree remove; branches kept), Enter confirms")
+    done < <(printf '%s\n' "${lines[@]}" |
+      mm_pick "TAB marks worktrees to remove (git worktree remove, with the ignored files listed; branches kept), Enter confirms")
   fi
   (( ${#sel[@]} )) || { mm_info "No worktrees removed."; return 0; }
 
   # Re-check right before acting: the prompt may have taken a while.
   mm_inuse_refresh
   local w m c rc
-  local -A pruned=()
   for i in "${sel[@]}"; do
     w="${_WT_PATH[$i]}" m="${_WT_MAIN[$i]}" c="${_WT_COMMON[$i]}"
     if mm_in_use "$w"; then mm_tilde "$w"; mm_skip "$REPLY" "$(mm_inuse_why "$w" || echo "in use")"; continue; fi
-    rc=0; _purge_wt_clean "$w" || rc=$?
-    (( rc == 0 )) || { mm_tilde "$w"; _purge_kept "$REPLY" "changed since the scan"; continue; }
+    if ! _purge_wt_clean "$w" || ! _purge_wt_ignored "$w" "$m" "${_PURGE_WT_IGN[@]}" ||
+      [[ "$_PURGE_WT_GOES" != "${goes[$i]}" ]] || ! _purge_wt_reflog "$w"; then
+      mm_tilde "$w"; _purge_kept "$REPLY" "changed since the scan"; continue
+    fi
     if [[ -d "$m" ]]; then
       mm_run "remove worktree $w" timeout 120 git -c core.fsmonitor=false -C "$m" worktree remove -- "$w"; rc=$?
     else
@@ -1027,11 +1135,6 @@ _purge_worktrees() {
     mm_ok "$REPLY" "removed, freed $(mm_human "${size[$i]}")${_WT_BRANCH[$i]:+, branch ${_WT_BRANCH[$i]} kept}"
     _PURGE_WT_DONE=$((_PURGE_WT_DONE + 1)) _PURGE_WT_BYTES=$((_PURGE_WT_BYTES + size[$i]))
     [[ -n "${pnpm[$i]:-}" ]] && _PURGE_PNPM_PATHS+=("$w")
-    pruned[$c]=1
-  done
-  # Records of worktrees whose directories are already gone, in the repositories just touched.
-  for c in "${!pruned[@]}"; do
-    mm_run "prune worktree records in $c" timeout 60 git -c core.fsmonitor=false --git-dir="$c" worktree prune
   done
 }
 
