@@ -2,7 +2,8 @@
 # mm status: read-only dashboard. JSON shape, agent sessions (by name and by interpreter argv),
 # orphans in deleted dirs, lingering dev processes and old listeners (age via
 # MM_STATUS_LINGER_AGE), VPN rows only for interfaces that exist, inode penalty, its own processes
-# kept out of the top lists, live-mode rendering in a pty, and no terminal needed for a snapshot.
+# kept out of the top lists, live-mode rendering in a pty, the marmot's face, and no terminal
+# needed for a snapshot.
 # Every external tool it calls must be a read-only query.
 
 setup() {
@@ -741,6 +742,41 @@ exit 0'
   [[ "$output" == *"… "*" more"* && "$output" == *TOP* ]]
 }
 
+@test "views: a short terminal drops the marmot before any agent session" {
+  local i
+  fake_agent codex
+  for i in 1 2 3; do mkdir -p "$SB/w$i"; detached "$SB/w$i" "$SB/bin/codex" 30; done
+  status_lib '_status_init; _status_first 0
+    _status_frame_compact 80; printf "%s\n" "${ST_FRAME[@]}" >"$HOME/tall"
+    _status_frame_compact 80 $((${#ST_FRAME[@]} - 1)); printf "%s\n" "${ST_FRAME[@]}" >"$HOME/short"
+    _status_cleanup'
+  [ "$status" -eq 0 ]
+  [[ "$(<"$HOME/tall")" == *"--(mm)--UU--(mm)--"* ]]
+  [[ "$(<"$HOME/short")" != *"(mm)--UU--(mm)"* && "$(<"$HOME/short")" != *" more"* ]]
+  # Both frames list every agent session on the machine, not only these three.
+  local n
+  n=$(grep -cE '^  codex ' "$HOME/tall")
+  [ "$n" -ge 3 ]
+  [ "$(grep -cE '^  codex ' "$HOME/short")" -eq "$n" ]
+}
+
+@test "the marmot's face: health first, then a busy CPU, any health reason, then agents at work" {
+  status_lib '
+    work=$(printf "1\tclaude\tclaude\t60\t9\t0\t300\t1\t/w") wait=$(printf "2\tcodex\tcodex\t60\t9\t0\t0\t0\t/w")
+    face() { ST_SCORE=$1 ST_CPUH=($2) ST_REASONS=(${3:+"$3"}) ST_AGENTS=("${@:4}"); _status_mood; echo "$REPLY"; }
+    face 59 100 "disk 95% full" "$work"
+    face 60 100 "disk 95% full" "$work"
+    face 79 "900 900 900" "CPU 90.0% sustained" "$work"
+    face 80 "100 900 900 800" "CPU 87.5% sustained" "$work"
+    face 100 "900 900 100" "" "$work"
+    face 95 100 "1 orphaned process" "$work"
+    face 100 100 "" "$wait" "$work"
+    face 100 100 "" "$wait"
+    face 100 100 ""'
+  [ "$status" -eq 0 ]
+  [ "${lines[*]}" = "dizzy alert alert squint happy neutral happy sleepy sleepy" ]
+}
+
 @test "views: v switches live between compact and full, repainting the screen" {
   fake_ss "$LISTEN_SSH" ""
   LIVE_ROWS=70 live 'sleep 4; printf v; sleep 2.5; printf q'
@@ -809,7 +845,7 @@ fake_cgroup() {
   # details out of the header.
   run env MM_CONTAINER=1 COLUMNS=400 mm status --once --view full
   [ "$status" -eq 0 ]
-  [[ "${lines[0]}" == *" · container · "*"512 MB limit"* ]]
+  [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" == *" · container · "*"512 MB limit"* ]]
   [[ "$output" == *"of 1.5-core limit"* && "$output" == *"(host, "* ]]
   [[ "$output" != *"✓ kernel"* && "$output" != *"! kernel"* && "$output" != *"✓ reboot"* ]]
   run env MM_CONTAINER=1 mm status --agent
@@ -824,5 +860,5 @@ fake_cgroup() {
   status_json
   jq -e '.container == null and .memory.total != 536870912 and (.system.reboot_required | type == "boolean")' <<<"$JSON"
   run mm status --once
-  [[ "${lines[0]}" != *container* ]]
+  [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" != *container* ]]
 }

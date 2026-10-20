@@ -1,6 +1,10 @@
-# marmot
-
-**Keep the machines your coding agents run on clean, fast and healthy.**
+```text
+     _..--.._
+  ()'        '()     marmot
+   |  ^    ^  |      Keep the machines your coding agents
+  .--.  \/  .--.     run on clean, fast and healthy.
+--(mm)--UU--(mm)--------------------------------------------
+```
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![Debian 12+ · Ubuntu 22.04+](https://img.shields.io/badge/Debian%2012%2B%20%C2%B7%20Ubuntu%2022.04%2B-informational)
@@ -8,9 +12,9 @@
 
 Coding agents leave a lot behind: `node_modules` in every worktree, browser builds, package
 caches, logs, old CLI versions, sessions, dev servers nobody stopped. marmot (`mm`) is a terminal
-tool for the Debian and Ubuntu machines they run on (cloud VMs, devcontainers, Codespaces, WSL2,
-your laptop) that cleans up after them and shows what is running, without deleting anything an
-agent or tool still needs.
+tool that cleans up after them on the Debian and Ubuntu machines they run on: cloud VMs,
+devcontainers, Codespaces, WSL2, your laptop. It shows what is running, and it never deletes
+anything an agent or tool still needs.
 
 ```text
 $ mm purge --dry-run --yes ~/code
@@ -48,8 +52,8 @@ Run without --dry-run to apply.
 ======================================================================
 ```
 
-The MCP server Cursor starts keeps its `node_modules`; the Solana program's `target/` holds its
-deploy keypair, so it stays too.
+The MCP server that Cursor starts keeps its `node_modules`. The Solana program's `target/` holds
+its deploy keypair, so it stays too.
 
 ## Install
 
@@ -57,10 +61,10 @@ deploy keypair, so it stays too.
 git clone https://github.com/oscartrevio/marmot.git && cd marmot && ./install.sh
 ```
 
-No root needed. marmot is copied to `~/.local/share/marmot` and `mm` is linked into
-`~/.local/bin`; the installer prints the PATH and shell-completion lines if you need them. Update
-with `mm update`, remove with `./install.sh --uninstall`. Needs Debian 12+ or Ubuntu 22.04+
-(WSL2 and containers included) and bash 5; see [Requirements](#requirements).
+No root needed. The installer copies marmot to `~/.local/share/marmot`, links `mm` into
+`~/.local/bin`, and prints the PATH and shell-completion lines if you need them. Update with
+`mm update`. Remove with `./install.sh --uninstall`. marmot needs Debian 12+ or Ubuntu 22.04+
+(WSL2 and containers included) and bash 5. See [Requirements](#requirements).
 
 ## Quick start
 
@@ -95,12 +99,19 @@ Details for each are in [Command reference](#command-reference).
 
 marmot deletes files, so it refuses rather than guesses.
 
-| | |
-|---|---|
-| **Removed without asking** | developer caches (npm, pnpm, yarn, bun, uv, pip, Go build, Cargo, Gradle, Deno, ...), old browser builds (Playwright, Puppeteer, Cypress), old agent CLI and editor server versions, logs older than 7 days, browser leftovers in `/tmp`; with sudo the apt cache, the journal above 500 MB and old snap revisions; dangling Docker images and old build cache |
-| **Removed after you confirm** | old Trash items, crash reports and dumps, rotated system logs, unused packages and old kernels, stopped containers and unused images, git worktrees, build artifacts, agent sessions (only if you opt in) |
-| **Only reported** | model stores (Hugging Face, Ollama, torch), dependency stores (Maven, the Go module cache, ...), Node versions, Docker volumes, agent state, unknown folders in `~/.cache`, `/tmp` |
-| **Never** | credentials (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, keyrings, ...), `~/.config`, system folders, other users' homes (unless you name a folder there), anything in use |
+- **Removed without asking:** developer caches (npm, pnpm, yarn, bun, uv, pip, Go build, Cargo,
+  Gradle, Deno, ...), old browser builds (Playwright, Puppeteer, Cypress), old agent CLI and
+  editor server versions, logs older than 7 days, browser leftovers in `/tmp`; with sudo the apt
+  cache, the journal above 500 MB and old snap revisions; dangling Docker images and old build
+  cache.
+- **Removed after you confirm:** old Trash items, crash reports and dumps, rotated system logs,
+  unused packages and old kernels, stopped containers and unused images, git worktrees, build
+  artifacts, agent sessions (only if you opt in).
+- **Only reported:** model stores (Hugging Face, Ollama, torch), dependency stores (Maven, the Go
+  module cache, ...), Node versions, Docker volumes, agent state, unknown folders in `~/.cache`,
+  `/tmp`.
+- **Never:** credentials (`~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, keyrings, ...), `~/.config`,
+  system folders, other users' homes (unless you name a folder there), anything in use.
 
 A file is kept, with every folder that contains it, when:
 
@@ -143,7 +154,7 @@ Caches marmot doesn't know go in `~/.config/marmot/catalog`, one per line:
 <details>
 <summary><b>mm clean</b> [--sessions N] [--whitelist]</summary>
 
-Removes what the [Safety](#safety) table lists. A cache is skipped while a process that uses it
+Removes what [Safety](#safety) lists. A cache is skipped while a process that uses it
 runs; npm, pnpm, yarn, bun, uv, mise, conda and Homebrew are cleaned with their own commands. Of
 old builds, the newest and anything in use stay; of agent CLIs, the active version and one
 previous. `/tmp` and `/var/tmp` are not swept: marmot shows their size and how the OS ages them.
@@ -181,9 +192,11 @@ Read-only dashboard, live on a terminal (`v` switches the compact and full view,
 Agent sessions come first (folder, age, busy or idle, CPU and memory with sub-processes, orphans
 whose folder is gone), then their helper processes, CPU, memory, disk, inodes, network and VPN,
 how you reach the machine and the link's latency, lingering dev servers and ports, updates,
-failed units, pending reboot, the last scheduled run and a health score. `--agent` prints plain
-`key: value` text for coding agents, problems first with the command that fixes each; it is the
-default when stdout is not a terminal. `--json` needs jq.
+failed units, pending reboot, the last scheduled run and a health score. A marmot peeks over the
+dashboard, and its face sums up the machine: `x x` health below 60, `O O !` below 80, `> <` CPU
+above 85%, `o o` any other health issue, `- - z Z` no agent at work, `^ ^` agents at work on a
+healthy machine. `--agent` prints plain `key: value` text for coding agents, problems first with
+the command that fixes each; it is the default when stdout is not a terminal. `--json` needs jq.
 
 </details>
 
@@ -353,9 +366,7 @@ Report security problems privately as [SECURITY.md](SECURITY.md) describes.
 
 ## Acknowledgements
 
-Thanks to [Mole](https://github.com/tw93/Mole) by tw93, the cleanup tool for macOS. Its care
-about what is safe to delete set the bar for marmot, which brings that care to the Linux machines
-coding agents run on.
+Thanks to [Mole](https://github.com/tw93/Mole) by tw93, the cleanup tool for macOS.
 
 ## License
 

@@ -1,0 +1,140 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "extended-srgb:0.61176,0.84314,0.96863,1.00000",
+      "extended-srgb:0.25882,0.49804,0.84706,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name" : "teeth.svg",
+          "name" : "teeth"
+        },
+        {
+          "fill" : {
+            "automatic-gradient" : "extended-srgb:0.89020,0.63529,0.36471,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "paws.svg",
+          "name" : "paws"
+        }
+      ],
+      "name" : "Paws and teeth",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
+      }
+    },
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name" : "prompt.svg",
+          "name" : "prompt"
+        },
+        {
+          "fill" : {
+            "automatic-gradient" : "extended-srgb:0.05098,0.10196,0.19608,1.00000"
+          },
+          "glass" : true,
+          "image-name" : "window.svg",
+          "name" : "window"
+        }
+      ],
+      "name" : "Shell",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.6
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
+      }
+    },
+    {
+      "layers" : [
+        {
+          "glass" : false,
+          "image-name" : "eye-glints.svg",
+          "name" : "eye-glints"
+        },
+        {
+          "glass" : false,
+          "image-name" : "eyes-nose.svg",
+          "name" : "eyes-nose"
+        },
+        {
+          "glass" : false,
+          "image-name" : "muzzle.svg",
+          "name" : "muzzle"
+        },
+        {
+          "glass" : false,
+          "image-name" : "inner-ears.svg",
+          "name" : "inner-ears"
+        }
+      ],
+      "name" : "Face",
+      "shadow" : {
+        "kind" : "none",
+        "opacity" : 0
+      },
+      "specular" : false,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    },
+    {
+      "layers" : [
+        {
+          "fill" : {
+            "linear-gradient" : [
+              "display-p3:0.92159,0.74842,0.54901,1.00000",
+              "extended-srgb:0.89020,0.63529,0.36471,1.00000"
+            ],
+            "orientation" : {
+              "start" : {
+                "x" : 0.5,
+                "y" : 0
+              },
+              "stop" : {
+                "x" : 0.4999999999999998,
+                "y" : 0.7102704626911662
+              }
+            }
+          },
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "head.svg",
+          "name" : "head"
+        }
+      ],
+      "name" : "Head",
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.45
+      },
+      "specular" : true,
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.1
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
