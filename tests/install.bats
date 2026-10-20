@@ -22,13 +22,142 @@ teardown() { mm_test_teardown; }
   [[ "$output" == "marmot "* ]]
 }
 
-@test "re-running updates the existing install" {
+# payload DIR — a copy of what install.sh installs, without git metadata.
+payload() {
+  mkdir -p "$1"
+  cp -R "$MM_SRC/marmot" "$MM_SRC/install.sh" "$MM_SRC/lib" "$MM_SRC/cmd" "$MM_SRC/completion" "$1/"
+}
+
+# listing DIR — every path under DIR, sorted, on one line.
+listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
+
+@test "a reinstall replaces the files of the previous copy, including ones this copy lacks" {
+  payload "$SB/src"
+  echo '# retired' >"$SB/src/cmd/retired.sh"
+  "$SB/src/install.sh" >/dev/null
+  [ -f "$MARMOT_PREFIX/cmd/retired.sh" ]
+  rm "$SB/src/cmd/retired.sh"
+  echo '# new' >>"$SB/src/lib/core.sh"
+  run "$SB/src/install.sh"
+  [ "$status" -eq 0 ]
+  [ ! -e "$MARMOT_PREFIX/cmd/retired.sh" ]
+  [ "$(tail -1 "$MARMOT_PREFIX/lib/core.sh")" = '# new' ]
+  [ -f "$MARMOT_PREFIX/marmot" ]
+}
+
+@test "reinstall and --uninstall remove only what the install copied, keeping your files there" {
+  export MARMOT_PREFIX="$HOME/bin"
   "$MM_SRC/install.sh" >/dev/null
-  echo stale >"$MARMOT_PREFIX/stale-file"
+  echo 'echo my backup' >"$MARMOT_PREFIX/backup.sh"
+  mkdir -p "$MARMOT_PREFIX/personal" "$MARMOT_PREFIX/empty"
+  echo notes >"$MARMOT_PREFIX/personal/notes.txt"
+  echo mine >"$MARMOT_PREFIX/lib/mine.sh"
   run "$MM_SRC/install.sh"
   [ "$status" -eq 0 ]
-  [ ! -e "$MARMOT_PREFIX/stale-file" ]
-  [ -f "$MARMOT_PREFIX/marmot" ]
+  [ -f "$MARMOT_PREFIX/lib/core.sh" ]
+  [ "$(cat "$MARMOT_PREFIX/backup.sh")" = 'echo my backup' ]
+  [ "$(cat "$MARMOT_PREFIX/personal/notes.txt")" = notes ]
+  [ "$(cat "$MARMOT_PREFIX/lib/mine.sh")" = mine ]
+  run "$MM_SRC/install.sh" --uninstall
+  [ "$status" -eq 0 ]
+  [ ! -e "$MARMOT_BIN/mm" ]
+  [ "$(listing "$MARMOT_PREFIX")" = ". ./backup.sh ./empty ./lib ./lib/mine.sh ./personal ./personal/notes.txt " ]
+}
+
+@test "a reinstall never overwrites your file where the new copy puts one" {
+  payload "$SB/src"
+  "$SB/src/install.sh" >/dev/null
+  echo mine >"$MARMOT_PREFIX/cmd/new.sh"
+  echo '# upstream' >"$SB/src/cmd/new.sh"
+  run "$SB/src/install.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"cmd/new.sh"* ]]
+  [ "$(cat "$MARMOT_PREFIX/cmd/new.sh")" = mine ]
+  [ -f "$MARMOT_PREFIX/lib/core.sh" ]
+}
+
+@test "an install from before the manifest is replaced or removed when it holds only marmot's files" {
+  payload "$MARMOT_PREFIX"
+  echo "source=$SB/gone" >"$MARMOT_PREFIX/.install-source"
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
+  grep -qxF "source=$MM_SRC" "$MARMOT_PREFIX/.install-source"
+  rm -f "$MARMOT_PREFIX"/.install-manifest
+  run "$MM_SRC/install.sh" --uninstall
+  [ "$status" -eq 0 ]
+  [ ! -e "$MARMOT_PREFIX" ]
+}
+
+@test "an install from before the manifest that holds other files is refused, naming them" {
+  export MARMOT_PREFIX="$HOME/bin"
+  payload "$MARMOT_PREFIX"
+  echo 'echo my backup' >"$MARMOT_PREFIX/backup.sh"
+  run "$MM_SRC/install.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"backup.sh"* ]]
+  [ "$(cat "$MARMOT_PREFIX/backup.sh")" = 'echo my backup' ]
+  [ -f "$MARMOT_PREFIX/lib/core.sh" ]
+  [ ! -e "$MARMOT_BIN/mm" ]
+  mkdir -p "$MARMOT_BIN"
+  ln -s "$MARMOT_PREFIX/marmot" "$MARMOT_BIN/mm"
+  run "$MM_SRC/install.sh" --uninstall
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"backup.sh"* ]]
+  [ "$(cat "$MARMOT_PREFIX/backup.sh")" = 'echo my backup' ]
+  [ -f "$MARMOT_PREFIX/lib/core.sh" ]
+  [ -L "$MARMOT_BIN/mm" ]
+}
+
+@test "refuses a prefix inside a git work tree, leaving that checkout as it was" {
+  local proj="$SB/proj"
+  payload "$proj/tools/marmot"
+  git -C "$proj" init -q -b main
+  git -C "$proj" add -A
+  mm_test_git "$proj" commit -qm vendor
+  echo '# my local patch' >>"$proj/tools/marmot/lib/core.sh"
+  echo 'my notes' >"$proj/tools/marmot/NOTES.local"
+  local before; before=$(git -C "$proj" status --porcelain)
+  MARMOT_PREFIX="$proj/tools/marmot" run "$MM_SRC/install.sh"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"$proj"* ]]
+  [ "$(tail -1 "$proj/tools/marmot/lib/core.sh")" = '# my local patch' ]
+  [ "$(cat "$proj/tools/marmot/NOTES.local")" = 'my notes' ]
+  [ "$(git -C "$proj" status --porcelain)" = "$before" ]
+  MARMOT_PREFIX="$proj/tools/new/marmot" run "$MM_SRC/install.sh"
+  [ "$status" -ne 0 ]
+  [ ! -e "$proj/tools/new" ]
+  MARMOT_PREFIX="$proj/tools/marmot" run "$MM_SRC/install.sh" --uninstall
+  [ "$status" -eq 0 ]
+  [ "$(tail -1 "$proj/tools/marmot/lib/core.sh")" = '# my local patch' ]
+  [ "$(git -C "$proj" status --porcelain)" = "$before" ]
+}
+
+@test "refuses a symlinked prefix, with or without a trailing slash, leaving its target as it was" {
+  local mine="$SB/mywork-marmot" before
+  payload "$mine"
+  echo precious >"$mine/mine.txt"
+  mkdir -p "$(dirname "$MARMOT_PREFIX")"
+  ln -s "$mine" "$MARMOT_PREFIX"
+  before=$(listing "$mine")
+  MARMOT_PREFIX="$MARMOT_PREFIX/" run "$MM_SRC/install.sh"
+  [ "$status" -ne 0 ]
+  [ "$(listing "$mine")" = "$before" ]
+  run "$MM_SRC/install.sh"
+  [ "$status" -ne 0 ]
+  MARMOT_PREFIX="$MARMOT_PREFIX/" run "$MM_SRC/install.sh" --uninstall
+  [ "$(listing "$mine")" = "$before" ]
+  [ -L "$MARMOT_PREFIX" ]
+}
+
+@test "a trailing slash on the prefix installs and uninstalls the same folder" {
+  MARMOT_PREFIX="$MARMOT_PREFIX//" run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [ "$(readlink "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
+  MARMOT_PREFIX="$MARMOT_PREFIX/" run "$MM_SRC/install.sh" --uninstall
+  [ "$status" -eq 0 ]
+  [ ! -e "$MARMOT_BIN/mm" ]
+  [ ! -e "$MARMOT_PREFIX" ]
 }
 
 @test "refuses to replace a folder that is not a marmot install" {
@@ -150,7 +279,7 @@ teardown() { mm_test_teardown; }
 @test "installs without git, and says where to put bin on PATH" {
   local tools="$BATS_TEST_TMPDIR/tools" c
   mkdir -p "$tools"
-  for c in bash env find awk sed grep stat realpath du df uname dirname readlink cp mkdir ln cat; do
+  for c in bash env find awk sed grep stat realpath du df uname dirname readlink cp mkdir ln cat mktemp mv; do
     ln -s "$(command -v "$c")" "$tools/$c"
   done
   PATH="$tools" SHELL=/bin/zsh run "$MM_SRC/install.sh"
@@ -158,4 +287,8 @@ teardown() { mm_test_teardown; }
   [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
   [[ "$output" == *"~/.zshrc"* || "$output" == *"$HOME/.zshrc"* ]]
   [[ "$output" == *"export PATH=\"$MARMOT_BIN:\$PATH\""* || "$output" == *'export PATH="$HOME/'* ]]
+  mkdir -p "$SB/proj/.git"
+  MARMOT_PREFIX="$SB/proj/tools/marmot" PATH="$tools" run "$MM_SRC/install.sh"
+  [ "$status" -ne 0 ]
+  [ ! -e "$SB/proj/tools" ]
 }
