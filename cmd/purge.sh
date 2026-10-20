@@ -245,9 +245,12 @@ _purge_tracked_load() {
 _purge_tracked() { return "${_PURGE_TRACKED[$1]:-1}"; }
 
 # _purge_ignored DIR NAME — 0 git ignores DIR/NAME, 1 not ignored or no repository, 2 unknown.
+# Only the project's own repository below $HOME answers (_purge_gitroot): a dotfiles repository
+# at $HOME whose .gitignore says `*` must not make every folder below it look rebuildable.
 _purge_ignored() {
   local rc=0
-  _purge_repo_of "$1" || return 1
+  _purge_gitroot "$1"
+  [[ -n "$_PURGE_GITROOT" ]] || return 1
   _purge_git "$1" check-ignore -q -- "$2" || rc=$?
   case "$rc" in 0) return 0 ;; 1) return 1 ;; *) return 2 ;; esac
 }
