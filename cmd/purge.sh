@@ -47,6 +47,8 @@ _PURGE_SKIP_HOME=(snap go/pkg anaconda3 miniconda3 miniforge3 mambaforge microma
 _PURGE_MAXDEPTH=8
 _PURGE_SCAN_TIMEOUT=60
 _PURGE_GIT_TIMEOUT=20
+# Reading a project with no repository to the bottom for its newest edit (_purge_deep_mtime).
+_PURGE_DEEP_TIMEOUT=20
 # Worktrees: a finished one (its work landed) is offered once idle this many seconds; an unmerged
 # one only after this many days. Branches are kept either way.
 _PURGE_WT_FINISHED_IDLE=3600
@@ -458,13 +460,36 @@ _purge_in_agent_wtdir() {
   return 1
 }
 
+# _purge_deep_prune — the find -regex pattern of what a deep activity walk must not descend into:
+# .git and the artifact names, whose mtimes are a tool's writes, not the user's work.
+_purge_deep_prune() {
+  local n out=""
+  for n in .git "${_PURGE_TARGETS[@]}" "${_PURGE_CONDITIONAL[@]}"; do out+="\\|${n//./\\.}"; done
+  printf '.*/\\(%s\\)' "${out:2}"
+}
+
+# _purge_deep_mtime DIR... — "EPOCH<TAB>DIR" for each DIR: the newest mtime anywhere below it,
+# artifacts and .git pruned; "?<TAB>DIR" when the walk failed or timed out, so the caller keeps
+# DIR instead of calling it idle. 4 walks in parallel, each bounded by _PURGE_DEEP_TIMEOUT.
+_purge_deep_mtime() {
+  printf '%s\0' "$@" | MM_DEEP_RE=$(_purge_deep_prune) MM_DEEP_TIMEOUT=$_PURGE_DEEP_TIMEOUT \
+    xargs -0 -P4 -n1 bash -c '
+      t=$(timeout "$MM_DEEP_TIMEOUT" find "$1" -xdev -regextype posix-basic -regex "$MM_DEEP_RE" \
+            -prune -o -printf "%T@\n" 2>/dev/null |
+          awk '\''{ t = int($1); if (t > m) m = t } END { printf "%.0f", m }'\''
+          exit "${PIPESTATUS[0]}") || t="?"
+      printf "%s\t%s\n" "${t:-?}" "$1"' _
+}
+
 # _purge_activity DIR<TAB>GITROOT... — "EPOCH<TAB>DIR" for each DIR: the newest mtime among DIR,
 # its top-level files, and the git index/HEAD of GITROOT's repository (worktree .git files are
-# followed to their gitdir; empty GITROOT: no repository). One find and one stat for all DIRs.
-# A DIR whose repository's git dir can't be resolved is left out (activity unknown).
+# followed to their gitdir). A DIR with no repository (empty GITROOT) is read to the bottom
+# instead (_purge_deep_mtime): a file edited today deep in ~/Documents is activity too. One find
+# and one stat for all DIRs. A DIR whose repository's git dir or whose deep walk can't be read is
+# left out (activity unknown).
 _purge_activity() {
   local pair dir git
-  local -a dirs=() probes=() map=()
+  local -a dirs=() deep=() probes=() map=()
   local -A gd=()
   for pair; do
     dir="${pair%%$'\t'*}" git="${pair#*$'\t'}"
@@ -479,17 +504,21 @@ _purge_activity() {
     fi
     [[ -z "$git" || -n "${gd[$git]}" ]] || continue
     dirs+=("$dir"); map+=("Q"$'\t'"$dir"$'\t'"$git")
+    [[ -n "$git" ]] || deep+=("$dir")
   done
   (( ${#dirs[@]} )) || return 0
   {
     find "${dirs[@]}" -maxdepth 0 -printf '%T@\t%p\n' 2>/dev/null
     find "${dirs[@]}" -mindepth 1 -maxdepth 1 -type f -printf '%T@\t%h\n' 2>/dev/null
+    (( ${#deep[@]} )) && _purge_deep_mtime "${deep[@]}"
     (( ${#probes[@]} )) && stat -c '%Y'$'\t''%n' -- "${probes[@]}" 2>/dev/null
   } | awk -F '\t' 'NR == FNR { if ($1 == "Q") q[$2] = $3; else pr[$2] = $3; next }
-    ($2 in q) { t = int($1); if (t > d[$2]) d[$2] = t; next }
+    ($2 in q) { if ($1 == "?") { bad[$2] = 1; next }
+      t = int($1); if (t > d[$2]) d[$2] = t; next }
     ($2 in pr) { t = int($1); g = pr[$2]; if (t > r[g]) r[g] = t }
     END {
       for (k in q) {
+        if (k in bad) continue
         t = d[k]; g = q[k]
         if (g != "" && r[g] > t) t = r[g]
         if (t > 0) printf "%.0f\t%s\n", t, k
@@ -556,28 +585,33 @@ _purge_busy() {
     - <(mm_inuse_paths) | sort -u
 }
 
-# _purge_probe ART — what ART holds that must survive, from one bounded walk: "git" (a .git entry
-# anywhere inside: a nested repository), "keypair" (a *-keypair.json file: Solana and Anchor keep
-# program keypairs in target/deploy/, and losing one loses the deploy authority), "tfstate"
-# (*.tfstate or *.tfstate.backup: local Terraform state is the only record of what is deployed,
-# and terragrunt runs terraform inside .terragrunt-cache), "?" when the walk failed or timed out
-# (what cannot be read is never purged), else nothing.
+# _purge_probe ART — "HOLDS<TAB>MTIME" for ART from one bounded walk. HOLDS is what makes it
+# never purgeable: "git" (a .git entry anywhere inside: a nested repository), "keypair" (a
+# *-keypair.json file: Solana and Anchor keep program keypairs in target/deploy/, and losing one
+# loses the deploy authority), "tfstate" (*.tfstate or *.tfstate.backup: local Terraform state is
+# the only record of what is deployed, and terragrunt runs terraform inside .terragrunt-cache),
+# else empty. MTIME is the newest mtime of ART and anything inside it: a tool writing there is
+# activity, whatever the project's own files say. Both are "?" when the walk failed or timed out
+# (what cannot be read is never purged).
 _purge_probe() {
   local out
-  out=$(timeout "${MM_SIZE_TIMEOUT:-300}" find "$1" -xdev -mindepth 1 -printf '%y\t%p\n' 2>/dev/null |
-    awk -F'\t' 'BEGIN { h = 0 }
+  out=$(timeout "${MM_SIZE_TIMEOUT:-300}" find "$1" -xdev -printf '%y\t%T@\t%p\n' 2>/dev/null |
+    awk -F'\t' -v root="$1" 'BEGIN { h = 0 }
+      { t = int($2); if (t > m) m = t }
+      NF == 3 && $3 == root { next }
       { n = $NF; sub(/.*\//, "", n)
         if (n == ".git") h = 3
         else if ($1 == "f" && n ~ /-keypair\.json$/) { if (h < 2) h = 2 }
         else if ($1 == "f" && n ~ /\.tfstate(\.backup)?$/) { if (h < 1) h = 1 } }
-      END { split("tfstate keypair git", name, " "); if (h) printf "%s", name[h] }'
-    exit "${PIPESTATUS[0]}") || { printf '?'; return 0; }
+      END { split("tfstate keypair git", name, " ")
+        printf "%s\t%.0f", (h ? name[h] : ""), m }'
+    exit "${PIPESTATUS[0]}") || { printf '?\t?'; return 0; }
   printf '%s' "$out"
 }
 
-# _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>holds<TAB>path" per artifact (see
-# mm_size_frees and _purge_probe), 4 in parallel. size and frees are "?" when sizing failed or
-# timed out (size unknown).
+# _purge_measure PATH... — NUL-separated "size<TAB>frees<TAB>holds<TAB>mtime<TAB>path" per
+# artifact (see mm_size_frees and _purge_probe), 4 in parallel. size and frees are "?" when
+# sizing failed or timed out (size unknown), holds and mtime when the probe could not read it.
 _purge_measure() {
   (
     export -f mm_size_frees _purge_probe; export MM_SIZE_TIMEOUT MM_SIZE_SUDO
@@ -1141,16 +1175,16 @@ _purge_run() {
     done < <(printf '%s\n' "${!skip_n[@]}" | sort)
   fi
 
-  # ---- sizes, frees and what an artifact holds that must survive (parallel)
-  local -A size=() frees=() holds=()
-  local b fb h n=0 total=${#cand[@]}
+  # ---- sizes, frees, what an artifact holds that must survive and when it was last written
+  local -A size=() frees=() holds=() written=()
+  local b fb h mt n=0 total=${#cand[@]}
   local -a cand_paths=() keep_cand=() freed_paths=()
   for i in "${cand[@]}"; do cand_paths+=("${arts[$i]}"); done
   if (( total )); then
     while IFS= read -r -d '' rec; do
       b="${rec%%$'\t'*}" rec="${rec#*$'\t'}" fb="${rec%%$'\t'*}" rec="${rec#*$'\t'}"
-      h="${rec%%$'\t'*}" p="${rec#*$'\t'}"
-      size[$p]=$b frees[$p]=$fb holds[$p]=$h; n=$((n + 1))
+      h="${rec%%$'\t'*}" rec="${rec#*$'\t'}" mt="${rec%%$'\t'*}" p="${rec#*$'\t'}"
+      size[$p]=$b frees[$p]=$fb holds[$p]=$h written[$p]=$mt; n=$((n + 1))
       [[ -t 2 ]] && printf '\r  %sMeasuring %d/%d artifacts…%s' "$C_DIM" "$n" "$total" "$C_RESET" >&2
     done < <(_purge_measure "${cand_paths[@]}")
     [[ -t 2 ]] && printf '\r\e[K' >&2
@@ -1189,9 +1223,13 @@ _purge_run() {
   _purge_activity_load "${pair_of[@]}"
   local now; now=$(date +%s)
   local -a order=() idle=() stale=() pnpm_art=()
-  local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act shared=0
+  local stale_bytes=0 recent_bytes=0 stale_n=0 recent_n=0 act mt shared=0
   for i in "${cand[@]}"; do
     act="${_PURGE_ACT[${projs[$i]}]:-}"
+    # a write inside the artifact is activity too: a tool is still using it
+    mt="${written[${arts[$i]}]:-?}"
+    if [[ ! "$mt" =~ ^[0-9]+$ ]]; then act=""
+    elif [[ -n "$act" ]] && (( mt > act )); then act=$mt; fi
     # unknown activity counts as recent: never selected by default
     if [[ -n "$act" ]]; then idle[i]=$(( (now - act) / 86400 )); else idle[i]=0; fi
     if (( idle[i] > days )); then
