@@ -373,12 +373,29 @@ _clean_revisions_row() {
   mm_ok "$label" "$(_clean_detail "$n" "old builds" "$b" "$kept" "$fail")$note"
 }
 
+# _clean_path_versions DIR — the entries of DIR, one per line, that a directory on $PATH resolves
+# into: putting a version's folder on PATH pins it, whatever the launcher points at.
+_clean_path_versions() {
+  local real p d
+  local -a parts=()
+  real=$(realpath -e -- "$1" 2>/dev/null) || return 0
+  IFS=: read -r -a parts <<<"$PATH"
+  for p in "${parts[@]}"; do
+    [[ "$p" == /* ]] || continue
+    d=$(realpath -e -- "$p" 2>/dev/null) || continue
+    [[ "$d" == "$real"/?* ]] || continue
+    d=${d#"$real"/}; printf '%s\n' "${d%%/*}"
+  done
+}
+
 # _clean_versions_row NAME DIR ACTIVE_LINK — an agent that keeps one entry per installed version.
-# Keeps the active version (resolved through ACTIVE_LINK), any newer staged ones, and the newest
-# older one; removes the rest. When the active version cannot be resolved, everything is kept.
+# Keeps the active version (resolved through ACTIVE_LINK), any newer staged ones, the newest older
+# one, and any version a $PATH directory points into (the way a pinned older version is used);
+# removes the rest. When the active version cannot be resolved, everything is kept.
 _clean_versions_row() {
-  local label="$1 old versions" dir="$2" link="$3" real act v n=0 b=0 kept=0 fail=0 prev=""
+  local label="$1 old versions" dir="$2" link="$3" real act v n=0 b=0 kept=0 fail=0 pinned=0 prev=""
   local -a names=() older=()
+  local -A onpath=()
   [[ -d "$dir" ]] || return 0
   mapfile -t names < <(find "$dir" -mindepth 1 -maxdepth 1 \( -type f -o -type d \) -name '[0-9]*' -printf '%f\n' 2>/dev/null | sort -V)
   (( ${#names[@]} > 1 )) || return 0
@@ -390,6 +407,7 @@ _clean_versions_row() {
   if [[ -z "$act" || " ${names[*]} " != *" $act "* ]]; then
     mm_ok "$label" "${#names[@]} installed, all kept (active version unknown)"; return 0
   fi
+  while IFS= read -r v; do [[ -n "$v" ]] && onpath[$v]=1; done < <(_clean_path_versions "$dir")
   for v in "${names[@]}"; do
     [[ "$v" == "$act" ]] && break
     older+=("$v")
@@ -397,6 +415,7 @@ _clean_versions_row() {
   (( ${#older[@]} > 1 )) || { mm_ok "$label" "none (active $act)"; return 0; }
   prev=${older[-1]}
   for v in "${older[@]:0:${#older[@]}-1}"; do
+    if [[ -n "${onpath[$v]+x}" ]]; then pinned=$((pinned + 1)); continue; fi
     mm_rm "$dir/$v" "$dir"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
@@ -404,7 +423,10 @@ _clean_versions_row() {
       *) fail=$((fail + 1)) ;;
     esac
   done
-  mm_ok "$label" "$(_clean_detail "$n" versions "$b" "$kept" "$fail"), kept $act (active) and $prev"
+  local note=""
+  (( pinned )) && note=", $pinned on your PATH"
+  if (( n + kept + fail == 0 )); then mm_ok "$label" "none (active $act$note)"; return 0; fi
+  mm_ok "$label" "$(_clean_detail "$n" versions "$b" "$kept" "$fail"), kept $act (active)$note and $prev"
 }
 
 # ---------------------------------------------------------------- 1. user essentials
@@ -1246,13 +1268,20 @@ _CLEAN_OLD_DAYS=7   # rotated logs and crash dumps last written longer ago than 
 _CLEAN_OPEN_FDS='find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null; printf -- "-\0"'
 
 # Run as root with MINUTES, then DEV:INODE PATH pairs: delete each PATH that is still the same
-# regular file, still unmodified for MINUTES, and open by no process.
-_CLEAN_ROOT_RM='min=$1; shift; rc=0
+# regular file, still unmodified for MINUTES, and open by no process. The open set has to be
+# complete: the scan prints "-" only when find succeeded, and a link whose target cannot be read
+# (an empty %l) means some process's open files are unknown, so the run deletes nothing. An empty
+# entry is never used as an array key either: that is a bash error, and it used to abandon the
+# scan loop and leave the rest of the open files unseen.
+_CLEAN_ROOT_RM='min=$1; shift; rc=0 ok=0
 declare -A open=()
-while IFS= read -r -d "" t; do open[$t]=1; done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null)
+while IFS= read -r -d "" t; do
+  if [[ "$t" == - ]]; then ok=1; elif [[ -z "$t" ]]; then break; else open[$t]=1; fi
+done < <(find /proc/[0-9]*/fd -mindepth 1 -maxdepth 1 -type l -printf "%l\0" 2>/dev/null && printf -- "-\0")
+(( ok )) || { echo "cannot see every open file: nothing removed" >&2; exit 1; }
 while (( $# >= 2 )); do
   id=$1 p=$2; shift 2
-  [[ -z ${open[$p]+x} ]] || continue
+  [[ -n "$p" && -z ${open[$p]+x} ]] || continue
   [[ "$(find "$p" -maxdepth 0 -type f -mmin "+$min" -printf "%D:%i" 2>/dev/null)" == "$id" ]] || continue
   rm -f -- "$p" || rc=1 # SAFE: a listed, confirmed old log or dump, re-checked (same inode, still old, not open) just above
 done
@@ -1721,11 +1750,19 @@ _clean_browser_tmp_root() {
   echo "$root"
 }
 
+# _clean_browser_live ROOT — 0 if a Playwright browser launched out of ROOT is running: some
+# process was started with a --user-data-dir of ROOT/playwright_chromiumdev_profile-*. Its
+# playwright-artifacts-* folder holds that run's downloads and traces, and nothing in it is open
+# or named on a command line, so a long idle run would otherwise look abandoned.
+_clean_browser_live() {
+  mm_proc_match "" "--user-data-dir[= ]$(_clean_ere_quote "$1")/playwright_chromiumdev_profile-"
+}
+
 # _clean_browser_tmp ROOT — remove ROOT's automation-browser leftovers (above) via mm_rm, with ROOT
 # as the allowed root. Idle time is the newest mtime or ctime of anything inside the entry. The
 # section is shown only when ROOT holds such entries.
 _clean_browser_tmp() {
-  local root="$1" label="Browser temp files in $1" e now newest rc n=0 b=0 kept=0 fail=0 recent=0 note=""
+  local root="$1" label="Browser temp files in $1" e now newest rc live=0 n=0 b=0 kept=0 fail=0 recent=0 busy=0 note=""
   local -a names=() found=()
   [[ -d "$root" ]] || return 0
   for e in "${_CLEAN_BROWSER_TMP_NAMES[@]}"; do
@@ -1737,7 +1774,9 @@ _clean_browser_tmp() {
   (( ${#found[@]} )) || return 0
   _clean_cat "Automation browsers"
   now=$(date +%s)
+  _clean_browser_live "$root" && live=1
   for e in "${found[@]}"; do
+    if (( live )) && [[ "${e##*/}" == playwright-artifacts-* ]]; then busy=$((busy + 1)); continue; fi
     newest=$(find "$e" -printf '%T@\n%C@\n' 2>/dev/null | awk '$1 > m { m = $1 } END { printf "%.0f\n", m }')
     if (( newest == 0 || now - newest < _CLEAN_BROWSER_TMP_IDLE )); then recent=$((recent + 1)); continue; fi
     rc=0; mm_rm "$e" "$root" || rc=$?
@@ -1748,6 +1787,7 @@ _clean_browser_tmp() {
     esac
   done
   (( recent )) && note=", $recent used in the last 2 hours kept"
+  (( busy )) && note+=", $busy kept (a Playwright browser is running)"
   if (( n + kept + fail == 0 )); then
     mm_ok "$label" "nothing idle for 2 hours${note}"
   else

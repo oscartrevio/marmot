@@ -740,6 +740,21 @@ claude_versions() {
   exist "$d/1.0.0" "$d/1.0.1" "$d/1.0.2"
 }
 
+@test "agent versions: a version a directory on PATH points into is kept" {
+  local d="$HOME/.local/share/cursor-agent/versions" v
+  mkdir -p "$HOME/.local/bin"
+  for v in 2025.08.01-aaa 2025.09.01-bbb 2025.10.01-ccc 2025.11.01-ddd; do
+    mkdir -p "$d/$v"; echo bin >"$d/$v/cursor-agent"; chmod +x "$d/$v/cursor-agent"
+  done
+  ln -sfn "$d/2025.11.01-ddd/cursor-agent" "$HOME/.local/bin/cursor-agent"
+  PATH="$d/2025.08.01-aaa:$PATH"
+  catalog
+  run _clean_builds
+  [ "$status" -eq 0 ]
+  exist "$d/2025.08.01-aaa/cursor-agent" "$d/2025.10.01-ccc" "$d/2025.11.01-ddd"
+  gone "$d/2025.09.01-bbb"
+}
+
 @test "Playwright: newest revision per browser kept, plus ones in use or still referenced by a project" {
   local p="$HOME/.cache/ms-playwright" r
   for r in chromium-1100 chromium-1200 chromium_headless_shell-1100 chromium_headless_shell-1200 \
@@ -1189,6 +1204,20 @@ blocks() { local p s=0; for p; do s=$((s + $(stat -c %b "$p") * 512)); done; ech
   gone "$l/syslog.2.gz"
 }
 
+@test "rotated logs: a file descriptor the root script cannot read stops it deleting anything" {
+  local l="$SB/var/log" id real
+  real=$(command -v find)
+  root_src
+  file_aged "$l/syslog.1" 9
+  id=$("$real" "$l/syslog.1" -maxdepth 0 -printf '%D:%i')
+  # One fd link whose target root cannot read (an empty %l), as in a container without SYS_PTRACE.
+  mm_test_fake find "if [[ \"\$1\" == /proc/*/fd ]]; then printf '/dev/null\\0\\0/dev/zero\\0'; exit 0; fi
+exec $real \"\$@\""
+  run bash -c "$_CLEAN_ROOT_RM" _ 10 "$id" "$l/syslog.1"
+  [ "$status" -ne 0 ]
+  exist "$l/syslog.1"
+}
+
 @test "rotated logs and crash dumps: nothing is deleted without a terminal" {
   file_aged "$SB/var/log/syslog.1" 9; file_aged "$SB/var/crash/_usr_bin_node.1000.crash" 9
   mkdir -p "$XDG_DATA_HOME/apport/r1"; mm_age "$XDG_DATA_HOME/apport" 9
@@ -1267,6 +1296,19 @@ browser_tmp() { local n; for n; do blob "$MM_TEST_TMP_ROOT/$n/Default/Cache/data
   _clean_browser_tmp "$t" >/dev/null
   exist "$t/playwright_chromiumdev_profile-cwd/Default/Cache/data_1" "$t/puppeteer_dev_chrome_profile-fd/Default/Cache/data_1"
   [ "$(mm_log_rows refused | cut -f2 | sort -u)" = "in use" ]
+}
+
+@test "browser temp: a live Playwright browser keeps the artifacts folders of that run" {
+  src
+  local t=$MM_TEST_TMP_ROOT
+  browser_tmp playwright-artifacts-LIVE puppeteer_dev_chrome_profile-OLD
+  echo invoice >"$t/playwright-artifacts-LIVE/6f1c2e7a-download"
+  # "; :" keeps bash from exec'ing sleep in place, which would drop the browser's arguments.
+  mm_test_bg "$SB" bash -c 'sleep 60; :' browser "--user-data-dir=$t/playwright_chromiumdev_profile-LIVE"
+  mm_test_clock 1
+  _clean_browser_tmp "$t" >/dev/null
+  exist "$t/playwright-artifacts-LIVE/6f1c2e7a-download"
+  gone "$t/puppeteer_dev_chrome_profile-OLD"
 }
 
 @test "browser temp: another user's entries are never touched" {
