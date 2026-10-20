@@ -437,6 +437,70 @@ unix_socket() {
   [[ "$output" == *"Old kernels · skipped (in a container: the running kernel is the host's)"* ]]
 }
 
+# ---------------------------------------------------------------- apt
+
+# apt_src — clean with a sudo double that runs the command as the test user, an apt-get that only
+# records what it was asked to do, and dpkg's maintainer scripts in the sandbox.
+apt_src() {
+  mm_test_fake sudo '[[ "$1" == -n ]] && shift; [[ "$1" == -k ]] && exit 0; exec "$@"'
+  mm_test_fake apt-get 'echo "apt-get $*" >>"$CALLS"
+[[ "$1 $2" == "-s autoremove" ]] && echo "Remv demo-agentd [1.0]"
+exit 0'
+  mm_test_fake dpkg-query 'exit 0'
+  src
+  _CLEAN_DPKG_INFO="$SB/dpkg-info"
+  mkdir -p "$_CLEAN_DPKG_INFO"
+}
+# postrm PKG LINE — PKG's purge script, running LINE when dpkg purges it.
+postrm() {
+  printf '#!/bin/sh\nset -e\ncase "$1" in\n  purge)\n    %s\n    ;;\nesac\n' "$2" >"$_CLEAN_DPKG_INFO/$1.postrm"
+  chmod 755 "$_CLEAN_DPKG_INFO/$1.postrm"
+}
+
+@test "apt: unused packages are removed, not purged, so edited config files stay" {
+  apt_src
+  mm_confirm() { return 0; }
+  run _clean_apt_autoremove
+  [ "$status" -eq 0 ]
+  grep -qxF 'apt-get -y autoremove' "$CALLS"
+  none grep -E 'autoremove.*--purge' "$CALLS"
+}
+
+@test "apt: rc packages whose purge script deletes data keep their config; the rest are purged" {
+  apt_src
+  postrm docker.io 'nuke-graph-directory /var/lib/docker'
+  postrm postgresql-15 'pg_dropcluster --stop 15 main'
+  postrm weird-daemon 'rm -rf /var/lib/weird-daemon'
+  postrm web-thing 'rm -rf /var/www/thing'
+  postrm user-daemon 'deluser --quiet --system --remove-home userd'
+  postrm vague-tool 'rm -rf "$STATE_DIR"'
+  postrm tidy-tool 'rm -f /etc/tidy-tool.conf; rm -rf /var/lib/ucf/cache/tidy-tool'
+  mm_test_fake dpkg 'printf "rc   %s   1.0   all\n" docker.io postgresql-15 weird-daemon web-thing user-daemon vague-tool tidy-tool no-script'
+  mm_confirm() { return 0; }
+  residual_then_review() { _clean_apt_residual; _clean_review_print; }
+  run residual_then_review
+  [ "$status" -eq 0 ]
+  grep -qxF 'apt-get -y purge tidy-tool no-script' "$CALLS"
+  none grep -F 'purge ~c' "$CALLS"
+  local p
+  for p in docker.io postgresql-15 weird-daemon web-thing user-daemon vague-tool; do
+    none grep -E "apt-get .*purge .*(^| )$p( |$)" "$CALLS"
+    [[ "$output" == *"$p"* ]] || { echo "$p not listed for review"; false; }
+  done
+}
+
+@test "apt: an rc package whose purge script cannot be read is kept" {
+  (( EUID != 0 )) || skip "root can read every file"
+  apt_src
+  postrm secret-tool 'rm -rf /var/lib/secret-tool'
+  chmod 000 "$_CLEAN_DPKG_INFO/secret-tool.postrm"
+  mm_test_fake dpkg 'printf "rc   %s   1.0   all\n" secret-tool'
+  mm_confirm() { return 0; }
+  run _clean_apt_residual
+  [ "$status" -eq 0 ]
+  none grep 'apt-get' "$CALLS"
+}
+
 # ---------------------------------------------------------------- editors
 
 @test "editor servers: the newest build and builds in use are kept" {

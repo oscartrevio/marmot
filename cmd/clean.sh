@@ -1066,12 +1066,11 @@ _clean_ask() {
   return 1
 }
 
-# _clean_confirm_pkgs LABEL QUESTION PKG... — list packages, then _clean_ask.
+# _clean_confirm_pkgs LABEL QUESTION PKG... — list every package the step would act on, then
+# _clean_ask. Nothing is hidden behind a count: one "y" acts on all of them.
 _clean_confirm_pkgs() {
   local label="$1" q="$2"; shift 2
-  local shown=("${@:1:8}") more=""
-  (( $# > 8 )) && more=" (+$(($# - 8)) more)"
-  mm_act "$label: $(IFS=' '; echo "${shown[*]}")$more"
+  mm_act "$label: $(IFS=' '; echo "$*")"
   _clean_ask "$label" "$q"
 }
 
@@ -1085,25 +1084,84 @@ _clean_apt_cache() {
   mm_ok "APT package cache" "$(_clean_detail "$n" packages "$b")"
 }
 
+# Packages apt says nothing needs any more. Removed, not purged: --purge would also delete their
+# configuration under /etc, hand-edited files included, which the simulation above does not show
+# and the prompt does not mention. What stays behind lands in the rc state the step below asks
+# about.
 _clean_apt_autoremove() {
   local -a pkgs; local b
   mapfile -t pkgs < <(apt-get -s autoremove 2>/dev/null | awk '/^Remv / { print $2 }')
   if (( ${#pkgs[@]} == 0 )); then mm_ok "Unused packages" "none"; return; fi
   b=$(_clean_pkg_bytes "${pkgs[@]}")
-  _clean_confirm_pkgs "Unused packages" "Autoremove ${#pkgs[@]} packages?" "${pkgs[@]}" || return 0
-  _clean_apt_run "apt-get autoremove" -y autoremove --purge || return 0
+  _clean_confirm_pkgs "Unused packages" "Autoremove ${#pkgs[@]} packages (their config files stay)?" "${pkgs[@]}" || return 0
+  _clean_apt_run "apt-get autoremove" -y autoremove || return 0
   _clean_track "$b" "${#pkgs[@]}"
   mm_ok "Unused packages" "$(_clean_detail "${#pkgs[@]}" packages "$b")"
 }
 
+# Where dpkg keeps the maintainer scripts of installed and removed packages (a plain variable:
+# tests point it at a sandbox, nothing in the environment can change it).
+_CLEAN_DPKG_INFO=/var/lib/dpkg/info
+
+# Config files of packages that were removed but not purged (dpkg state "rc"). Purging runs each
+# package's postrm with "purge", which for many daemons deletes their data as well: docker.io
+# wipes /var/lib/docker, postgresql-* drops its clusters, others remove /var/lib/<package> or a
+# service user's home. Those packages are kept and listed for review; the rest are purged by name
+# (never `~c`, which would take the kept ones too).
 _clean_apt_residual() {
-  local -a pkgs
+  local p note=""
+  local -a pkgs=() pick=() risky=()
   mapfile -t pkgs < <(dpkg -l 2>/dev/null | awk '$1 == "rc" { print $2 }')
   if (( ${#pkgs[@]} == 0 )); then mm_ok "Residual configs" "none"; return; fi
-  _clean_confirm_pkgs "Residual configs" "Purge leftover config files of ${#pkgs[@]} removed packages?" "${pkgs[@]}" || return 0
-  _clean_apt_run "purge residual configs" -y purge '~c' || return 0
-  _clean_track 0 "${#pkgs[@]}"
-  mm_ok "Residual configs" "${#pkgs[@]} packages purged"
+  for p in "${pkgs[@]}"; do
+    if _clean_postrm_deletes_data "$p"; then risky+=("$p"); else pick+=("$p"); fi
+  done
+  if (( ${#risky[@]} )); then
+    note=", ${#risky[@]} kept (their purge scripts delete data)"
+    _clean_review "Config files of removed packages" \
+      "${#risky[@]} kept: $(IFS=', '; echo "${risky[*]}") · purging them runs a script that deletes the package's data" \
+      "to purge one with its data: sudo apt-get purge <package>"
+  fi
+  if (( ${#pick[@]} == 0 )); then mm_ok "Residual configs" "nothing to purge${note}"; return; fi
+  _clean_confirm_pkgs "Residual configs" \
+    "Purge the config files of ${#pick[@]} removed packages (this runs their purge scripts)?" "${pick[@]}" || return 0
+  _clean_apt_run "purge residual configs" -y purge "${pick[@]}" || return 0
+  _clean_track 0 "${#pick[@]}"
+  mm_ok "Residual configs" "${#pick[@]} packages purged${note}"
+}
+
+# _clean_postrm_deletes_data PKG — 0 when purging PKG would run a script that deletes data: it
+# drops a PostgreSQL cluster (pg_dropcluster), wipes a container store (nuke-graph-directory),
+# removes a service user's home (deluser --remove-home), or runs a recursive rm on something
+# under /var/lib (other than dpkg's, systemd's and ucf's bookkeeping), /srv, /home, /var/www or
+# /opt. A path it cannot read as a literal (a variable, a glob) counts as such a delete, and so
+# does an unreadable script: only a script whose deletes are all plainly harmless lets a purge
+# through.
+_clean_postrm_deletes_data() {
+  local p=${1%%:*} f
+  local -a files=()
+  for f in "$_CLEAN_DPKG_INFO/$p.postrm" "$_CLEAN_DPKG_INFO/$p":*.postrm; do
+    [[ -f "$f" ]] || continue
+    [[ -r "$f" ]] || return 0
+    files+=("$f")
+  done
+  (( ${#files[@]} )) || return 1
+  awk '
+    /pg_dropcluster|nuke-graph-directory/ { bad = 1 }
+    /deluser/ && /--remove-home/ { bad = 1 }
+    /(^|[^[:alnum:]_.\/-])rm[[:space:]]+(-[^[:space:]]+[[:space:]]+)*-[^[:space:]]*r/ {
+      n = split($0, w, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        p = w[i]
+        gsub(/^["'\'']+|["'\'']+$/, "", p)
+        if (p ~ /^-/ || p == "") continue
+        if (p ~ /[$*?`]/) { bad = 1; continue }
+        if (p ~ /^\/(srv|home|opt)(\/|$)/ || p ~ /^\/var\/www(\/|$)/) bad = 1
+        if (p ~ /^\/var\/lib\// && p !~ /^\/var\/lib\/(dpkg|systemd|ucf)(\/|$)/) bad = 1
+      }
+    }
+    END { exit(bad ? 0 : 1) }
+  ' "${files[@]}"
 }
 
 # _clean_kernels — kernel packages other than the running and the newest installed one. Nothing
