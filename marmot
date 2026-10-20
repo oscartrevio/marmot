@@ -3,6 +3,9 @@
 set -uo pipefail
 
 MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# No protection may be switched off from the environment (AGENTS.md): the variables a command
+# sets for a single call of the gate must not arrive from outside marmot.
+unset MM_KEEP_AGENT_STATE MM_AGENT_WAIVER _MM_WAIVED
 # shellcheck source=lib/core.sh
 . "$MM_HOME/lib/core.sh"
 

@@ -499,6 +499,12 @@ mm_whitelist_init() {
   [[ -e "$MM_WHITELIST_FILE" ]] || printf '%s' "$MM_DEFAULT_WHITELIST" >"$MM_WHITELIST_FILE"
 }
 
+# No protection is switchable from the environment (AGENTS.md). MM_KEEP_AGENT_STATE waives agent
+# state for one call, and the commands that need it (mm purge, for a git worktree that git reports
+# clean) set it as a prefix of that call, which happens after this file is sourced: an exported
+# one is dropped here, whoever started marmot. `marmot` drops it before sourcing too.
+unset MM_KEEP_AGENT_STATE
+
 # The gate runs for every item, and both resolving a path and reading the password database cost a
 # fork, so each is done once per run and kept here. Sourcing this file again starts over.
 # (-g: commands and tests source this file inside a function, where a plain declare would be local.)

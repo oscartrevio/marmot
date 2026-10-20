@@ -800,3 +800,24 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
   run mm_foreign_home "$HOME/proj"
   [ "$status" -eq 1 ]
 }
+
+# ---------------------------------------------------------------- protections and the environment
+
+@test "an exported MM_KEEP_AGENT_STATE or an unusable whitelist path waives nothing" {
+  mkdir -p "$HOME/.claude/projects/p" "$HOME/mine/keep"
+  echo s >"$HOME/.claude/projects/p/s.jsonl"; echo k >"$HOME/mine/keep/f"
+  printf '%s\n' "$HOME/mine/keep" >"$MM_WHITELIST_FILE"
+  run env MM_KEEP_AGENT_STATE=0 bash -c '. "$1/lib/core.sh"; mm_inuse_refresh >/dev/null 2>&1
+    mm_rm "$2/.claude/projects/p" "$2/.claude" >/dev/null 2>&1; echo "$? $MM_SKIP_REASON"
+    echo "${MM_KEEP_AGENT_STATE-unset}"' _ "$MM_SRC" "$HOME"
+  [ "${lines[0]}" = "1 whitelisted" ]
+  [ "${lines[1]}" = unset ]
+  run env MM_WHITELIST_FILE=/dev/null bash -c '. "$1/lib/core.sh"; mm_inuse_refresh >/dev/null 2>&1
+    mm_rm "$2/mine/keep" "$2/mine" >/dev/null 2>&1; echo "$? $MM_SKIP_REASON"' _ "$MM_SRC" "$HOME"
+  [ "$output" = "1 whitelisted" ]
+  [ -f "$HOME/.claude/projects/p/s.jsonl" ]; [ -f "$HOME/mine/keep/f" ]
+  # set for one call by the command that needs it (mm purge, clean worktrees), it still works
+  mm_inuse_refresh
+  MM_KEEP_AGENT_STATE=0 MM_DRY_RUN=1 run try_rm "$HOME/.claude/projects/p" "$HOME/.claude"
+  [ "$output" = "0 " ]
+}
