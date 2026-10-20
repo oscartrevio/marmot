@@ -399,6 +399,45 @@ _purge_tagged_cache() {
   _purge_project_dir "$proj"
 }
 
+# _purge_sync_marker DIR — the file-sync tool whose marker DIR carries, or nothing: Syncthing's
+# .stfolder, Dropbox's .dropbox / .dropbox.cache, the Nextcloud and ownCloud clients' .sync_*.db,
+# ._sync_*.db and .owncloudsync.log, Resilio Sync's .sync/ID.
+_purge_sync_marker() {
+  local d="$1" f
+  [[ -e "$d/.stfolder" ]] && { printf 'Syncthing'; return 0; }
+  [[ -e "$d/.dropbox" || -e "$d/.dropbox.cache" ]] && { printf 'Dropbox'; return 0; }
+  [[ -e "$d/.sync/ID" ]] && { printf 'Resilio Sync'; return 0; }
+  [[ -e "$d/.owncloudsync.log" ]] && { printf 'Nextcloud or ownCloud'; return 0; }
+  for f in "$d"/.sync_*.db "$d"/._sync_*.db; do
+    [[ -e "$f" ]] && { printf 'Nextcloud or ownCloud'; return 0; }
+  done
+  return 1
+}
+
+# Which folders a sync tool owns, per _purge_synced; one answer per directory per run.
+declare -A _PURGE_SYNCED=()
+
+# _purge_synced ART ROOT... — the file-sync tool that keeps a folder above ART in step with other
+# devices, or nothing. Ancestors are read from ART's project up to the ROOT that covers it, or
+# $HOME. Deleting below such a folder deletes on every device it syncs to, and the other devices
+# cannot rebuild it, so callers offer these in the picker only.
+_purge_synced() {
+  local d="${1%/*}" r why="" stop
+  local -a walked=()
+  shift
+  while [[ "$d" == /?* ]]; do
+    if [[ -n "${_PURGE_SYNCED[$d]+x}" ]]; then why="${_PURGE_SYNCED[$d]}"; break; fi
+    walked+=("$d")
+    why=$(_purge_sync_marker "$d") && break
+    stop=0; [[ "$d" == "$HOME" ]] && stop=1
+    for r; do [[ "$d" == "$r" ]] && stop=1; done
+    (( stop )) && break
+    d="${d%/*}"
+  done
+  for d in "${walked[@]}"; do _PURGE_SYNCED[$d]="$why"; done
+  [[ -n "$why" ]] && printf '%s' "$why"
+}
+
 # _purge_gitroot DIR — sets _PURGE_GITROOT to the nearest ancestor-or-self holding .git, below
 # $HOME (a dotfiles repo at $HOME must not group every project together); empty if none.
 _purge_gitroot() {
@@ -1118,7 +1157,7 @@ _purge_run() {
   for r in "${timed[@]}"; do mm_tilde "$r"; mm_warn "Scan of $REPLY stopped after ${_PURGE_SCAN_TIMEOUT}s: results are partial"; done
 
   # ---- finished and abandoned worktrees (before artifacts: removing one takes its artifacts with it)
-  _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=() _PURGE_GH=""
+  _PURGE_PROMPTED=0 _PURGE_PNPM_PATHS=() _PURGE_GH="" _PURGE_SYNCED=()
   [[ "$_PURGE_MODE" == scheduled ]] || _purge_worktrees "$yes" "${roots[@]}"
 
   # ---- validate artifacts. picks[i] is why an artifact is only ever removed by hand: a terminal
@@ -1152,6 +1191,7 @@ _purge_run() {
     proj="${art%/*}"; [[ "$art" == */.nx/cache ]] && proj="${art%/.nx/cache}"
     if [[ -z "${gitroot_of[$proj]+x}" ]]; then _purge_gitroot "$proj"; gitroot_of[$proj]=$_PURGE_GITROOT; fi
     pick=""; (( _PURGE_TAGGED )) && pick="tagged as a cache"
+    g=$(_purge_synced "$art" "${roots[@]}") && pick="${pick:+$pick, }synced by $g"
     arts+=("$art"); projs+=("$proj"); gits+=("${gitroot_of[$proj]}"); picks+=("$pick")
   done
 
