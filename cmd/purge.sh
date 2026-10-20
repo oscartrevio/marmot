@@ -599,9 +599,11 @@ _purge_ask() {
 # _purge_kept LABEL REASON — "◎ label · kept (reason)": items deliberately left alone.
 _purge_kept() { printf '  %s◎%s %s · %skept (%s)%s\n' "$C_DIM" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"; }
 
-# _purge_to_trash ARTIFACT — 0 if ARTIFACT goes to the Trash instead of a permanent delete
-# (virtualenvs can hold hand-installed state).
-_purge_to_trash() { [[ "${1##*/}" == venv || "${1##*/}" == .venv ]]; }
+# _purge_to_trash ARTIFACT — 0 if ARTIFACT goes to the Trash instead of a permanent delete: a
+# virtualenv (pyvenv.cfg), whatever it is called, can hold hand-installed or patched packages.
+_purge_to_trash() {
+  [[ "${1##*/}" == venv || "${1##*/}" == .venv || -f "$1/pyvenv.cfg" ]]
+}
 
 # ---------------------------------------------------------------- pnpm store
 # pnpm hard-links every package file from its content-addressed store into node_modules, so
