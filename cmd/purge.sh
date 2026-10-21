@@ -1159,7 +1159,7 @@ mm_cmd_main() {
   local -a dirs=()
   while (( $# )); do
     case "$1" in
-      --days) [[ $# -ge 2 ]] || mm_die "--days needs a number"; days="$2"; shift ;;
+      --days) [[ $# -ge 2 ]] || mm_die "--days needs a number (see mm purge --help)"; days="$2"; shift ;;
       --days=*) days="${1#*=}" ;;
       --all) all=1 ;;
       -y|--yes) yes=1 ;;

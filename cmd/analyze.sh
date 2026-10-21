@@ -258,7 +258,7 @@ mm_cmd_main() {
       --json) json=1 ;;
       -h|--help) _analyze_usage; return 0 ;;
       -*) mm_die "unknown option: $1 (see mm analyze --help)" ;;
-      *) [[ -z "$path" ]] || mm_die "only one PATH allowed"; path=$1 ;;
+      *) [[ -z "$path" ]] || mm_die "only one PATH allowed (see mm analyze --help)"; path=$1 ;;
     esac
     shift
   done

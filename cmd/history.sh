@@ -76,11 +76,11 @@ mm_cmd_main() {
   local limit=10 json=0
   while (( $# )); do
     case "$1" in
-      -l|--limit) [[ "${2:-}" =~ ^[0-9]+$ ]] || mm_die "$1 needs a number"; limit="$2"; shift ;;
+      -l|--limit) [[ "${2:-}" =~ ^[0-9]+$ ]] || mm_die "$1 needs a number of runs (see mm history --help)"; limit="$2"; shift ;;
       --all) limit=0 ;;
       --json) json=1 ;;
       -h|--help) _history_usage; return 0 ;;
-      *) mm_die "unknown option: $1" ;;
+      *) mm_die "unknown option: $1 (see mm history --help)" ;;
     esac
     shift
   done
