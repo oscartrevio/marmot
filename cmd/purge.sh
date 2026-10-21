@@ -1447,8 +1447,9 @@ _purge_run() {
 
   # ---- selection: dry-run previews the default; --yes is stale only; otherwise ask on the terminal
   local mode=stale; (( all )) && mode=all
-  # Nothing stale and nobody to ask about the rest: that is the whole answer.
-  if (( ! all && stale_n == 0 )) && [[ "$MM_DRY_RUN" == 1 || "$MM_TTY" != 1 ]] || (( ! all && stale_n == 0 && yes )); then
+  # Nothing stale: that is the whole answer, unless there are pick-only artifacts and a terminal
+  # to pick them on (recent ones are for --all, which asks).
+  if (( ! all && stale_n == 0 )) && { (( pick_n == 0 || yes )) || [[ "$MM_DRY_RUN" == 1 || "$MM_TTY" != 1 ]]; }; then
     _purge_banner "$free_before" 0 "Nothing to purge: no project has been idle for over ${days}d (--all or --days N to look further)."
     return 0
   fi
