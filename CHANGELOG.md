@@ -119,6 +119,11 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   status`). Dry runs and runs without a terminal leave it for later.
 - A real terminal run that carries marmot's lifetime freed total (as `mm history` counts it)
   across 10, 50, 100, 250 or 500 GB or 1 TB says so in its banner, once per milestone.
+- `mm status`: the marmot has more moods, still health first: `- o` with a coffee `c[_]` on the
+  night shift (an agent busy between midnight and 6:00), `¬ ¬` tired (an agent session busy for
+  over 12 hours), `^ ^ ✦` proud the day after a cleanup that freed 1GB or more ("freed 4.2GB last
+  night" beside the title), and stuffed cheeks when a full disk is why it is alert or dizzy. It
+  wears a hard hat while a marmot cleanup runs and blinks now and then in the live view.
 
 ### Changed
 

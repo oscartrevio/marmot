@@ -779,8 +779,15 @@ exit 0'
   [ "$(grep -cE '^  codex ' "$HOME/short")" -eq "$n" ]
 }
 
+# at DATE — epoch of DATE (local time), for ST_NOW and MM_TEST_NOW.
+at() { date -d "$1" +%s; }
+
+# clock DATE — mm status (and mm) run as if it were DATE (MM_TEST_NOW, bats only).
+clock() { at "$1" >"$BATS_TEST_TMPDIR/now"; export MM_TEST_NOW="$BATS_TEST_TMPDIR/now"; }
+
 @test "the marmot's face: health first, then a busy CPU, any health reason, then agents at work" {
   status_lib '
+    ST_NOW='"$(at '2026-06-10 12:00')"'
     work=$(printf "1\tclaude\tclaude\t60\t9\t0\t300\t1\t/w") wait=$(printf "2\tcodex\tcodex\t60\t9\t0\t0\t0\t/w")
     face() { ST_SCORE=$1 ST_CPUH=($2) ST_REASONS=(${3:+"$3"}) ST_AGENTS=("${@:4}"); _status_mood; echo "$REPLY"; }
     face 59 100 "disk 95% full" "$work"
@@ -794,6 +801,89 @@ exit 0'
     face 100 100 ""'
   [ "$status" -eq 0 ]
   [ "${lines[*]}" = "dizzy alert alert squint happy neutral happy sleepy sleepy" ]
+}
+
+@test "the marmot's face: night shift, a long session, a recent big cleanup; cheeks when the disk is why" {
+  status_lib '
+    noon='"$(at '2026-06-10 12:00')"' night='"$(at '2026-06-10 03:30')"' dawn='"$(at '2026-06-10 06:00')"'
+    busy=$(printf "1\tclaude\tclaude\t600\t9\t0\t300\t1\t/w") long=$(printf "1\tclaude\tclaude\t50000\t9\t0\t300\t1\t/w")
+    idle=$(printf "2\tcodex\tcodex\t50000\t9\t0\t0\t0\t/w")
+    face() { ST_NOW=$1 ST_SCORE=$2 ST_CPUH=(100) ST_REASONS=(${3:+"$3"}) ST_AGENTS=("${@:4}"); _status_mood; echo "$REPLY$ST_CHEEKS"; }
+    face "$night" 100 "" "$busy"
+    face "$night" 100 "" "$idle"
+    face "$night" 95 "1 orphaned process" "$busy"
+    face "$dawn" 100 "" "$busy"
+    face "$noon" 100 "" "$long"
+    face "$noon" 100 "" "$idle"
+    ST_PROUD_AT=$((noon - 3600)) ST_PROUD_FREED=2147483648
+    face "$noon" 100 "" "$busy"
+    face "$noon" 100 ""
+    face "$noon" 100 "" "$long"
+    face "$noon" 95 "1 orphaned process"
+    ST_PROUD_FREED=1000000000
+    face "$noon" 100 "" "$busy"
+    ST_PROUD_FREED=2147483648 ST_PROUD_AT=$((noon - 90000))
+    face "$noon" 100 "" "$busy"
+    ST_ROOT_PCT=950
+    face "$noon" 75 "disk 95% full" "$busy"
+    face "$noon" 50 "disk 95% full" "$busy"
+    ST_ROOT_PCT=850
+    face "$noon" 75 "memory 5% available" "$busy"'
+  [ "$status" -eq 0 ]
+  [ "${lines[*]}" = "night0 sleepy0 neutral0 happy0 tired0 sleepy0 proud0 proud0 tired0 neutral0 happy0 happy0 alert1 dizzy1 alert0" ]
+}
+
+@test "proud: the newer of the last scheduled run and the log's newest run, said by when it was" {
+  mkdir -p "$XDG_STATE_HOME/marmot"
+  local log="$XDG_STATE_HOME/marmot/operations.log"
+  printf '%s\tclean\tremove\t/x/a\t1073741824\t\tR1\n' "$(date -Iseconds -d '2026-06-09 10:00')" >"$log"
+  printf '%s\tschedule\tremove\t/x/b\t2147483648\t\tR2\n%s\tschedule\trefused\t/x/c\t0\tin use\tR2\n' \
+    "$(date -Iseconds -d '2026-06-10 03:10')" "$(date -Iseconds -d '2026-06-10 03:11')" >>"$log"
+  status_lib '
+    proud() { ST_LAST=0; mm_schedule_last && ST_LAST=1; ST_NOW=$(date -d "$1" +%s) ST_DAY=${1% *}; _status_facts
+      echo "$ST_PROUD_AT $ST_PROUD_FREED $ST_PROUD_NOTE"; }
+    proud "2026-06-10 12:00"
+    proud "2026-06-11 09:00"
+    printf "{\n  \"finished_at\": \"x\",\n  \"finished_epoch\": %s,\n  \"duration_seconds\": 5,\n  \"trigger\": \"manual\",\n  \"freed_bytes\": 3221225472,\n  \"trashed_bytes\": 0,\n  \"items\": 2,\n  \"skipped\": [],\n  \"errors\": []\n}\n" \
+      "$(date -d "2026-06-10 15:00" +%s)" >"$XDG_STATE_HOME/marmot/last-run.json"
+    proud "2026-06-10 20:00"'
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$(at '2026-06-10 03:11') 2147483648 freed 2.0GB last night" ]
+  [ "${lines[1]}" = "$(at '2026-06-10 03:11') 2147483648 freed 2.0GB yesterday" ]
+  [ "${lines[2]}" = "$(at '2026-06-10 15:00') 3221225472 freed 3.0GB this afternoon" ]
+}
+
+@test "the hard hat: a marmot cleanup at work; not a dry run, --help or another command" {
+  status_lib '
+    for a in "bash /x/mm clean" "/bin/bash /x/marmot purge --yes /w" "/x/mm schedule run" "bash /x/mm --debug optimize" \
+      "bash /x/mm uninstall foo" "bash /x/mm clean --dry-run" "bash /x/mm -n purge" "bash /x/mm clean --help" \
+      "bash /x/mm status" "bash /x/mm schedule status" "grep mm clean" "vim /x/mm" "bash /x/mm"; do
+      read -r -a v <<<"$a"
+      if _status_cleanup_argv "${v[@]}"; then echo yes; else echo no; fi
+    done'
+  [ "${lines[*]}" = "yes yes yes yes yes no no no no no no no no" ]
+  # Other tests' cleanups may run alongside this one: only the positive case is checked here.
+  mkdir -p "$SB/fake"
+  printf '#!/bin/bash\nsleep 30\n' >"$SB/fake/mm"
+  mm_test_bg "$SB" bash "$SB/fake/mm" clean
+  status_lib '_status_init; _status_first 0; echo "$ST_ATWORK"; _status_frame_compact 200; _status_cleanup; echo "$MM_LOOK_HAT"'
+  [ "${lines[*]}" = "1 hardhat" ]
+}
+
+@test "blink: the live view closes open eyes for a moment every 8-10 s; a snapshot never does" {
+  (( $(nproc) > 1 )) || skip "one busy core would be all the CPU: squinting, not blinking"
+  clock '2026-06-10 12:00'
+  cp "$(command -v bash)" "$SB/bin/claude"
+  detached "$SB" "$SB/bin/claude" -c 'while :; do :; done'
+  fake_ss "$LISTEN_SSH" ""
+  run env COLUMNS=100 mm status --once
+  [ "$status" -eq 0 ]
+  grep -qE '^   \|  [\^oO]    [\^oO]  \|' <<<"$output"
+  [[ "$output" != *"|  -    -  |"* ]]
+  live 'sleep 13; printf q'
+  [ "$LIVE_STATUS" -eq 0 ]
+  grep -qE '^   \|  [\^oO]    [\^oO]  \|' <<<"$LIVE_TEXT"
+  grep -qF '   |  -    -  |' <<<"$LIVE_TEXT"
 }
 
 @test "views: v switches live between compact and full, repainting the screen" {

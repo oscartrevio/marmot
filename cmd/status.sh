@@ -86,9 +86,12 @@ Health starts at 100 and drops for sustained CPU >85%, load above core count (no
 container), low available memory, swap >50%, root disk >=80%, root inodes >=90%, pending reboot,
 failed units, and orphaned agent or dev processes.
 The marmot over the dashboard shows it at a glance, first match wins: x x health below 60,
-O O ! below 80, > < CPU above 85% over the last three samples, o o any other health reason,
-- - z Z no agent session busy, ^ ^ agents at work on a healthy machine. Short terminals drop it
-first.
+O O ! below 80 (cheeks stuffed when the root disk is full), > < CPU above 85% over the last
+three samples, o o any other health reason, - o c[_] night shift (an agent busy between
+midnight and 6:00), ¬ ¬ tired (an agent session busy for over 12 hours), ^ ^ ✦ proud (a cleanup
+freed 1GB or more in the last 24 hours), ^ ^ agents at work on a healthy machine, - - z Z no
+agent session busy. It wears a hard hat while a marmot cleanup runs, and blinks now and then
+in the live view. Short terminals drop it first.
 EOF
 }
 
@@ -255,6 +258,8 @@ _status_init() {
   ST_CL_ADDR="" ST_CL_NAME="" ST_CL_PATH="" ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0 ST_CL_LAGGY=0
   ST_CL_VIA="" ST_CL_TRANSPORT=none ST_CL_TTY="" ST_CL_IDLE="" ST_TERM_NAME="" ST_TERM_SSH="" ST_TERM_INO=() ST_TERM_LOCAL=0
   ST_RTTH=() ST_TS_FOR="" ST_TS_AT=0
+  # The marmot (see _status_marmot): the clock, whether a cleanup is at work, a blink.
+  ST_NOW=0 ST_DAY="" ST_ATWORK=0 ST_BLINK=0 ST_CHEEKS=0 ST_PROUD_AT=0 ST_PROUD_FREED=0 ST_PROUD_NOTE=""
   _status_sched
   _status_term_find
 }
@@ -393,6 +398,79 @@ _status_sample() {
   _status_procs
   _status_ports
   _status_client
+  _status_clock
+  _status_atwork
+}
+
+# _status_clock — ST_NOW (mm_now) for this sample; on a new local day, and at the start, what
+# depends on the day (_status_facts).
+_status_clock() {
+  local day
+  mm_now
+  ST_NOW=$REPLY
+  printf -v day '%(%F)T' "$ST_NOW"
+  [[ "$day" == "$ST_DAY" ]] && return 0
+  ST_DAY=$day
+  _status_facts
+}
+
+# _status_facts — the newest cleanup, for the proud face: ST_PROUD_AT (epoch) and ST_PROUD_FREED
+# (bytes) of the last scheduled run (lib/schedule.sh) or of the newest run in the operations log,
+# whichever is newer, and ST_PROUD_NOTE for the title ("freed 4.2GB last night").
+# shellcheck disable=SC2031 # MM_LAST_* are set in this shell by mm_schedule_last (_status_sched)
+_status_facts() {
+  local at freed h day w
+  mm_log_facts
+  at=${MM_FACT_LAST_AT:-0} freed=${MM_FACT_LAST_FREED:-0}
+  ((ST_LAST && MM_LAST_EPOCH > at)) && at=$MM_LAST_EPOCH freed=$MM_LAST_FREED
+  ST_PROUD_AT=$at ST_PROUD_FREED=$freed ST_PROUD_NOTE=""
+  ((at)) || return 0
+  printf -v day '%(%F)T' "$at"
+  printf -v h '%(%H)T' "$at"
+  h=$((10#$h))
+  if [[ "$day" == "$ST_DAY" ]]; then
+    if ((h < 6)); then w="last night"; elif ((h < 12)); then w="this morning"
+    elif ((h < 18)); then w="this afternoon"; else w="this evening"; fi
+  elif ((h >= 18)); then w="last night"
+  else w=yesterday; fi
+  ST_PROUD_NOTE="freed $(mm_human "$freed") $w"
+}
+
+# _status_atwork — ST_ATWORK=1 while a marmot cleanup runs (_status_cleanup_argv on every command
+# line in /proc but this one). When it ends, the last run and the log are read again.
+_status_atwork() {
+  local p was=$ST_ATWORK
+  local -a argv
+  ST_ATWORK=0
+  for p in /proc/[0-9]*; do
+    [[ "${p#/proc/}" == "$$" ]] && continue
+    { mapfile -d '' -t argv <"$p/cmdline"; } 2>/dev/null || continue
+    ((${#argv[@]} > 1)) && _status_cleanup_argv "${argv[@]}" && { ST_ATWORK=1; break; }
+  done
+  if ((was && !ST_ATWORK)); then _status_sched; _status_facts; fi
+  return 0
+}
+
+# _status_cleanup_argv ARG... — 0 if ARGs are the command line of a marmot cleanup: bash running
+# mm or marmot (or mm/marmot itself) with clean, purge, optimize, uninstall or schedule run, and
+# neither a dry run nor --help.
+_status_cleanup_argv() {
+  local a cmd="" sub=""
+  [[ "${1##*/}" =~ ^(ba)?sh$ ]] && shift
+  [[ "${1##*/}" == mm || "${1##*/}" == marmot ]] || return 1
+  shift
+  for a; do
+    case "$a" in
+      -n | --dry-run | -h | --help) return 1 ;;
+      -*) ;;
+      *) if [[ -z "$cmd" ]]; then cmd=$a; elif [[ -z "$sub" ]]; then sub=$a; fi ;;
+    esac
+  done
+  case "$cmd" in
+    clean | purge | optimize | uninstall) return 0 ;;
+    schedule) [[ "$sub" == run ]] ;;
+    *) return 1 ;;
+  esac
 }
 
 # _status_cg_mem — memory from the container's cgroup instead of the host's /proc/meminfo (kB,
@@ -1337,21 +1415,34 @@ _status_health() {
 
 # _status_mood — the marmot's face for this frame into REPLY, first match wins: dizzy (health
 # below 60), alert (below 80), squint (CPU above 85% over the last three samples), neutral (any
-# other health reason), sleepy (no agent session busy), happy.
+# other health reason), night (an agent session busy between 00:00 and 05:59 by ST_NOW), tired
+# (an agent session busy that started over 12 hours ago), proud (ST_PROUD_*: a cleanup freed 1GB
+# or more in the last 24 hours), happy (an agent session busy), sleepy. ST_CHEEKS=1 on a dizzy
+# or alert face when the root disk is full (MM_DISK_FULL_PCT): the disk is why.
 _status_mood() {
-  local i n=0 sum=0 e busy
+  local i n=0 sum=0 e age busy any=0 long=0 h now=${ST_NOW:-0}
+  ST_CHEEKS=0
   for ((i = ${#ST_CPUH[@]} - 1; i >= 0 && n < 3; i--)); do sum=$((sum + ST_CPUH[i])) n=$((n + 1)); done
   if ((ST_SCORE < 60)); then REPLY=dizzy
   elif ((ST_SCORE < 80)); then REPLY=alert
   elif ((n && sum / n > 850)); then REPLY=squint
   elif ((${#ST_REASONS[@]})); then REPLY=neutral
   else
-    REPLY=sleepy
     for e in "${ST_AGENTS[@]}"; do
-      IFS=$'\t' read -r _ _ _ _ _ _ _ busy _ <<<"$e"
-      ((busy)) && { REPLY=happy; break; }
+      IFS=$'\t' read -r _ _ _ age _ _ _ busy _ <<<"$e"
+      ((busy)) || continue
+      any=1
+      ((age > 43200)) && long=1
     done
+    printf -v h '%(%H)T' "$now"
+    if ((any && 10#$h < 6)); then REPLY=night
+    elif ((long)); then REPLY=tired
+    elif ((${ST_PROUD_FREED:-0} >= 1073741824 && ${ST_PROUD_AT:-0} <= now && now - ${ST_PROUD_AT:-0} < 86400)); then REPLY=proud
+    elif ((any)); then REPLY=happy
+    else REPLY=sleepy; fi
   fi
+  if [[ "$REPLY" == dizzy || "$REPLY" == alert ]] && ((${ST_ROOT_PCT:-0} >= MM_DISK_FULL_PCT * 10)); then ST_CHEEKS=1; fi
+  return 0
 }
 
 # ---------------------------------------------------------------- panels
@@ -1878,26 +1969,22 @@ _status_panel_sys() {
 # ---------------------------------------------------------------- frame
 
 # _status_marmot WIDTH TITLE FACTS COLOR — the header as five rows into ST_FRAME: the marmot
-# peeking over the dashboard, TITLE and FACTS (dimmed) beside its ears and eyes, its paws and
-# teeth on a rule WIDTH wide. The face is _status_mood's, the eyes in the health COLOR. The
-# caller checks that TITLE fits: 21 columns go to the marmot.
+# (lib/mascot.sh) peeking over the dashboard, TITLE and FACTS (dimmed) beside its ears and eyes,
+# its paws and teeth on a rule WIDTH wide. The face is _status_mood's, the eyes in the health
+# COLOR; a proud face adds its note to TITLE when it fits. A cleanup at work puts on the hard hat,
+# and ST_BLINK=1 (the live view, for a moment) closes open eyes. The caller checks that TITLE
+# fits: 21 columns go to the marmot.
 _status_marmot() {
-  local w=$1 col=$4 l r mark="" rule
+  local w=$1 title=$2 len
   _status_mood
-  case $REPLY in
-    happy) l='^' r='^' ;;
-    neutral) l=o r=o ;;
-    squint) l='>' r='<' ;;
-    sleepy) l=- r=- mark="  ${C_DIM}z Z$C_RESET" ;;
-    alert) l=O r=O mark="  $C_YELLOW!$C_RESET" ;;
-    *) l=x r=x ;;
-  esac
-  printf -v rule '%*s' $((w > 18 ? w - 18 : 0)) ''
-  ST_FRAME+=("     _..--.._$mark"
-    "  ()'        '()     $2"
-    "   |  $col$l$C_RESET    $col$r$C_RESET  |${3:+      $C_DIM$3$C_RESET}"
-    '  .--.  \/  .--.'
-    "$C_DIM--$C_RESET(mm)$C_DIM--${C_RESET}UU$C_DIM--$C_RESET(mm)$C_DIM--${rule// /-}$C_RESET")
+  MM_LOOK_CHEEKS=$ST_CHEEKS MM_LOOK_BLINK=$ST_BLINK MM_LOOK_HAT="" MM_LOOK_GREET=""
+  ((ST_ATWORK)) && MM_LOOK_HAT=hardhat
+  if [[ "$REPLY" == proud && -n "$ST_PROUD_NOTE" ]]; then
+    _status_vlen len "$title"
+    ((len + 2 + ${#ST_PROUD_NOTE} <= w - 21)) && title+="  $C_DIM$ST_PROUD_NOTE$C_RESET"
+  fi
+  mm_marmot_draw "$REPLY" "$w" "$title" "$3" "$4"
+  ST_FRAME+=("${MM_ART[@]}")
 }
 
 # _status_frame_full COLS — render the dashboard into ST_FRAME (array of lines).
@@ -2544,8 +2631,10 @@ _status_paint() {
   [[ -z "$buf" ]] || printf '%s' "$buf"
 }
 
+# _status_live — the live view: a frame every ST_INTERVAL seconds and on a key or a resize. Every
+# 8 to 10 seconds the marmot blinks: ST_BLINK=1 for one frame of 0.15 s (fx_end), between refreshes.
 _status_live() {
-  local interval_us=$((ST_INTERVAL * 1000000)) next now rem t key
+  local interval_us=$((ST_INTERVAL * 1000000)) next now rem t key wake blink_at fx_end=0
   ST_STTY=$(stty -g </dev/tty 2>/dev/null)
   ST_LIVE=1
   trap '_status_cleanup' EXIT
@@ -2561,6 +2650,7 @@ _status_live() {
   _status_first $((${EPOCHREALTIME/[.,]/} + 1500000))
   _status_draw
   next=$((${EPOCHREALTIME/[.,]/} + interval_us))
+  blink_at=$((next - interval_us + 8000000 + RANDOM % 2001 * 1000))
   while :; do
     now=${EPOCHREALTIME/[.,]/}
     if ((now >= next)); then
@@ -2574,7 +2664,16 @@ _status_live() {
       continue
     fi
     if [[ "${ST_RESIZED:-0}" == 1 ]]; then ST_RESIZED=0 ST_REPAINT=1; _status_draw; continue; fi
-    rem=$((next - now))
+    if ((fx_end && now >= fx_end)); then ST_BLINK=0 fx_end=0; _status_draw; continue; fi
+    if ((!fx_end && now >= blink_at)); then
+      ST_BLINK=1 fx_end=$((now + 150000)) blink_at=$((now + 8000000 + RANDOM % 2001 * 1000))
+      _status_draw
+      continue
+    fi
+    wake=$next
+    ((fx_end && fx_end < wake)) && wake=$fx_end
+    ((!fx_end && blink_at < wake)) && wake=$blink_at
+    rem=$((wake - now))
     printf -v t '%d.%06d' $((rem / 1000000)) $((rem % 1000000))
     key=""
     read -rsn1 -t "$t" key 2>/dev/null </dev/tty

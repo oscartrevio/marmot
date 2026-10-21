@@ -23,6 +23,8 @@ MM_LOG_FILE="${MM_LOG_FILE:-$MM_STATE_DIR/operations.log}"
 MM_TRASH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
 # shellcheck source=schedule.sh
 . "$MM_HOME/lib/schedule.sh"
+# shellcheck source=mascot.sh
+. "$MM_HOME/lib/mascot.sh"
 
 : "${MM_DRY_RUN:=0}" "${MM_DEBUG:=0}" "${MM_NO_SUDO:=0}"
 MM_CMD="${MM_CMD:-marmot}"
@@ -1205,6 +1207,38 @@ mm_log() {
 
 # _mm_logs — the operations logs that exist, oldest first (the rotated one, then the current).
 _mm_logs() { local f; for f in "$MM_LOG_FILE.old" "$MM_LOG_FILE"; do [[ -s "$f" ]] && printf '%s\n' "$f"; done; return 0; }
+
+# MM_AWK_EPOCH — awk source of epoch(T): seconds since 1970 of a log row's `date -Iseconds` time.
+MM_AWK_EPOCH='function epoch(t,   y, m, s, o) {
+  y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0
+  if (m < 3) { y--; m += 12 }
+  s = (365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * (m - 3) + 2) / 5) \
+    + substr(t, 9, 2) - 719469) * 86400 + substr(t, 12, 2) * 3600 + substr(t, 15, 2) * 60 + substr(t, 18, 2)
+  o = substr(t, 20)
+  if (o ~ /^[+-][0-9][0-9]:[0-9][0-9]$/) s -= (o ~ /^-/ ? -1 : 1) * (substr(o, 2, 2) * 3600 + substr(o, 5, 2) * 60)
+  return s
+}'
+
+# mm_log_facts — what the operations logs say about the newest run, for the marmot's moods:
+# MM_FACT_LAST_AT (epoch of its last row) and MM_FACT_LAST_FREED (the bytes it freed); both empty
+# when nothing is logged. A run is its run id's rows (an old row without one: its command and hour).
+mm_log_facts() {
+  local -a logs
+  local out
+  MM_FACT_LAST_AT="" MM_FACT_LAST_FREED=""
+  mapfile -t logs < <(_mm_logs)
+  (( ${#logs[@]} )) || return 0
+  out=$(awk -F'\t' "$MM_AWK_FREED"$'\n'"$MM_AWK_EPOCH"'
+    NF < 3 { next }
+    {
+      run = (NF >= 7 && $7 != "") ? $7 : $2 "@" substr($1, 1, 13)
+      if (freed_row($3) && $5 ~ /^[0-9]+$/) f[run] += $5
+      last = run; at[run] = $1
+    }
+    END { if (last != "") printf "%.0f\t%.0f\n", epoch(at[last]), f[last] }' "${logs[@]}")
+  IFS=$'\t' read -r MM_FACT_LAST_AT MM_FACT_LAST_FREED <<<"$out"
+  return 0
+}
 
 # Lifetime totals at which a real interactive run says how far marmot has come, in GB.
 MM_MILESTONES_GB=(10 50 100 250 500 1000)
