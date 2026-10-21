@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# marmot: keep this Linux box clean, fast, and up to date.
+# marmot: keep the machines your coding agents run on clean, fast and healthy.
 set -uo pipefail
 
 MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -24,7 +24,7 @@ declare -A MM_DESC=(
 
 mm_usage() {
   cat <<EOF
-${C_BOLD}marmot${C_RESET} (mm) $MM_VERSION: keep this machine clean, fast, and up to date
+${C_BOLD}marmot${C_RESET} (mm) $MM_VERSION: keeps the machines your coding agents run on clean, fast and healthy
 
 Usage: mm [command] [options]
 Start with: mm clean --dry-run

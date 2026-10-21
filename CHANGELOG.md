@@ -100,6 +100,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   (see mm history --help)`).
 - `mm clean`'s "Kept for you to review" list marks entries with `◎`, the symbol marmot uses for
   everything it leaves alone, instead of a one-off `◦`.
+- One tagline everywhere: `mm --help` and the entry point say what the README says ("the
+  machines your coding agents run on, clean, fast and healthy").
 - CI runs once per pull request, as one job running the suite one file at a time; docs-only
   changes skip it.
 - `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`
