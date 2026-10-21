@@ -88,6 +88,11 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 
 ### Changed
 
+- Times read like speech, the same everywhere: `mm schedule status` says the next run as `in 9h
+  (03:27)` instead of systemd's timestamp, a weekly crontab line runs `on Sunday` (not `day 0`),
+  durations read `12m 34s` (not `754s`), and anything under a minute ago is `just now` (not
+  `0m`). One family of formatters in core (`mm_ago`, `mm_dur`, `mm_when`) serves `mm status`,
+  `mm schedule`, `mm optimize` and the banners.
 - CI runs once per pull request, as one job running the suite one file at a time; docs-only
   changes skip it.
 - `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`

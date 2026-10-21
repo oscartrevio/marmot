@@ -282,7 +282,7 @@ EOF
     and (.system.listening_ports.min_age_seconds == 0)
     and (.system.lingering.processes | any(.pid == $p))' <<<"$JSON"
   run env MM_STATUS_LINGER_AGE=0 mm status --once --view full
-  [[ "$output" == *"listening >0m · oldest"* ]]
+  [[ "$output" == *"listening >0s · oldest"* ]]
   status_json
   jq -e --argjson p "$pid" '
     (.system.listening_ports.ports | all(.pid != $p))

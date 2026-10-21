@@ -229,7 +229,7 @@ esac'
   grep -qx 'systemctl --user daemon-reload' "$CALLS"
   grep -qx 'systemctl --user enable --now marmot-schedule.timer' "$CALLS"
   none grep -qx 'crontab -' "$CALLS"
-  [[ "$output" == *"next run Thu 2026-10-15 03:41:07 UTC"* ]]
+  [[ "$output" == *"next run now"* ]]          # systemd's raw timestamp (in the past here) said in words
   [[ "$output" == *"sudo loginctl enable-linger $(id -un)"* ]]
   run mm schedule enable --weekly          # again: replaces its own units
   [ "$status" -eq 0 ]
@@ -445,7 +445,7 @@ exit 0'
   mkdir -p "$XDG_CONFIG_HOME/marmot"; echo 'trash_keep_days = 30' >"$XDG_CONFIG_HOME/marmot/config"
   run mm schedule run
   run mm schedule
-  [[ "$output" == *"Last run: "*"(0m ago, manual)"*"freed "* ]]
+  [[ "$output" == *"Last run: "*"(just now, manual)"*"freed "* ]]
 }
 
 @test "schedule rejects unknown subcommands and options" {
@@ -485,11 +485,11 @@ status_fakes() {
   (( freed > 1000000 ))
   status_fakes
   run mm status --agent
-  grep -qx "scheduled cleanup: weekly (systemd) · last run 0m ago, freed $(. "$MM_SRC/lib/core.sh"; mm_human "$freed")" <<<"$output"
+  grep -qx "scheduled cleanup: weekly (systemd) · last run just now, freed $(. "$MM_SRC/lib/core.sh"; mm_human "$freed")" <<<"$output"
   run mm status --json
   [ "$(jq -r '.system.scheduled_cleanup | [.scheduled, .backend, .frequency, .last_run.freed_bytes] | join(",")' <<<"$output")" = "true,systemd,weekly,$freed" ]
   run mm status --once
-  grep -qE "^CLEAN +weekly \(systemd\) · last run 0m ago, freed " <<<"$output"
+  grep -qE "^CLEAN +weekly \(systemd\) · last run just now, freed " <<<"$output"
   run mm status --once --view full
   grep -qE "Cleanup +weekly \(systemd\)" <<<"$output"
 }

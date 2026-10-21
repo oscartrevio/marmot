@@ -113,14 +113,8 @@ _status_rate() {
   else printf -v "$1" '%d.%d MB/s' $((__v / 100)) $((__v % 100 / 10)); fi
 }
 
-# _status_dur VAR SECONDS — "3d 12h 45m".
-_status_dur() {
-  local __s=$2 __d __h __m
-  __d=$((__s / 86400)) __h=$((__s % 86400 / 3600)) __m=$((__s % 3600 / 60))
-  if ((__d)); then printf -v "$1" '%dd %dh %dm' "$__d" "$__h" "$__m"
-  elif ((__h)); then printf -v "$1" '%dh %dm' "$__h" "$__m"
-  else printf -v "$1" '%dm' "$__m"; fi
-}
+# _status_dur VAR SECONDS — "3d 12h" (core's mm_dur_r).
+_status_dur() { mm_dur_r "$2"; printf -v "$1" '%s' "$REPLY"; }
 
 # _status_pad VAR TEXT WIDTH — plain TEXT left-aligned in WIDTH characters. printf's %-Ns pads
 # bytes, which misaligns columns after "…" or any non-ASCII name.
@@ -285,8 +279,9 @@ _status_sched_text() {
   local __t __a
   if [[ -n "$ST_SCHED" ]]; then __t="${ST_SCHED#* } (${ST_SCHED%% *})"; else __t="not scheduled: mm schedule enable"; fi
   if ((ST_LAST)); then
-    _status_age __a $(($(date +%s) - MM_LAST_EPOCH))
-    __t+=" · last run $__a ago, freed $(mm_human "$MM_LAST_FREED")"
+    __a=$(mm_ago $(($(date +%s) - MM_LAST_EPOCH)))
+    __t+=" · last run $__a, freed $(mm_human "$MM_LAST_FREED")"
+    ((MM_LAST_TRASHED)) && __t+=", $(mm_human "$MM_LAST_TRASHED") to Trash"
     ((MM_LAST_ERRORS)) && __t+=", $MM_LAST_ERRORS errors (mm schedule status)"
   elif [[ -n "$ST_SCHED" ]]; then
     __t+=" · no run yet"
@@ -1584,18 +1579,8 @@ _status_panel_proc() {
   done
 }
 
-# _status_age VAR SECONDS — two-unit age: "3d 12h", "2h 5m", "1d", "16m".
-_status_age() {
-  local __s=$2 __d __h __m
-  __d=$((__s / 86400)) __h=$((__s % 86400 / 3600)) __m=$((__s % 3600 / 60))
-  if ((__d)); then
-    if ((__h)); then printf -v "$1" '%dd %dh' "$__d" "$__h"; else printf -v "$1" '%dd' "$__d"; fi
-  elif ((__h)); then
-    if ((__m)); then printf -v "$1" '%dh %dm' "$__h" "$__m"; else printf -v "$1" '%dh' "$__h"; fi
-  else
-    printf -v "$1" '%dm' "$__m"
-  fi
-}
+# _status_age VAR SECONDS — two-unit age: "3d 12h", "2h 5m", "1d", "16m", "45s" (core's mm_dur_r).
+_status_age() { mm_dur_r "$2"; printf -v "$1" '%s' "$REPLY"; }
 
 # _status_mid VAR TEXT WIDTH — TEXT cut in the middle to WIDTH chars ("~/devel…/handle/esi"): the
 # start says where, the end says which.

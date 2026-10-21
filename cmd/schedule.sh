@@ -498,6 +498,8 @@ _schedule_status() {
     if _schedule_systemd_ok; then
       state=$(timeout 10 systemctl --user is-enabled "$MM_SCHEDULE_UNIT.timer" 2>/dev/null)
       next=$(timeout 10 systemctl --user show "$MM_SCHEDULE_UNIT.timer" -p NextElapseUSecRealtime --value 2>/dev/null)
+      # systemd prints "Wed 2026-10-22 03:27:00 UTC" (or "n/a"): said as "in 9h (03:27)"
+      if [[ -n "$next" ]] && when=$(date -d "$next" +%s 2>/dev/null); then next=$(mm_when "$when"); else next=""; fi
       if [[ "$state" == enabled ]]; then
         mm_ok "systemd user timer $MM_SCHEDULE_UNIT.timer" "$cal + up to $_SCHEDULE_DELAY${next:+ · next run $next}"
       else
@@ -521,7 +523,7 @@ _schedule_status() {
       any=1
       read -r -a f <<<"$line"
       when="daily at $(printf '%02d:%02d' "${f[1]}" "${f[0]}")"
-      [[ "${f[4]}" == '*' ]] || when="weekly (day ${f[4]}) at $(printf '%02d:%02d' "${f[1]}" "${f[0]}")"
+      [[ "${f[4]}" == '*' ]] || when="weekly on $(_schedule_weekday "${f[4]}") at $(printf '%02d:%02d' "${f[1]}" "${f[0]}")"
       mm_ok "crontab line" "$when"
       # The run gets the crontab's settings above the line, then the line's own NAME=VALUE words.
       _schedule_drift "$(_schedule_cron_env "${_SCHEDULE_CRONTAB%%"$line"*}")"$'\n'"$(printf '%s\n' "${f[@]:5}" | awk '/^[A-Za-z_][A-Za-z0-9_]*=/ { print; next } { exit }')"
@@ -535,10 +537,16 @@ _schedule_status() {
   fi
 }
 
+# _schedule_weekday N — cron's day of the week as a name (0 and 7 are Sunday); N itself otherwise.
+_schedule_weekday() {
+  local -a d=(Sunday Monday Tuesday Wednesday Thursday Friday Saturday Sunday)
+  if [[ "$1" =~ ^[0-7]$ ]]; then printf '%s' "${d[$1]}"; else printf 'day %s' "$1"; fi
+}
+
 # _schedule_last_line — one line about the last run (after mm_schedule_last).
 _schedule_last_line() {
-  printf '%s (%s ago, %s) · took %ss · freed %s' "${MM_LAST_AT/T/ }" "$(mm_ago $(( $(date +%s) - MM_LAST_EPOCH )))" \
-    "$MM_LAST_TRIGGER" "$MM_LAST_DURATION" "$(mm_human "$MM_LAST_FREED")"
+  printf '%s (%s, %s) · took %s · freed %s' "${MM_LAST_AT/T/ }" "$(mm_ago $(( $(date +%s) - MM_LAST_EPOCH )))" \
+    "$MM_LAST_TRIGGER" "$(mm_dur "$MM_LAST_DURATION")" "$(mm_human "$MM_LAST_FREED")"
   (( MM_LAST_TRASHED )) && printf ' · %s to Trash' "$(mm_human "$MM_LAST_TRASHED")"
   printf ' · %s items · %s skipped · %s errors' "$MM_LAST_ITEMS" "$MM_LAST_SKIPPED" "$MM_LAST_ERRORS"
 }

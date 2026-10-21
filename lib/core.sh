@@ -107,11 +107,39 @@ MM_AWK_HUMAN='function human(b, u, i) {
 # mm_human BYTES — 1.2GB / 340.0MB / 12KB.
 mm_human() { awk -v b="${1:-0}" "$MM_AWK_HUMAN"' BEGIN { printf "%s", human(b) }'; }
 
-# mm_ago SECONDS — a span as one unit: "16m" under an hour, "16h" under two days, else "3d".
+# Ages and durations read the same everywhere (mm status, mm schedule status, banners): mm_dur for
+# how long something took or has been running, mm_ago for when something happened.
+
+# mm_dur_r SECONDS — the span in its two largest units, in REPLY (no subshell: mm status renders
+# call it every tick): "45s", "12m 34s", "2h 5m", "3d 12h"; a zero second unit is left out.
+mm_dur_r() {
+  local s=$(( $1 < 0 ? 0 : $1 )) a b u v
+  if (( s < 60 )); then REPLY="${s}s"; return; fi
+  if (( s < 3600 )); then a=$((s / 60)) u=m b=$((s % 60)) v=s
+  elif (( s < 86400 )); then a=$((s / 3600)) u=h b=$((s % 3600 / 60)) v=m
+  else a=$((s / 86400)) u=d b=$((s % 86400 / 3600)) v=h; fi
+  REPLY="$a$u"; (( b )) && REPLY+=" $b$v"
+  return 0
+}
+# mm_dur SECONDS — mm_dur_r, printed.
+mm_dur() { mm_dur_r "$1"; printf '%s' "$REPLY"; }
+
+# mm_ago SECONDS — when something happened, SECONDS ago: "just now" under a minute, else one unit
+# ("16m ago" under an hour, "16h ago" under two days, "3d ago").
 mm_ago() {
-  if (( $1 < 3600 )); then printf '%dm' $(( $1 / 60 ))
-  elif (( $1 < 172800 )); then printf '%dh' $(( $1 / 3600 ))
-  else printf '%dd' $(( $1 / 86400 )); fi
+  if (( $1 < 60 )); then printf 'just now'
+  elif (( $1 < 3600 )); then printf '%dm ago' $(( $1 / 60 ))
+  elif (( $1 < 172800 )); then printf '%dh ago' $(( $1 / 3600 ))
+  else printf '%dd ago' $(( $1 / 86400 )); fi
+}
+
+# mm_when EPOCH — a moment ahead: "in 9h (03:27)", "in 2d (Sun 03:27)", "in 5m (14:02)", or "now"
+# when it is due.
+mm_when() {
+  local d=$(( $1 - $(date +%s) )) at
+  (( d <= 0 )) && { printf 'now'; return; }
+  if (( d < 86400 )); then at=$(date -d "@$1" +%H:%M); else at=$(date -d "@$1" '+%a %H:%M'); fi
+  mm_dur_r "$d"; printf 'in %s (%s)' "${REPLY%% *}" "$at"
 }
 
 # mm_tilde PATH — PATH with a leading $HOME shown as ~, in REPLY. No subshell: status renders

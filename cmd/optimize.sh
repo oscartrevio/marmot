@@ -463,7 +463,7 @@ _optimize_orphan_line() {
   local pid start age bytes comm cwd args agent
   IFS=$'\t' read -r pid start age bytes comm cwd args <<<"$1"
   agent=$(_optimize_agent_of "$pid" "$comm") && comm+=" [$agent]"
-  printf '%-7s %-16s %-8s %9s  %s  %s\n' "$pid" "$comm" "$(mm_ago "$age")" \
+  printf '%-7s %-16s %-8s %9s  %s  %s\n' "$pid" "$comm" "$(mm_dur "$age")" \
     "$(mm_human "$bytes")" "$cwd" "$args"
 }
 
@@ -686,7 +686,7 @@ _optimize_browser_line() {
   [[ -n "$tree" ]] && n=$(( $(wc -w <<<"$tree") + 1 ))
   [[ "$profile" == - ]] && profile="(no profile dir)"
   printf '%-7s %-14s %-6s %9s  %s · %s processes · parent %s\n' "$pid" "$name" \
-    "$(mm_ago "$age")" "$(mm_human "$bytes")" "$profile" "$n" "$parent"
+    "$(mm_dur "$age")" "$(mm_human "$bytes")" "$profile" "$n" "$parent"
 }
 
 _optimize_browser_task() {
@@ -786,7 +786,7 @@ _optimize_disk() {
   elif ! command -v fstrim >/dev/null; then
     _optimize_skipped "SSD TRIM" "fstrim not installed"
   elif last=$(_optimize_last_trim) && since=$(( $(date +%s) - last )) && (( since < 86400 )); then
-    _optimize_unchanged "SSD TRIM" "fstrim.timer ran $(mm_ago "$since") ago"
+    _optimize_unchanged "SSD TRIM" "fstrim.timer ran $(mm_ago "$since")"
   elif [[ "$MM_DRY_RUN" != 1 ]] && ! mm_can_sudo; then
     _optimize_skipped "SSD TRIM" "needs sudo"
   elif mm_run "fstrim /" mm_sudo fstrim -v /; then

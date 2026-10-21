@@ -315,6 +315,18 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
 EOF
 }
 
+@test "ages and durations: never 0m, two units for durations, 'in 9h (03:27)' ahead" {
+  [ "$(mm_ago 5)" = "just now" ]
+  [ "$(mm_ago 960)" = "16m ago" ]
+  [ "$(mm_dur 754)" = "12m 34s" ]
+  [ "$(mm_dur 45)" = "45s" ]
+  [ "$(mm_dur 7200)" = "2h" ]
+  [ "$(mm_dur 302400)" = "3d 12h" ]
+  local t=$(( $(date +%s) + 9 * 3600 + 30 ))
+  [ "$(mm_when "$t")" = "in 9h ($(date -d "@$t" +%H:%M))" ]
+  [ "$(mm_when 1)" = now ]
+}
+
 @test "frees counts only files whose every hard link is inside; mm_rm frees exactly that" {
   mkdir -p "$SB/root/a" "$SB/store"
   head -c 40960 /dev/urandom >"$SB/store/shared"; ln "$SB/store/shared" "$SB/root/a/shared"
