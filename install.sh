@@ -252,8 +252,8 @@ _in_the_way() {
     die "$prefix already has ${blocked[*]:0:5}, which marmot did not install and would overwrite; nothing changed: move them away or set MARMOT_PREFIX"
 }
 
-# _finale — the first-run message: the marmot, then three next steps. Printed only; nothing is
-# written to the shell files.
+# _finale — the first-run message: the marmot, three next steps, then the completion line for each
+# shell whose rc file does not load it yet. Printed only: nothing is run, no rc file is written.
 _finale() {
   cat <<'ART'
      _..--.._
@@ -263,12 +263,19 @@ _finale() {
 --(mm)--UU--(mm)--------------------------------------------
 ART
   say ""
-  say "marmot is installed. Three next steps (nothing was written to your shell files):"
-  say "  1. mm status             see what the machine is doing"
-  say "  2. mm clean --dry-run    preview what cleanup would remove"
-  say "  3. shell completion:"
-  say "       bash: echo 'source $prefix/completion/mm.bash' >> ~/.bashrc"
-  say "       zsh:  echo 'fpath=($prefix/completion \$fpath)' >> ~/.zshrc   # before compinit"
+  say "marmot is installed. Three next steps:"
+  say "  1. mm clean --dry-run    preview: lists what mm clean would remove, deletes nothing"
+  say "  2. mm status             see what the machine is doing"
+  say "  3. mm schedule enable    clean up on a schedule"
+  local bash_hint=1 zsh_hint=1
+  grep -qsF -- "$prefix/completion" ~/.bashrc && bash_hint=0
+  grep -qsF -- "$prefix/completion" ~/.zshrc && zsh_hint=0
+  (( bash_hint || zsh_hint )) || return 0
+  say ""
+  say "Shell completion:"
+  (( bash_hint )) && say "  bash: echo 'source $prefix/completion/mm.bash' >> ~/.bashrc"
+  (( zsh_hint )) && say "  zsh:  echo 'fpath=($prefix/completion \$fpath)' >> ~/.zshrc   # before compinit"
+  return 0
 }
 
 install() {

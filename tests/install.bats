@@ -302,8 +302,33 @@ listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
   [ "$status" -eq 0 ]
   [[ "$output" == *"marmot is installed"* ]]
   [[ "$output" == *"mm clean --dry-run"* ]]
-  [[ "$output" == *"source $MARMOT_PREFIX/completion/mm.bash"* ]]
+  [[ "$output" == *"mm status"* ]]
+  [[ "$output" == *"mm schedule enable"* ]]
   run "$MM_SRC/install.sh"
   [ "$status" -eq 0 ]
   [[ "$output" != *"marmot is installed"* ]]
+}
+
+@test "the first-run steps are printed, never run" {
+  local calls="$SB/mm-calls"
+  mm_test_fake mm "echo \"\$*\" >>'$calls'"
+  PATH="$BATS_TEST_TMPDIR/stubs:$MARMOT_BIN:$PATH" run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mm clean --dry-run"* ]]
+  [ ! -e "$calls" ]
+  [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
+}
+
+@test "the completion hint is shown only for a shell whose rc file does not load it yet" {
+  printf 'source %s/completion/mm.bash\n' "$MARMOT_PREFIX" >~/.bashrc
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"completion/mm.bash"* ]]
+  [[ "$output" == *"fpath=($MARMOT_PREFIX/completion"* ]]
+  "$MM_SRC/install.sh" --uninstall >/dev/null
+  rm ~/.bashrc
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"source $MARMOT_PREFIX/completion/mm.bash"* ]]
+  [ ! -e ~/.bashrc ]
 }

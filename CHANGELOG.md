@@ -76,8 +76,9 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   the same line `--agent` prints.
 - `mm update` and `mm update --check` list the CHANGELOG bullets the incoming commits add, after
   the commit subjects.
-- `install.sh` ends a fresh install with three next steps (`mm status`, `mm clean --dry-run`, shell
-  completion), printed only, and names the apt packages for the optional tools it lacks.
+- `install.sh` ends a fresh install with three next steps (`mm clean --dry-run` as a preview,
+  `mm status`, `mm schedule enable`), printed only, then the shell completion line for a shell
+  whose rc file does not load it yet, and names the apt packages for the optional tools it lacks.
 - Shell completion (bash and zsh) offers `-h` and `-v` with `--help` and `--version` at the top level.
 - `~/.config/marmot/agents`: add any coding agent or orchestrator in the same row format as the
   built-in table; its state is protected and its sessions show in `mm status`.
