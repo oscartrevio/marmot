@@ -169,11 +169,13 @@ mm_confirm() {
 # A spinner on stderr for silent phases, only on a terminal run whose stderr is the terminal, and
 # never with machine output (MM_NO_SPIN=1: --json, --agent). Never on stdout.
 
-MM_SPIN_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+# An array, not a string: a substring of a string counts bytes in the C locale and would cut a
+# frame in half.
+MM_SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
 # mm_spin_ok — 0 when a spinner may be drawn.
 mm_spin_ok() { [[ "$MM_TTY" == 1 && -t 2 && "${MM_NO_SPIN:-0}" != 1 ]]; }
 # mm_spin_frame N TEXT — draw frame N with TEXT over the current stderr line.
-mm_spin_frame() { printf '\r\e[K  %s%s%s %s' "$CE_CYAN" "${MM_SPIN_FRAMES:$(($1 % 10)):1}" "$CE_RESET" "$2" >&2; }
+mm_spin_frame() { printf '\r\e[K  %s%s%s %s' "$CE_CYAN" "${MM_SPIN_FRAMES[$1 % 10]}" "$CE_RESET" "$2" >&2; }
 # mm_spin_clear — erase the spinner line.
 mm_spin_clear() { printf '\r\e[K' >&2; }
 # mm_spin_start TEXT — keep a spinner turning in the background until mm_spin_stop, for a step
