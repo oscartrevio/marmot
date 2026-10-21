@@ -1228,7 +1228,7 @@ _purge_run() {
   fi
 
   local free_before; free_before=$(mm_free_bytes /)
-  if [[ "$_PURGE_MODE" == scheduled ]]; then mm_section "Stale build artifacts"; else mm_header "Purge Project Artifacts"; fi
+  if [[ "$_PURGE_MODE" == scheduled ]]; then mm_section "Stale build artifacts"; else mm_header "Purge project artifacts"; fi
   for r in "${missing[@]}"; do mm_tilde "$r"; mm_skip "$REPLY" "not found"; done
 
   # ---- scan: artifacts, repositories, worktrees

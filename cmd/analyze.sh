@@ -278,7 +278,7 @@ mm_cmd_main() {
   if (( json )); then _analyze_json "$used" "$free" "${rows[@]}"; return; fi
 
   local header
-  header="Analyze Disk  ($(mm_human "$free") free)"
+  header="Analyze disk  ($(mm_human "$free") free)"
   if [[ "$MM_TTY" == 1 && -t 1 ]] && command -v fzf >/dev/null && (( ${#rows[@]} )); then
     local pick
     pick=$(_analyze_render "$used" "${rows[@]}" | fzf --ansi --reverse --no-multi --no-sort \

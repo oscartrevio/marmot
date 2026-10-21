@@ -2092,7 +2092,7 @@ mm_cmd_main() {
     sessions=$_CLEAN_KEEP_DAYS from=config
   fi
 
-  mm_header "Clean Your System"
+  mm_header "Clean your system"
   mm_catalog_load
   # Asked before the snapshot: with root it also sees every user's processes.
   mm_sudo_ask "the System steps (apt, journal, snaps, old logs, crash dumps) and a full in-use check"

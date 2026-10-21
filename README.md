@@ -19,7 +19,7 @@ anything an agent or tool still needs.
 ```text
 $ mm purge --dry-run --yes ~/code
 
-Purge Project Artifacts  (dry run: nothing will change)
+Purge project artifacts  (dry run: nothing will change)
 
 ⚙ Ubuntu 24.04.5 LTS · 2 cores · 4GB RAM | Free: 89.2GB | Up 2d 16h 33m
   Scanned ~/code in 0.0s · artifacts idle > 14d are stale

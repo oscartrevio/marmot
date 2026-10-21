@@ -901,9 +901,9 @@ mm_cmd_main() {
   local tail="$_OPTIMIZE_UNCHANGED unchanged | $_OPTIMIZE_SKIPPED skipped"
   (( _OPTIMIZE_ATTENTION )) && tail+=" | $_OPTIMIZE_ATTENTION need attention"
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    mm_banner "Dry Run Complete" "Would apply $_OPTIMIZE_APPLIED optimizations" "$tail" \
+    mm_banner "Dry run complete" "Would apply $_OPTIMIZE_APPLIED optimizations" "$tail" \
       "Run without --dry-run to apply."
   else
-    mm_banner "Optimization Complete" "Applied $_OPTIMIZE_APPLIED optimizations" "$tail"
+    mm_banner "Optimization complete" "Applied $_OPTIMIZE_APPLIED optimizations" "$tail"
   fi
 }

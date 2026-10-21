@@ -145,7 +145,7 @@ _schedule_run() {
     _SCHEDULE_STARTED=$(date -Iseconds) _SCHEDULE_T0=$(date +%s)
     trap '_schedule_abort' EXIT
   fi
-  mm_header "Scheduled Cleanup"
+  mm_header "Scheduled cleanup"
   mm_catalog_load
   mm_inuse_refresh
   local free0 free1 total items delta sign=+
