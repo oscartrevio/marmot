@@ -188,14 +188,18 @@ check() {
   local c missing=()
   for c in find awk sed grep stat realpath du df; do command -v "$c" >/dev/null || missing+=("$c"); done
   (( ${#missing[@]} == 0 )) || die "missing required tools: ${missing[*]}"
-  command -v git >/dev/null || say "git not found: everything works except mm update (install git and clone marmot to use it)."
-  command -v apt-get >/dev/null || warn "no apt-get: system-package steps will be skipped (marmot targets Ubuntu/Debian)."
-  local opt=()
-  command -v fzf >/dev/null      || opt+=("fzf (pickers)")
-  command -v ncdu >/dev/null     || opt+=("ncdu (mm analyze PATH)")
-  command -v jq >/dev/null       || opt+=("jq (--json output)")
-  command -v trash-restore >/dev/null || opt+=("trash-cli (trash-restore)")
-  (( ${#opt[@]} == 0 )) || say "Optional, recommended: sudo apt-get install fzf ncdu jq trash-cli   # ${opt[*]}"
+  command -v git >/dev/null || say "Git not found: everything works except mm update (install git and clone marmot to use it)."
+  command -v apt-get >/dev/null || warn "No apt-get: system-package steps will be skipped (marmot targets Ubuntu/Debian)."
+  local opt=() pkg=()
+  command -v fzf >/dev/null      || { opt+=("fzf (pickers)"); pkg+=(fzf); }
+  command -v ncdu >/dev/null     || { opt+=("ncdu (mm analyze PATH)"); pkg+=(ncdu); }
+  command -v jq >/dev/null       || { opt+=("jq (--json output)"); pkg+=(jq); }
+  command -v trash-restore >/dev/null || { opt+=("trash-cli (trash-restore)"); pkg+=(trash-cli); }
+  if (( ${#opt[@]} )); then
+    say "Optional tools missing (recommended):"
+    printf '  %s\n' "${opt[@]}"
+    say "  Install them with: sudo apt-get install ${pkg[*]}"
+  fi
 }
 
 # record_source — write $prefix/.install-source: plain key=value lines (read, never sourced).
@@ -212,8 +216,8 @@ record_source() {
     return 0
   fi
   printf 'source=%s\ncommit=%s\ndescribe=%s\nbin=%s\n' "$src" "$commit" "$describe" "$bin" >"$prefix/.install-source"
-  if [[ -n "$commit" ]]; then say "recorded source $src at ${commit:0:7} (for mm update)"
-  else say "recorded source $src (not a git checkout: mm update needs a git clone)"; fi
+  if [[ -n "$commit" ]]; then say "✓ recorded source $src at ${commit:0:7} (for mm update)"
+  else say "! recorded source $src: not a git checkout, so mm update needs a git clone"; fi
 }
 
 # write_manifest — list the copied files (files, from install) in $prefix/.install-manifest:
@@ -248,10 +252,29 @@ _in_the_way() {
     die "$prefix already has ${blocked[*]:0:5}, which marmot did not install and would overwrite; nothing changed: move them away or set MARMOT_PREFIX"
 }
 
+# _finale — the first-run message: the marmot, then three next steps. Printed only; nothing is
+# written to the shell files.
+_finale() {
+  cat <<'ART'
+     _..--.._
+  ()'        '()     marmot
+   |  ^    ^  |      Keep the machines your coding agents
+  .--.  \/  .--.     run on clean, fast and healthy.
+--(mm)--UU--(mm)--------------------------------------------
+ART
+  say ""
+  say "marmot is installed. Three next steps (nothing was written to your shell files):"
+  say "  1. mm status             see what the machine is doing"
+  say "  2. mm clean --dry-run    preview what cleanup would remove"
+  say "  3. shell completion:"
+  say "       bash: echo 'source $prefix/completion/mm.bash' >> ~/.bashrc"
+  say "       zsh:  echo 'fpath=($prefix/completion \$fpath)' >> ~/.zshrc   # before compinit"
+}
+
 install() {
   check
   _foreign mm && die "$bindir/mm exists and is not a marmot launcher: move it away or set MARMOT_BIN, then run install.sh again"
-  local copied=0 top f files=() dirs=()
+  local copied=0 fresh=0 top f files=() dirs=()
   owned=()
   if [[ "$(readlink -f "$prefix" 2>/dev/null)" != "$src" ]]; then
     [[ ! -L "$prefix" ]] ||
@@ -264,6 +287,7 @@ install() {
       if [[ -d "$src/$f" && ! -L "$src/$f" ]]; then dirs+=("$f"); else files+=("$f"); fi
     done < <(cd "$src" && find "${PAYLOAD[@]}" -print0)
     files+=(.install-source)
+    [[ -e "$prefix" ]] || fresh=1
     if [[ -e "$prefix" ]]; then
       real=$(realpath -e -- "$prefix")
       _owned || die "$prefix exists and is not a marmot install; set MARMOT_PREFIX."
@@ -272,7 +296,7 @@ install() {
     fi
     mkdir -p "$prefix"
     cp -R -- "${PAYLOAD[@]/#/$src/}" "$prefix/"
-    say "installed to $prefix"
+    say "✓ installed to $prefix"
     copied=1
   fi
   mkdir -p "$bindir"
@@ -280,12 +304,7 @@ install() {
   _link mm
   _link marmot || true
   case ":$PATH:" in *":$bindir:"*) ;; *) _path_hint ;; esac
-  say ""
-  say "Shell completion:"
-  say "  bash: echo 'source $prefix/completion/mm.bash' >> ~/.bashrc"
-  say "  zsh:  echo 'fpath=($prefix/completion \$fpath)' >> ~/.zshrc   # before compinit"
-  say ""
-  say "Start with a preview:  mm clean --dry-run"
+  if (( fresh )); then _finale; fi
 }
 
 case "${1:-}" in

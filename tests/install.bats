@@ -290,8 +290,20 @@ listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
   [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
   [[ "$output" == *"~/.zshrc"* || "$output" == *"$HOME/.zshrc"* ]]
   [[ "$output" == *"export PATH=\"$MARMOT_BIN:\$PATH\""* || "$output" == *'export PATH="$HOME/'* ]]
+  [[ "$output" == *"sudo apt-get install fzf ncdu jq trash-cli"* ]]
   mkdir -p "$SB/proj/.git"
   MARMOT_PREFIX="$SB/proj/tools/marmot" PATH="$tools" run "$MM_SRC/install.sh"
   [ "$status" -ne 0 ]
   [ ! -e "$SB/proj/tools" ]
+}
+
+@test "a fresh install ends with the first-run steps; a reinstall does not repeat them" {
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"marmot is installed"* ]]
+  [[ "$output" == *"mm clean --dry-run"* ]]
+  [[ "$output" == *"source $MARMOT_PREFIX/completion/mm.bash"* ]]
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"marmot is installed"* ]]
 }
