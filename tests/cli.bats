@@ -231,3 +231,24 @@ teardown() { mm_test_teardown; }
   [ "$status" -ne 0 ]
   [[ "$output" == *"jq is required for --json"* ]]
 }
+
+# log_rows ROW... — write operations-log rows (TSV) to the log.
+log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE_HOME/marmot/operations.log"; }
+
+@test "the first terminal run after scheduled runs says what they did, once; dry runs leave it" {
+  mkdir -p "$SB/empty"
+  log_rows "$(date -Iseconds -d '2 days ago')"$'\tschedule\tremove\t/x/a\t3145728\t\tS1' \
+    "$(date -Iseconds -d '1 day ago')"$'\tschedule\ttrash\t/x/b\t1048576\t/t/b\tS2' \
+    "$(date -Iseconds -d '1 day ago')"$'\tschedule\tfailed\t/x/c\t0\trm failed\tS2'
+  local stamp="$XDG_STATE_HOME/marmot/schedule-seen"
+  MM_TTY=1 run mm purge --dry-run "$SB/empty"
+  [[ "$output" != *"While you were away"* ]]
+  [ ! -e "$stamp" ]                                             # a dry run reports nothing, marks nothing
+  run mm purge "$SB/empty"                                      # no terminal: the same
+  [ ! -e "$stamp" ]
+  MM_TTY=1 run mm purge "$SB/empty"
+  grep -qx 'While you were away: 2 scheduled runs freed 3.0MB, moved 1.0MB to the Trash, 1 failed (mm schedule status)' <<<"$output"
+  [ -s "$stamp" ]
+  MM_TTY=1 run mm purge "$SB/empty"
+  [[ "$output" != *"While you were away"* ]]                    # said once
+}

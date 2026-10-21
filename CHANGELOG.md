@@ -106,6 +106,9 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   already tidy.`) with when the next scheduled cleanup is due, or how to schedule one, instead of
   a banner of zeros; `mm purge` likewise. Section headings with nothing under them are no longer
   printed.
+- The first terminal run after scheduled cleanups says what they did, once: `While you were
+  away: 3 scheduled runs freed 4.2GB` (plus the Trash and failures, pointing at `mm schedule
+  status`). Dry runs and runs without a terminal leave it for later.
 
 ### Changed
 

@@ -62,11 +62,16 @@ else
 fi
 MM_RULE="======================================================================"
 
-# mm_header TITLE — command title plus a one-line system summary.
+# mm_header TITLE — command title plus a one-line system summary, and on the first terminal run
+# after scheduled cleanups what they did (mm_away_line).
 mm_header() {
+  local away
   printf '\n%s%s%s' "$C_BOLD" "$1" "$C_RESET"
   [[ "$MM_DRY_RUN" == 1 ]] && printf '  %s(dry run: nothing will change)%s' "$C_YELLOW" "$C_RESET"
   printf '\n\n%s⚙%s %s\n' "$C_CYAN" "$C_RESET" "$(mm_sysline)"
+  away=$(mm_away_line)
+  [[ -n "$away" ]] && printf '%s%s%s\n' "$C_DIM" "$away" "$C_RESET"
+  return 0
 }
 mm_section() { _MM_PENDING=""; printf '\n%s➤ %s%s\n' "$C_BOLD$C_BLUE" "$1" "$C_RESET"; }
 # mm_section_lazy TITLE — a heading printed only once a line goes under it (mm_ok, mm_skip,
@@ -1194,6 +1199,38 @@ mm_log() {
   local target="${2//[[:cntrl:]]/?}" detail="${4:-}"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$MM_CMD" "$1" "$target" "${3:-0}" \
     "${detail//[[:cntrl:]]/?}" "${MM_RUN_ID:-}" >>"$MM_LOG_FILE"
+}
+
+# _mm_logs — the operations logs that exist, oldest first (the rotated one, then the current).
+_mm_logs() { local f; for f in "$MM_LOG_FILE.old" "$MM_LOG_FILE"; do [[ -s "$f" ]] && printf '%s\n' "$f"; done; return 0; }
+
+MM_AWAY_STAMP="$MM_STATE_DIR/schedule-seen"   # when an interactive run last reported scheduled runs
+
+# mm_away_line — on a real terminal run: "While you were away: 3 scheduled runs freed 4.2GB"
+# (+ what went to the Trash, + failures with where to look) for the scheduled runs logged since
+# the last report, then marks them reported. Says and writes nothing in a dry run, without a
+# terminal, for mm schedule itself, or when there is nothing new.
+mm_away_line() {
+  [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 && "$MM_CMD" != schedule ]] || return 0
+  local -a logs; mapfile -t logs < <(_mm_logs)
+  (( ${#logs[@]} )) || return 0
+  local since="" out runs freed trashed failed now
+  [[ -r "$MM_AWAY_STAMP" ]] && read -r since <"$MM_AWAY_STAMP"
+  now=$(date -Iseconds)
+  # Rows carry date -Iseconds, like the stamp: on one machine they compare as strings.
+  read -r runs freed trashed failed < <(awk -F'\t' -v since="$since" "$MM_AWK_FREED"'
+    $2 == "schedule" && $1 > since {
+      if (!($7 in seen)) { seen[$7] = 1; r++ }
+      b = ($5 ~ /^[0-9]+$/) ? $5 : 0
+      if (freed_row($3)) f += b; else if ($3 == "trash") t += b; else if ($3 == "failed") e++
+    }
+    END { printf "%d %.0f %.0f %d\n", r, f, t, e }' "${logs[@]}")
+  mkdir -p "$MM_STATE_DIR" && printf '%s\n' "$now" >"$MM_AWAY_STAMP"
+  (( runs )) || return 0
+  out="While you were away: $runs scheduled run$( (( runs > 1 )) && echo s) freed $(mm_human "$freed")"
+  (( trashed )) && out+=", moved $(mm_human "$trashed") to the Trash"
+  (( failed )) && out+=", $failed failed (mm schedule status)"
+  printf '%s' "$out"
 }
 
 # ---------------------------------------------------------------- safe actions
