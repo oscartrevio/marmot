@@ -118,7 +118,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   away: 3 scheduled runs freed 4.2GB` (plus the Trash and failures, pointing at `mm schedule
   status`). Dry runs and runs without a terminal leave it for later.
 - A real terminal run that carries marmot's lifetime freed total (as `mm history` counts it)
-  across 10, 50, 100, 250 or 500 GB or 1 TB says so in its banner, once per milestone.
+  across 10, 50, 100, 250 or 500 GB or 1 TB says so in its banner, once per milestone. The banner
+  also celebrates marmot's first cleanup on a machine, its 10th, 100th and 1000th, a new record
+  for one run (1GB or more), and, on their day, the anniversary of its first run and last year's
+  review in the first week of January; each once.
 - `mm status`: the marmot has more moods, still health first: `- o` with a coffee `c[_]` on the
   night shift (an agent busy between midnight and 6:00), `¬ ¬` tired (an agent session busy for
   over 12 hours), `^ ^ ✦` proud the day after a cleanup that freed 1GB or more ("freed 4.2GB last

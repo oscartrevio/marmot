@@ -1288,27 +1288,71 @@ mm_greeting() {
   REPLY=${MM_LOOK_GREETS[0]:-}
 }
 
-# Lifetime totals at which a real interactive run says how far marmot has come, in GB.
+# Lifetime totals at which a real interactive run says how far marmot has come, in GB, and run
+# counts at which it says how many cleanups that makes.
 MM_MILESTONES_GB=(10 50 100 250 500 1000)
+MM_MILESTONES_RUNS=(10 100 1000)
+MM_CELEBRATED="$MM_STATE_DIR/celebrated"   # "anniversary 2027", "review 2027": said in a banner
 
-# mm_milestone_line — after a real run on a terminal: "marmot has now freed 100GB on this
-# machine" when this run (its MM_RUN_ID rows) carried the freed total of the logs across one of
-# MM_MILESTONES_GB; the highest one crossed. Nothing otherwise; a total that only stays above a
-# milestone says nothing again.
+# mm_milestone_line — after a real run on a terminal, what this run (its MM_RUN_ID rows) means for
+# marmot on this machine, one line each, every one said once: marmot's first cleanup here (the
+# logs hold no other run); its 10th, 100th or 1000th run that changed something; a new record
+# (it freed 1GB or more, more than any earlier run); the freed total crossing one of
+# MM_MILESTONES_GB ("marmot has now freed 100GB on this machine", the highest crossed). Then, on
+# the day, the anniversary of the first run and last year's review (lib/mascot.sh's calendar),
+# once a year each (MM_CELEBRATED). Nothing when there is nothing to celebrate.
 mm_milestone_line() {
   [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 && -n "${MM_RUN_ID:-}" ]] || return 0
-  local -a logs; mapfile -t logs < <(_mm_logs)
+  local -a logs lines=(); mapfile -t logs < <(_mm_logs)
   (( ${#logs[@]} )) || return 0
-  local total mine g hit=""
-  read -r total mine < <(awk -F'\t' -v run="$MM_RUN_ID" "$MM_AWK_FREED"'
-    freed_row($3) && $5 ~ /^[0-9]+$/ { t += $5; if ($7 == run) m += $5 }
-    END { printf "%.0f %.0f\n", t, m }' "${logs[@]}")
+  local total mine this runs best others g hit="" id key now
+  read -r total mine this runs best others < <(awk -F'\t' -v run="$MM_RUN_ID" "$MM_AWK_FREED"'
+    NF < 3 { next }
+    {
+      id = (NF >= 7 && $7 != "") ? $7 : $2 "@" substr($1, 1, 13)
+      b = ($5 ~ /^[0-9]+$/) ? $5 : 0
+      if (freed_row($3)) { t += b; f[id] += b }
+      if (freed_row($3) || $3 == "trash") changed[id] = 1
+      if (id != run) o++
+    }
+    END {
+      for (id in changed) n++
+      for (id in f) if (id != run && f[id] > best) best = f[id]
+      printf "%.0f %.0f %d %d %.0f %d\n", t, f[run], (run in changed), n, best, o
+    }' "${logs[@]}")
   for g in "${MM_MILESTONES_GB[@]}"; do
     (( total >= g * 1073741824 && total - mine < g * 1073741824 )) && hit=$g
   done
-  [[ -n "$hit" ]] || return 0
-  if (( hit >= 1000 )); then hit="$((hit / 1000))TB"; else hit+=GB; fi
-  printf 'marmot has now freed %s on this machine' "$hit"
+  if [[ -n "$hit" ]]; then
+    if (( hit >= 1000 )); then hit="$((hit / 1000))TB"; else hit+=GB; fi
+    lines+=("marmot has now freed $hit on this machine")
+  fi
+  if (( this && !others )); then
+    lines+=("Welcome to marmot: that was its first cleanup on this machine.")
+  elif (( this )); then
+    for g in "${MM_MILESTONES_RUNS[@]}"; do
+      (( runs == g )) && lines+=("That was marmot's ${g}th cleanup on this machine.")
+    done
+  fi
+  (( others && mine >= 1073741824 && mine > best )) &&
+    lines+=("New record: $(mm_human "$mine") is the most marmot has freed here in one run.")
+  mm_now
+  now=$REPLY
+  mm_log_facts "$now"
+  mm_occasions "$now" "$MM_FACT_SINCE"
+  for id in "${MM_OCC[@]}"; do
+    [[ "$id" == anniversary || "$id" == review ]] || continue
+    printf -v key '%s %(%Y)T' "$id" "$now"
+    grep -qxF -- "$key" "$MM_CELEBRATED" 2>/dev/null && continue
+    _mm_greeting "$id" ""
+    [[ -n "$REPLY" ]] || continue
+    [[ "$id" == anniversary ]] && REPLY="Happy anniversary: $REPLY"
+    lines+=("$REPLY.")
+    mkdir -p "$MM_STATE_DIR" && printf '%s\n' "$key" >>"$MM_CELEBRATED"
+  done
+  (( ${#lines[@]} )) || return 0
+  local IFS=$'\n'
+  printf '%s' "${lines[*]}"
 }
 
 MM_AWAY_STAMP="$MM_STATE_DIR/schedule-seen"   # when an interactive run last reported scheduled runs

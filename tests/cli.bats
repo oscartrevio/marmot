@@ -288,3 +288,77 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   run mm purge "$SB/empty"                                      # no terminal: no greeting
   [ "$(grep '✓' <<<"$output")" = "$ordinary" ]
 }
+
+# artifact — a stale node_modules (4 KB) under $SB/p for mm purge --yes to remove.
+artifact() {
+  mkdir -p "$SB/p/node_modules"; echo '{}' >"$SB/p/package.json"
+  head -c 4096 /dev/urandom >"$SB/p/node_modules/blob"; mm_age "$SB" 30
+}
+
+# said TEXT — how many lines of the last output contain TEXT.
+said() { grep -cF -- "$1" <<<"$output" || true; }
+
+@test "celebrations: the first cleanup, the 10th, a new record; each said once, on a terminal only" {
+  local first="first cleanup on this machine" tenth="10th cleanup on this machine" record="New record:"
+  mm_test_now '2026-06-10 12:00'
+  artifact
+  MM_TTY=1 run mm purge --dry-run --yes "$SB"
+  [ "$(said "$first")" -eq 0 ]                                  # never from a dry run
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ ! -e "$SB/p/node_modules" ]
+  [ "$(said "$first")" -eq 1 ]
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "$first")" -eq 0 ]
+  # Seven runs that changed something and one that only refused: this one is the 10th.
+  local i
+  for i in 3 4 5 6 7 8 9; do log_rows "2026-06-0${i}T10:00:00+00:00"$'\tclean\tremove\t/x/'"$i"$'\t1024\t\tR'"$i"; done
+  log_rows $'2026-06-09T11:00:00+00:00\tclean\trefused\t/x/r\t0\tin use\tRR'
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "$tenth")" -eq 1 ]
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "th cleanup on this machine")" -eq 0 ]
+  [ "$(said "$record")" -eq 0 ]
+  # A record needs 1GB and more than any run before: this run's rows (its run id) say how much.
+  log_rows $'2026-06-09T12:00:00+00:00\tclean\tremove\t/x/big\t1610612736\t\tRBIG'
+  log_rows $'2026-06-10T11:00:00+00:00\tclean\tremove\t/x/c\t1073741824\t\tREC1'
+  artifact
+  MM_RUN_ID=REC1 MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "$record")" -eq 0 ]
+  log_rows $'2026-06-10T11:30:00+00:00\tclean\tremove\t/x/d\t2147483648\t\tREC2'
+  artifact
+  MM_RUN_ID=REC2 MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "$record")" -eq 1 ]
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "$record")" -eq 0 ]
+  log_rows $'2026-06-10T11:40:00+00:00\tclean\tremove\t/x/e\t3221225472\t\tREC3'
+  artifact
+  MM_RUN_ID=REC3 run mm purge --yes "$SB"                       # no terminal: nothing said
+  [ "$(said "$record")" -eq 0 ]
+}
+
+@test "celebrations: the first run's anniversary and last year's review, once on their day" {
+  log_rows $'2025-12-20T10:00:00+00:00\tclean\tremove\t/x/a\t3145728\t\tR1' \
+    $'2026-05-01T10:00:00+00:00\tclean\tremove\t/x/b\t5242880\t\tR2'
+  mm_test_now '2026-12-20 12:00'
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "1 year keeping this machine tidy")" -eq 1 ]
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "keeping this machine tidy")" -eq 0 ]
+  mm_test_now '2026-12-21 12:00'
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "keeping this machine tidy")" -eq 0 ]
+  mm_test_now '2027-01-03 12:00'
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "Last year marmot freed")" -eq 1 ]
+  artifact
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ "$(said "Last year marmot freed")" -eq 0 ]
+}
