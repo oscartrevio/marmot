@@ -2053,7 +2053,7 @@ _clean_review_print() {
   local row label detail hint
   for row in "${_CLEAN_REVIEW[@]}"; do
     IFS=$'\t' read -r label detail hint <<<"$row"
-    printf '  %s◦%s %s · %s\n' "$C_CYAN" "$C_RESET" "$label" "$detail"
+    printf '  %s◎%s %s · %s\n' "$C_DIM" "$C_RESET" "$label" "$detail"   # ◎: left alone, like mm_skip
     [[ -n "$hint" ]] && printf '    %s%s%s\n' "$C_DIM" "$hint" "$C_RESET"
   done
   return 0

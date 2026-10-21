@@ -98,6 +98,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - `mm status` prints sizes like the rest of marmot (`705.0MB`, `3.4GB`), not `705 MB`.
 - Every usage error points at the command's help, `mm history` included (`unknown option: -x
   (see mm history --help)`).
+- `mm clean`'s "Kept for you to review" list marks entries with `◎`, the symbol marmot uses for
+  everything it leaves alone, instead of a one-off `◦`.
 - CI runs once per pull request, as one job running the suite one file at a time; docs-only
   changes skip it.
 - `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`
