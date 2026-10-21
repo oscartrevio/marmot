@@ -115,6 +115,25 @@ mm_banner_free() {
   printf 'Free space: %s (%s%s)' "$(mm_human "$now")" "$sign" "$(mm_human "$d")"
 }
 
+# Root disk use, in percent, at which mm status flags the disk (MM_DISK_WARN_PCT) and calls it
+# full (MM_DISK_FULL_PCT); banners say when a run brought it back under one of them.
+MM_DISK_WARN_PCT=80 MM_DISK_FULL_PCT=90
+
+# mm_disk_pct — percent of the root filesystem in use, as df reports it.
+mm_disk_pct() { df --output=pcent / 2>/dev/null | awk 'NR == 2 { gsub(/[ %]/, ""); print }'; }
+
+# mm_banner_disk BEFORE_PCT — "Disk 91% → 84%: back under 90%" when this real run brought root
+# disk use from at or above a threshold to below it; nothing otherwise.
+mm_banner_disk() {
+  [[ "$MM_DRY_RUN" == 1 ]] && return 0
+  local now t
+  now=$(mm_disk_pct)
+  [[ "$1" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 0
+  for t in "$MM_DISK_FULL_PCT" "$MM_DISK_WARN_PCT"; do
+    if (( $1 >= t && now < t )); then printf 'Disk %s%% → %s%%: back under %s%%' "$1" "$now" "$t"; return 0; fi
+  done
+}
+
 # mm_confirm QUESTION — y/N prompt on the terminal. There is no auto-accept: without a terminal
 # (cron, pipes, scripts) every confirmation declines, so unattended runs never escalate.
 mm_confirm() {

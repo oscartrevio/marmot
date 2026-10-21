@@ -12,8 +12,9 @@
 _CLEAN_REVIEW=()         # "Kept for you to review" lines, printed at the end
 _CLEAN_TOOL_BYTES=0      # bytes freed by tool-driven cleans (estimates in dry-run)
 _CLEAN_TOOL_ITEMS=0      # items cleaned by tool-driven cleans
-_CLEAN_CATS=0            # categories that freed something
-_CLEAN_CAT_MARK=""       # "bytes items" snapshot at category start
+_CLEAN_CAT_NAME=""       # the category being run, and what had been freed when it started
+_CLEAN_CAT_MARK=0
+_CLEAN_BEST="" _CLEAN_BEST_BYTES=0   # the category that freed the most (the biggest win)
 _CLEAN_HANDLED=()        # cache folders a tool's own clean looked after this run
 _CLEAN_MIN_TOOL=1048576  # below this a tool cache is not worth running the tool for
 _CLEAN_TRASH_DAYS=7      # Trash retention: items trashed longer ago than this are removed for good
@@ -114,14 +115,23 @@ _clean_tool_freed() {
   if [[ -z "$4" ]]; then mm_ok "$1" "$2, size freed unknown"; else mm_ok "$1" "$2, $(mm_human "$freed")"; fi
 }
 
+# _clean_cat NAME / _clean_cat_end — a category of steps under its heading. What it freed or
+# moved to the Trash is measured between the two: the largest is the run's biggest win.
 _clean_cat() {
   mm_section "$1"
-  _CLEAN_CAT_MARK="$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES)) $((MM_COUNT + _CLEAN_TOOL_ITEMS))"
+  _CLEAN_CAT_NAME=$1 _CLEAN_CAT_MARK=$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES))
 }
 _clean_cat_end() {
-  local b i; read -r b i <<<"$_CLEAN_CAT_MARK"
-  (( MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES > b || MM_COUNT + _CLEAN_TOOL_ITEMS > i )) && _CLEAN_CATS=$((_CLEAN_CATS + 1))
+  local d=$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES - _CLEAN_CAT_MARK))
+  (( d > _CLEAN_BEST_BYTES )) && _CLEAN_BEST_BYTES=$d _CLEAN_BEST=$_CLEAN_CAT_NAME
   return 0
+}
+
+# _clean_best_line — "Biggest win: Developer caches, 2.1GB" (in a dry run, what would be), or
+# nothing when no category freed anything.
+_clean_best_line() {
+  (( _CLEAN_BEST_BYTES > 0 )) || return 0
+  printf 'Biggest win: %s, %s' "$_CLEAN_BEST" "$(mm_human "$_CLEAN_BEST_BYTES")"
 }
 
 # _clean_to_bytes "1.2GB" | "186.7M" | "12kB" | "3MiB" — single-letter and *iB units are binary.
@@ -581,7 +591,7 @@ _clean_builds() {
   local i buf real
   local -A seen=()
   buf=$(mktemp -t marmot-clean.XXXXXX) || return 0
-  _CLEAN_CAT_MARK="$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES)) $((MM_COUNT + _CLEAN_TOOL_ITEMS))"
+  _CLEAN_CAT_NAME="Old builds and versions" _CLEAN_CAT_MARK=$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES))
   for i in "${!MM_CAT_KIND[@]}"; do
     [[ "${MM_CAT_KIND[$i]}" == revisions || "${MM_CAT_KIND[$i]}" == versions ]] || continue
     real=$(realpath -e -- "${MM_CAT_PATH[$i]}" 2>/dev/null) || continue
@@ -2111,8 +2121,8 @@ mm_cmd_main() {
   # Asked before the snapshot: with root it also sees every user's processes.
   mm_sudo_ask "the System steps (apt, journal, snaps, old logs, crash dumps) and a full in-use check"
   mm_inuse_refresh
-  local free0 total items
-  free0=$(mm_free_bytes /)
+  local free0 pct0 total items
+  free0=$(mm_free_bytes /) pct0=$(mm_disk_pct)
 
   _clean_user "$_CLEAN_TRASH_DAYS"
   _clean_dev
@@ -2128,12 +2138,15 @@ mm_cmd_main() {
   total=$((MM_FREED + _CLEAN_TOOL_BYTES)) items=$((MM_COUNT + _CLEAN_TOOL_ITEMS))
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_banner "Dry run complete" \
-      "Would free: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items to clean: $items | Categories: $_CLEAN_CATS" \
+      "Would free: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items to clean: $items" \
+      "$(_clean_best_line)" \
       "$(mm_banner_free "$free0" "$total")" \
       "Run without --dry-run to apply."
   else
     mm_banner "Cleanup complete" \
-      "Space freed: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items cleaned: $items | Categories: $_CLEAN_CATS" \
-      "$(mm_banner_free "$free0")"
+      "Space freed: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items cleaned: $items" \
+      "$(_clean_best_line)" \
+      "$(mm_banner_free "$free0")" \
+      "$(mm_banner_disk "$pct0")"
   fi
 }

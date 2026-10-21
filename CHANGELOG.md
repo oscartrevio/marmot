@@ -98,6 +98,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - `mm history` ends with the story so far: `Since 2026-10-12: 7 runs · 4.2GB freed · 300.0MB to
   Trash · 2 refused`, then the three biggest single wins. It replaces the "All-time" total, which
   was wrong once the log had rotated twice.
+- Closing banners name the run's biggest win (`Biggest win: Developer caches, 2.1GB`) and say
+  when it brought the root disk back under a health threshold (`Disk 91% → 84%: back under
+  90%`); the 80/90% thresholds live in one place in core, shared with `mm status`. The
+  uninformative `Categories: N` is gone.
 
 ### Changed
 

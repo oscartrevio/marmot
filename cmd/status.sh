@@ -1270,8 +1270,8 @@ _status_health() {
   if ((ST_MEM_AVAIL_PCT < 100)); then _status_pen 20 "memory $((ST_MEM_AVAIL_PCT / 10))% available"
   elif ((ST_MEM_AVAIL_PCT < 200)); then _status_pen 10 "memory $((ST_MEM_AVAIL_PCT / 10))% available"; fi
   ((ST_SWAP_PCT > 500)) && _status_pen 10 "swap $((ST_SWAP_PCT / 10))% used"
-  if ((ST_ROOT_PCT >= 900)); then _status_pen 25 "disk $((ST_ROOT_PCT / 10))% full"
-  elif ((ST_ROOT_PCT >= 800)); then _status_pen 10 "disk $((ST_ROOT_PCT / 10))% full"; fi
+  if ((ST_ROOT_PCT >= MM_DISK_FULL_PCT * 10)); then _status_pen 25 "disk $((ST_ROOT_PCT / 10))% full"
+  elif ((ST_ROOT_PCT >= MM_DISK_WARN_PCT * 10)); then _status_pen 10 "disk $((ST_ROOT_PCT / 10))% full"; fi
   ((ST_REBOOT || ${ST_KPENDING:-0})) && _status_pen 10 "reboot required"
   if ((ST_ROOT_IPCT >= 900)); then _status_pen 20 "inodes $((ST_ROOT_IPCT / 10))% used"; fi
   ((${#ST_FAILED[@]})) && _status_pen 10 "${#ST_FAILED[@]} failed unit$( ((${#ST_FAILED[@]} > 1)) && echo s)"

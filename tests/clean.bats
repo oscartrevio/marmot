@@ -885,6 +885,12 @@ EOF
   [[ "$output" == *": 1 run · $(mm_human "$want") freed"* ]]
 }
 
+@test "the closing banner names the category that freed the most" {
+  full_run --dry-run
+  [ "$status" -eq 0 ]
+  grep -qE '^Biggest win: Docker, [0-9.]+[KMG]B$' <<<"$output"   # its images and build cache
+}
+
 @test "docker cleanups log the bytes they are counted with" {
   fake_docker
   src

@@ -148,8 +148,8 @@ _schedule_run() {
   mm_header "Scheduled cleanup"
   mm_catalog_load
   mm_inuse_refresh
-  local free0 total items
-  free0=$(mm_free_bytes /)
+  local free0 pct0 total items
+  free0=$(mm_free_bytes /) pct0=$(mm_disk_pct)
 
   if _schedule_trash_days; then
     _clean_user --yes "$_SCHEDULE_TRASH_KEEP"
@@ -179,7 +179,7 @@ _schedule_run() {
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_banner "Dry run complete" \
       "Would free: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items to clean: $items" \
-      "$notes" \
+      "$notes" "$(_clean_best_line)" \
       "$(mm_banner_free "$free0" "$total")" \
       "Run without --dry-run to apply."
     return 0
@@ -189,8 +189,9 @@ _schedule_run() {
   mm_tilde "$MM_SCHEDULE_LAST"
   mm_banner "Scheduled cleanup complete" \
     "Space freed: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items cleaned: $items" \
-    "$notes" \
-    "$(mm_banner_free "$free0") | Summary: $REPLY"
+    "$notes" "$(_clean_best_line)" \
+    "$(mm_banner_free "$free0") | Summary: $REPLY" \
+    "$(mm_banner_disk "$pct0")"
 }
 
 # ---------------------------------------------------------------- enable, disable, status

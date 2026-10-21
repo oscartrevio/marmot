@@ -1227,7 +1227,7 @@ _purge_run() {
     fi
   fi
 
-  local free_before; free_before=$(mm_free_bytes /)
+  local free_before; free_before=$(mm_free_bytes /) _PURGE_PCT0=$(mm_disk_pct)
   if [[ "$_PURGE_MODE" == scheduled ]]; then mm_section "Stale build artifacts"; else mm_header "Purge project artifacts"; fi
   for r in "${missing[@]}"; do mm_tilde "$r"; mm_skip "$REPLY" "not found"; done
 
@@ -1604,7 +1604,8 @@ _purge_banner() {
     mm_banner "Purge complete" \
       "Space freed: $(mm_human "$MM_FREED")$(mm_banner_trash "$MM_TRASHED") | Artifacts: $MM_COUNT | Projects: $2" \
       "$pn" "$wt" \
-      "$(mm_banner_free "$1")"
+      "$(mm_banner_free "$1")" \
+      "$(mm_banner_disk "$_PURGE_PCT0")"
   fi
 }
 

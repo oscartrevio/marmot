@@ -327,6 +327,16 @@ EOF
   [ "$(mm_when 1)" = now ]
 }
 
+@test "a banner says when a run brought root disk use back under a threshold, and only then" {
+  mm_test_fake df 'echo Use%; echo " 84%"'
+  [ "$(mm_banner_disk 91)" = "Disk 91% → 84%: back under 90%" ]
+  [ -z "$(mm_banner_disk 83)" ]     # use went up: nothing to celebrate
+  [ -z "$(mm_banner_disk 85)" ]     # already under 90 before, still over 80 after
+  [ -z "$(MM_DRY_RUN=1 mm_banner_disk 91)" ]
+  mm_test_fake df 'echo Use%; echo " 79%"'
+  [ "$(mm_banner_disk 85)" = "Disk 85% → 79%: back under 80%" ]
+}
+
 @test "frees counts only files whose every hard link is inside; mm_rm frees exactly that" {
   mkdir -p "$SB/root/a" "$SB/store"
   head -c 40960 /dev/urandom >"$SB/store/shared"; ln "$SB/store/shared" "$SB/root/a/shared"
