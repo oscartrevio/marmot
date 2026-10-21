@@ -92,6 +92,9 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - `mm clean` names why it kept items (`2 kept (used by ~/.claude.json)`), the most common reason
   of that step with a pointer to `mm history` when there are others; it used to print a guess,
   `(in use/whitelisted)`.
+- A spinner on the terminal while marmot checks what is in use and while `mm purge` scans; the
+  `mm analyze` overview names the folder it is still measuring. Never on stdout, without a
+  terminal, or with `--json`.
 
 ### Changed
 

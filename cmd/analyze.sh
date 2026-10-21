@@ -69,6 +69,7 @@ _analyze_measure() {
   IFS=$'\x1f' read -r -a paths <<<"$4"
   for p in "${paths[@]}"; do
     [[ -e "$p" ]] || continue
+    printf '%s\n' "$p" >"$dir/now.$idx"   # for the spinner: the folder being measured
     for q in "${paths[@]}"; do [[ "$p" == "$q"/* && -e "$q" ]] && continue 2; done
     if [[ "$label" == Old\ Downloads* ]]; then
       [[ -d "$p" ]] || continue
@@ -86,22 +87,28 @@ _analyze_measure() {
   mv "$dir/$idx.tmp" "$dir/$idx"
 }
 
-# _analyze_overview_rows — measures every location in parallel (spinner on stderr) and prints
-# rows sorted by size, largest first.
+# _analyze_overview_rows — measures every location in parallel (a spinner on stderr names a folder
+# still being measured: one can take up to MM_ANALYZE_TIMEOUT) and prints rows sorted by size,
+# largest first.
 _analyze_overview_rows() {
-  local dir label sudo paths i=0 n frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' f=0
+  local dir label sudo paths i=0 n f=0 now p
   dir=$(mktemp -d -t marmot-analyze.XXXXXX)
   while IFS=$'\t' read -r label sudo paths; do
     i=$((i + 1))
     _analyze_measure "$i" "$label" "$sudo" "$paths" "$dir" &
   done < <(_analyze_locations)
-  if [[ -t 2 ]]; then
+  if mm_spin_ok; then
     while [[ -n "$(jobs -rp)" ]]; do
-      n=$(find "$dir" -maxdepth 1 -type f ! -name '*.tmp' | wc -l)
-      printf '\r  %s%s%s Measuring %d locations… %d done ' "$CE_CYAN" "${frames:f++%10:1}" "$CE_RESET" "$i" "$n" >&2
+      n=$(find "$dir" -maxdepth 1 -name '[0-9]*' ! -name '*.tmp' | wc -l) now=""
+      for p in "$dir"/now.*; do
+        [[ -e "$p" && ! -e "$dir/${p##*.}" ]] || continue
+        now=$(<"$p"); break
+      done
+      mm_tilde "$now"
+      mm_spin_frame $((f++)) "Measuring $i locations… $n done${now:+ · $REPLY}"
       sleep 0.1
     done
-    printf '\r\e[K' >&2
+    mm_spin_clear
   fi
   wait
   cat "$dir"/[0-9]* 2>/dev/null | sort -t$'\t' -k2,2nr
@@ -255,7 +262,7 @@ mm_cmd_main() {
   local json=0 path=""
   while (( $# )); do
     case "$1" in
-      --json) json=1 ;;
+      --json) json=1 MM_NO_SPIN=1 ;;
       -h|--help) _analyze_usage; return 0 ;;
       -*) mm_die "unknown option: $1 (see mm analyze --help)" ;;
       *) [[ -z "$path" ]] || mm_die "only one PATH allowed (see mm analyze --help)"; path=$1 ;;

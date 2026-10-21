@@ -84,6 +84,13 @@ pick() {
   echo "$output" | jq -e --arg h "$HOME" 'any(.entries[]; .path == $h)'
 }
 
+@test "--json draws no spinner even on a terminal, and stdout carries only the JSON" {
+  command -v script >/dev/null || skip "needs script (util-linux)"
+  MM_TTY=1 script -qec "mm analyze --json >'$SB/out'" /dev/null >"$SB/tty"
+  jq -e . "$SB/out" >/dev/null
+  [ "$(grep -c '⠋\|⠙\|⠹\|Measuring' "$SB/tty")" = 0 ]
+}
+
 # entry NAME — the JSON overview entry called NAME (from $output).
 entry() { echo "$output" | jq -c --arg n "$1" '.entries[] | select(.name == $n)'; }
 

@@ -99,6 +99,38 @@ mm_confirm() {
   [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]
 }
 
+# ---------------------------------------------------------------- progress
+# A spinner on stderr for silent phases, only on a terminal run whose stderr is the terminal, and
+# never with machine output (MM_NO_SPIN=1: --json, --agent). Never on stdout.
+
+MM_SPIN_FRAMES='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏'
+# mm_spin_ok — 0 when a spinner may be drawn.
+mm_spin_ok() { [[ "$MM_TTY" == 1 && -t 2 && "${MM_NO_SPIN:-0}" != 1 ]]; }
+# mm_spin_frame N TEXT — draw frame N with TEXT over the current stderr line.
+mm_spin_frame() { printf '\r\e[K  %s%s%s %s' "$CE_CYAN" "${MM_SPIN_FRAMES:$(($1 % 10)):1}" "$CE_RESET" "$2" >&2; }
+# mm_spin_clear — erase the spinner line.
+mm_spin_clear() { printf '\r\e[K' >&2; }
+# mm_spin_start TEXT — keep a spinner turning in the background until mm_spin_stop, for a step
+# that cannot draw one itself. It also stops when this marmot exits, however it exits. The child
+# sits in / with nothing open but the terminal: the in-use scan it decorates must not see it
+# holding the user's folder or a file.
+mm_spin_start() {
+  mm_spin_ok || return 0
+  local parent=$BASHPID
+  ( cd / || exit; exec 0</dev/null 1>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+    i=0; while kill -0 "$parent" 2>/dev/null; do mm_spin_frame $((i++)) "$1"; sleep 0.1; done ) &
+  _MM_SPIN_PID=$!
+  disown "$_MM_SPIN_PID" 2>/dev/null
+}
+# mm_spin_stop — stop mm_spin_start's spinner and erase its line.
+mm_spin_stop() {
+  [[ -n "${_MM_SPIN_PID:-}" ]] || return 0
+  kill "$_MM_SPIN_PID" 2>/dev/null
+  local k; for ((k = 0; k < 50; k++)); do kill -0 "$_MM_SPIN_PID" 2>/dev/null || break; sleep 0.01; done
+  _MM_SPIN_PID=""
+  mm_spin_clear
+}
+
 # ---------------------------------------------------------------- formatting
 
 # MM_AWK_HUMAN — awk source of human(BYTES): "1.2GB" / "340.0MB" / "12KB" / "999B", for awk
@@ -419,6 +451,7 @@ mm_inuse_refresh() {
   local out live refs script root
   script="$(declare -f _mm_inuse_scan _mm_inuse_live _mm_mounts _mm_mount_paths); _mm_inuse_scan"
   MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""
+  mm_spin_start "Checking what is in use…"
   out=$(bash -c "$script")
   if (( EUID == 0 )); then
     MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$out" | cut -f2-)
@@ -429,6 +462,7 @@ mm_inuse_refresh() {
   elif [[ "$MM_NO_SUDO" == 1 ]]; then MM_INUSE_PARTIAL_WHY="running without sudo, only your own processes are checked"
   else MM_INUSE_PARTIAL_WHY="no passwordless sudo, only your own processes are checked"; fi
   [[ -n "$MM_INUSE_PARTIAL_WHY" ]] && MM_INUSE_PARTIAL=1
+  mm_spin_stop
   live=$(grep '^/' <<<"$out" | sort -u)
   MM_INUSE_TAKEN=1 MM_INUSE="" MM_INUSE_REFS=""
   [[ -n "$live" ]] || mm_die "could not list in-use paths; refusing to delete anything"

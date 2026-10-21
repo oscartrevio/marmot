@@ -1241,7 +1241,9 @@ _purge_run() {
       case "$kind" in A) cand_raw+=("$rec") ;; G) gitents+=("$rec") ;; T) timed+=("$rec") ;; esac
     done
   }
+  mm_spin_start "Scanning for build artifacts…"
   mapfile -d '' -t raw < <(_purge_scan "${roots[@]}"); _purge_ingest
+  mm_spin_stop
   local -A commons=()
   local c i
   for rec in "${gitents[@]}"; do c=$(_purge_common_dir "$rec") && commons[$c]=1; done
