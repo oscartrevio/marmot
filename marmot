@@ -63,18 +63,22 @@ mm_menu() {
   exec "$0" "$choice"
 }
 
-# Global flags may appear anywhere; everything else is passed to the command.
-args=()
+# Global flags may appear anywhere; everything else is passed to the command. -y/--yes belongs to
+# mm purge alone, wherever it is written: decided once the command is known.
+args=() yes=()
 for a in "$@"; do
   case "$a" in
     -n|--dry-run) export MM_DRY_RUN=1 ;;
-    -y|--yes)
-      if [[ "${args[0]:-}" == purge ]]; then args+=("$a")
-      else mm_die "$a: only 'mm purge --yes' runs unattended; other commands ask on the terminal"; fi ;;
+    -y|--yes) yes+=("$a") ;;
     --debug) export MM_DEBUG=1 ;;
     *) args+=("$a") ;;
   esac
 done
+if (( ${#yes[@]} )); then
+  [[ "${args[0]:-}" == purge ]] ||
+    mm_die "${yes[0]}: only 'mm purge --yes' runs unattended; other commands ask on the terminal"
+  args=(purge "${yes[@]}" "${args[@]:1}")
+fi
 set -- "${args[@]+"${args[@]}"}"
 # One id per invocation, on every operations-log row (mm history groups by it). Exported, so
 # child marmot and bash processes log under the same run.

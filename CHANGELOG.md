@@ -120,6 +120,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   not `1KB`); `mm history` uses the same formatter.
 - `mm history --json` with nothing logged yet prints `[]` instead of a sentence (and no longer
   needs jq for that).
+- `mm --yes purge` and `mm -n -y purge DIR` work: like the other global flags, `-y/--yes` may
+  come before the command. It is still refused for every command but `mm purge`.
 
 ## 0.2.0
 

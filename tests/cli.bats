@@ -14,15 +14,24 @@ teardown() { mm_test_teardown; }
   [ "$status" -ne 0 ]
 }
 
-@test "-y/--yes is rejected everywhere except mm purge" {
+@test "-y/--yes is rejected everywhere except mm purge, where it may come before the command" {
   local args
-  for args in "clean -y" "clean --yes" "-y clean" "uninstall --yes ncdu" "optimize -y" "analyze -y" "history -y" "update -y" "update --yes"; do
+  for args in "clean -y" "clean --yes" "-y clean" "uninstall --yes ncdu" "optimize -y" "analyze -y" "history -y" \
+    "update -y" "update --yes" "-y" "--yes --help"; do
     # shellcheck disable=SC2086
     run mm $args
     [ "$status" -ne 0 ] || { echo "accepted: mm $args"; false; }
   done
-  run mm purge --yes --dry-run "$SB"
+  mkdir -p "$SB/p/node_modules"; echo '{}' >"$SB/p/package.json"; mm_age "$SB" 30
+  for args in "purge --yes --dry-run" "--yes purge --dry-run" "-n -y purge"; do
+    # shellcheck disable=SC2086
+    run mm $args "$SB"
+    [ "$status" -eq 0 ] || { echo "refused: mm $args"; false; }
+  done
+  [ -d "$SB/p/node_modules" ]   # every run was a dry run
+  run mm -y purge "$SB"
   [ "$status" -eq 0 ]
+  [ ! -e "$SB/p/node_modules" ]   # --yes before the command still means unattended
 }
 
 @test "history with no log says so; --json prints an empty array, even without jq" {
