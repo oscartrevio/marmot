@@ -117,6 +117,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   machines your coding agents run on, clean, fast and healthy").
 - Titles and banner titles are in sentence case everywhere (`Clean your system`, `Dry run
   complete`, `Optimization complete`).
+- Closing banners share one shape: what was (or would be) freed, `Moved to Trash` only when
+  something went there (`mm uninstall` printed `Moved to Trash: 0B`), the command's counts, and a
+  free-space change signed the same way everywhere (`mm purge` and `mm uninstall` clamped it to
+  `+`); every dry run ends with `Free space: X now, ~Y after`.
 - CI runs once per pull request, as one job running the suite one file at a time; docs-only
   changes skip it.
 - `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`

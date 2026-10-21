@@ -835,8 +835,9 @@ _uninstall_apply() {
   sizes="free $(mm_human "$free_bytes"), move $(mm_human "$trash_bytes") to Trash"
   (( unknown )) && sizes+=", plus $unknown of unknown size"
   if [[ "$dry" == 1 ]]; then
-    mm_banner "Uninstall preview$([[ "$MM_DRY_RUN" == 1 ]] && printf ' (dry run)')" \
-      "Would remove ${#todo[@]} package$( (( ${#todo[@]} == 1 )) || printf s), $sizes: ${todo_names[*]}" \
+    mm_banner "$([[ "$MM_DRY_RUN" == 1 ]] && printf 'Dry run complete' || printf 'Uninstall preview')" \
+      "Would free: $(mm_human "$free_bytes")$( (( unknown )) && printf ' + %d of unknown size' "$unknown")$(MM_DRY_RUN=1 mm_banner_trash "$trash_bytes") | Packages to remove: ${#todo[@]} (${todo_names[*]})" \
+      "$([[ "$MM_DRY_RUN" == 1 ]] && mm_banner_free 0 "$free_bytes")" \
       "$([[ "$MM_DRY_RUN" == 1 ]] && printf 'Run without --dry-run to apply.' || printf 'Run from a terminal to apply.')"
     return 0
   fi
@@ -974,11 +975,9 @@ _uninstall_execute() {
   done
   rc=0; (( ${#removed[@]} )) || rc=1
 
-  local freed=$(( pkg_bytes + MM_FREED )) free_after
-  free_after=$(mm_free_bytes /)
+  local freed=$(( pkg_bytes + MM_FREED ))
   mm_banner "Uninstall complete" \
-    "Removed ${#removed[@]} package$( (( ${#removed[@]} == 1 )) || printf s)${removed[*]:+: ${removed[*]}}" \
-    "Space freed: $(mm_human "$freed")$( (( unknown )) && printf ' + %d of unknown size' "$unknown") | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)" \
-    "Free space: $(mm_human "$free_after") (+$(mm_human $(( free_after > free_before ? free_after - free_before : 0 ))))"
+    "Space freed: $(mm_human "$freed")$( (( unknown )) && printf ' + %d of unknown size' "$unknown")$(mm_banner_trash "$MM_TRASHED") | Packages removed: ${#removed[@]}${removed[*]:+ (${removed[*]})}" \
+    "$(mm_banner_free "$free_before")"
   return "$rc"
 }

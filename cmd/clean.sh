@@ -2111,7 +2111,7 @@ mm_cmd_main() {
   # Asked before the snapshot: with root it also sees every user's processes.
   mm_sudo_ask "the System steps (apt, journal, snaps, old logs, crash dumps) and a full in-use check"
   mm_inuse_refresh
-  local free0 free1 total items delta sign=+
+  local free0 total items
   free0=$(mm_free_bytes /)
 
   _clean_user "$_CLEAN_TRASH_DAYS"
@@ -2126,18 +2126,14 @@ mm_cmd_main() {
   _clean_review_print
 
   total=$((MM_FREED + _CLEAN_TOOL_BYTES)) items=$((MM_COUNT + _CLEAN_TOOL_ITEMS))
-  free1=$(mm_free_bytes /)
-  local trashed=""
-  (( MM_TRASHED > 0 )) && trashed=" | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)"
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_banner "Dry run complete" \
-      "Would free: $(mm_human "$total")${trashed/Moved/Would move} | Items to clean: $items | Categories: $_CLEAN_CATS" \
-      "Free space: $(mm_human "$free1") now, ~$(mm_human $((free1 + total))) after" \
+      "Would free: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items to clean: $items | Categories: $_CLEAN_CATS" \
+      "$(mm_banner_free "$free0" "$total")" \
       "Run without --dry-run to apply."
   else
-    delta=$((free1 - free0)); (( delta < 0 )) && { sign=-; delta=$((-delta)); }
     mm_banner "Cleanup complete" \
-      "Space freed: $(mm_human "$total")$trashed | Items cleaned: $items | Categories: $_CLEAN_CATS" \
-      "Free space: $(mm_human "$free1") ($sign$(mm_human "$delta"))"
+      "Space freed: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items cleaned: $items | Categories: $_CLEAN_CATS" \
+      "$(mm_banner_free "$free0")"
   fi
 }

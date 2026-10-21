@@ -148,7 +148,7 @@ _schedule_run() {
   mm_header "Scheduled cleanup"
   mm_catalog_load
   mm_inuse_refresh
-  local free0 free1 total items delta sign=+
+  local free0 total items
   free0=$(mm_free_bytes /)
 
   if _schedule_trash_days; then
@@ -175,25 +175,22 @@ _schedule_run() {
   _purge_run scheduled "$_SCHEDULE_PURGE_DAYS"
 
   total=$((MM_FREED + _CLEAN_TOOL_BYTES + _PURGE_STORE_BYTES)) items=$((MM_COUNT + _CLEAN_TOOL_ITEMS))
-  free1=$(mm_free_bytes /)
-  local trash="" notes="Skipped: ${#MM_SKIPS[@]} | Errors: ${#MM_ERRORS[@]}"
+  local notes="Skipped: ${#MM_SKIPS[@]} | Errors: ${#MM_ERRORS[@]}"
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    (( MM_TRASHED )) && trash=" | Would move to Trash: $(mm_human "$MM_TRASHED")"
     mm_banner "Dry run complete" \
-      "Would free: $(mm_human "$total")$trash | Items: $items" \
+      "Would free: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items to clean: $items" \
       "$notes" \
+      "$(mm_banner_free "$free0" "$total")" \
       "Run without --dry-run to apply."
     return 0
   fi
-  (( MM_TRASHED )) && trash=" | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)"
-  delta=$((free1 - free0)); (( delta < 0 )) && { sign=-; delta=$((-delta)); }
   trap - EXIT
   _schedule_record "$_SCHEDULE_STARTED" "$_SCHEDULE_T0" "$total" "$MM_TRASHED" "$items"
   mm_tilde "$MM_SCHEDULE_LAST"
   mm_banner "Scheduled cleanup complete" \
-    "Space freed: $(mm_human "$total")$trash | Items: $items" \
+    "Space freed: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items cleaned: $items" \
     "$notes" \
-    "Free space: $(mm_human "$free1") ($sign$(mm_human "$delta")) | Summary: $REPLY"
+    "$(mm_banner_free "$free0") | Summary: $REPLY"
 }
 
 # ---------------------------------------------------------------- enable, disable, status

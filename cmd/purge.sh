@@ -1583,9 +1583,8 @@ _purge_run() {
 # A scheduled run gets no banner, only that prune (_purge_scheduled_end).
 _purge_banner() {
   [[ "$_PURGE_MODE" == scheduled ]] && { _purge_scheduled_end; return 0; }
-  local free_after trash="" wt="" pn="" est
+  local wt="" pn="" est
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    (( MM_TRASHED )) && trash=" | Would move to Trash: $(mm_human "$MM_TRASHED")"
     if (( _PURGE_WT_OFFERED )); then
       est=0; (( ${#_PURGE_WT_PNPM[@]} )) && est=$(_purge_store_frees "${_PURGE_WT_PNPM[@]}")
       wt="Worktrees to remove: $_PURGE_WT_OFFERED, $_PURGE_WT_FINISHED finished (frees $(mm_human "$_PURGE_WT_OFFER_BYTES")"
@@ -1594,24 +1593,18 @@ _purge_banner() {
     fi
     est=0; (( ${#_PURGE_PNPM_PATHS[@]} )) && est=$(_purge_store_frees "${_PURGE_PNPM_PATHS[@]}")
     (( ${est:-0} > 0 )) && pn="Then pnpm store prune: ~$(mm_human "$est") more (store files only these used)"
-    free_after=$(mm_free_bytes /)
     mm_banner "Dry run complete" \
-      "Would free: $(mm_human "$MM_FREED")$trash | Artifacts: $MM_COUNT | Projects: $2" \
-      ${pn:+"$pn"} \
-      ${wt:+"$wt"} \
-      "Free space: $(mm_human "$free_after")" \
+      "Would free: $(mm_human "$MM_FREED")$(mm_banner_trash "$MM_TRASHED") | Artifacts: $MM_COUNT | Projects: $2" \
+      "$pn" "$wt" \
+      "$(mm_banner_free "$1" "$MM_FREED")" \
       "Run without --dry-run to apply."
   else
-    (( MM_TRASHED )) && trash=" | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)"
     (( _PURGE_WT_DONE )) && wt="Worktrees removed: $_PURGE_WT_DONE ($(mm_human "$_PURGE_WT_BYTES"); branches kept)"
     (( ${#_PURGE_PNPM_PATHS[@]} )) && { _purge_pnpm_prune; pn=$_PURGE_PRUNE_LINE; }
-    free_after=$(mm_free_bytes /)
-    local gained=$(( free_after - $1 )); (( gained < 0 )) && gained=0
     mm_banner "Purge complete" \
-      "Space freed: $(mm_human "$MM_FREED")$trash | Artifacts: $MM_COUNT | Projects: $2" \
-      ${pn:+"$pn"} \
-      ${wt:+"$wt"} \
-      "Free space: $(mm_human "$free_after") (+$(mm_human "$gained"))"
+      "Space freed: $(mm_human "$MM_FREED")$(mm_banner_trash "$MM_TRASHED") | Artifacts: $MM_COUNT | Projects: $2" \
+      "$pn" "$wt" \
+      "$(mm_banner_free "$1")"
   fi
 }
 

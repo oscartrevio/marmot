@@ -81,12 +81,38 @@ mm_info() { printf '  %s\n' "$1"; }
 mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$CE_DIM" "$1" "$CE_RESET" >&2; return 0; }
 mm_die()  { mm_err "$1"; exit "${2:-1}"; }
 
-# mm_banner TITLE LINE... — closing summary block.
+# mm_banner TITLE LINE... — closing summary block; empty LINEs are left out, so callers can pass
+# optional lines as they are.
 mm_banner() {
   local title="$1"; shift
   printf '\n%s\n%s%s%s\n' "$MM_RULE" "$C_BOLD" "$title" "$C_RESET"
-  local line; for line in "$@"; do printf '%s\n' "$line"; done
+  local line; for line in "$@"; do [[ -n "$line" ]] && printf '%s\n' "$line"; done
   printf '%s\n' "$MM_RULE"
+}
+
+# Every banner is built the same way: what was freed (or would be) first, then " | Moved to
+# Trash: ..." when something went there, then the command's own counts; then the free space.
+
+# mm_banner_trash BYTES — " | Moved to Trash: 1.2GB (restore: trash-restore)" ("Would move to
+# Trash" in a dry run), or nothing when BYTES is 0.
+mm_banner_trash() {
+  (( $1 > 0 )) || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then printf ' | Would move to Trash: %s' "$(mm_human "$1")"
+  else printf ' | Moved to Trash: %s (restore: trash-restore)' "$(mm_human "$1")"; fi
+}
+
+# mm_banner_free BEFORE [WOULD] — the free-space line: after a real run "Free space: 37.0GB
+# (+1.2GB)", signed against BEFORE (bytes free when the run started); in a dry run "Free space:
+# 35.8GB now, ~37.0GB after" with WOULD the bytes it would free.
+mm_banner_free() {
+  local now d sign=+
+  now=$(mm_free_bytes /)
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    printf 'Free space: %s now, ~%s after' "$(mm_human "$now")" "$(mm_human $((now + ${2:-0})))"
+    return
+  fi
+  d=$((now - $1)); (( d < 0 )) && { sign=-; d=$((-d)); }
+  printf 'Free space: %s (%s%s)' "$(mm_human "$now")" "$sign" "$(mm_human "$d")"
 }
 
 # mm_confirm QUESTION — y/N prompt on the terminal. There is no auto-accept: without a terminal
