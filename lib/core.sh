@@ -1338,10 +1338,17 @@ mm_pick() {
     [[ "$MM_TTY" == 1 ]] && mm_warn "fzf is not installed: nothing selected" >&2
     return 0
   fi
-  # Adaptive height (~60%) came with fzf 0.34; older ones (Ubuntu 22.04 ships 0.29) exit with
-  # "not a valid number" on it, which would select nothing.
-  local height='~60%'
-  [[ "$(fzf --version 2>/dev/null)" =~ ^0\.([0-9]+) ]] && (( 10#${BASH_REMATCH[1]} < 34 )) && height=60%
-  fzf --multi --ansi --reverse --height="$height" --header="$1" --header-first \
+  fzf --multi --ansi --reverse --height="$(mm_fzf_height 60)" --header="$1" --header-first \
       --bind 'ctrl-a:select-all,ctrl-d:deselect-all' --prompt='filter> '
+}
+
+# mm_fzf_height PERCENT — the value for fzf --height: adaptive (~PERCENT%, fzf 0.34 and later),
+# or a fixed PERCENT% for older fzf (Ubuntu 22.04 ships 0.29), which rejects "~" with "not a
+# valid number" and exits: the picker or menu would never open.
+mm_fzf_height() {
+  if [[ "$(fzf --version 2>/dev/null)" =~ ^0\.([0-9]+) ]] && (( 10#${BASH_REMATCH[1]} < 34 )); then
+    printf '%s%%' "$1"
+  else
+    printf '~%s%%' "$1"
+  fi
 }

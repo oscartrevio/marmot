@@ -122,6 +122,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   needs jq for that).
 - `mm --yes purge` and `mm -n -y purge DIR` work: like the other global flags, `-y/--yes` may
   come before the command. It is still refused for every command but `mm purge`.
+- Bare `mm` opens its command menu with fzf older than 0.34 (Ubuntu 22.04 ships 0.29); it
+  quit without a word. The menu and the pickers share one fzf version check.
 
 ## 0.2.0
 

@@ -55,7 +55,7 @@ mm_menu() {
   local choice
   if command -v fzf >/dev/null && [[ "$MM_TTY" == 1 ]]; then
     choice=$(for c in "${MM_COMMANDS[@]}"; do printf '%-11s %s\n' "$c" "${MM_DESC[$c]}"; done |
-      fzf --reverse --height=~40% --header='marmot: pick a command' --no-multi) || exit 0
+      fzf --reverse --height="$(mm_fzf_height 40)" --header='marmot: pick a command' --no-multi) || exit 0
     choice=${choice%% *}
   else
     mm_usage; exit 0

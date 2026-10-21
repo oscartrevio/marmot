@@ -14,6 +14,19 @@ teardown() { mm_test_teardown; }
   [ "$status" -ne 0 ]
 }
 
+@test "bare mm opens its menu with fzf older than 0.34 (Ubuntu 22.04) and newer ones" {
+  local v
+  for v in "0.29 (devel)" "0.38.0 (debian)"; do
+    # an fzf of version v that rejects what that version does not know, and picks "history"
+    mm_test_fake fzf "[[ \$1 == --version ]] && { echo '$v'; exit 0; }
+      for a; do [[ \$a == --height=~* && '$v' == 0.29* ]] && { echo 'not a valid number: ~40' >&2; exit 2; }; done
+      grep '^history '"
+    MM_TTY=1 run mm
+    [ "$status" -eq 0 ]
+    [[ "$output" == "No operations recorded yet"* ]] || { echo "fzf $v: menu did not run history"; false; }
+  done
+}
+
 @test "-y/--yes is rejected everywhere except mm purge, where it may come before the command" {
   local args
   for args in "clean -y" "clean --yes" "-y clean" "uninstall --yes ncdu" "optimize -y" "analyze -y" "history -y" \
