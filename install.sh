@@ -262,14 +262,17 @@ _in_the_way() {
 }
 
 # _finale — the first-run message: the marmot (dressed for the day: lib/mascot.sh, which this does
-# source, has no side effects), three next steps, then the completion line for each shell whose
-# rc file does not load it yet. Printed only: nothing is run, no rc file is written.
+# source, has no side effects; not with `festive = off` in marmot's config), three next steps,
+# then the completion line for each shell whose rc file does not load it yet. Printed only:
+# nothing is run, no rc file is written.
 _finale() {
   local C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
   # shellcheck source=lib/mascot.sh
   . "$src/lib/mascot.sh"
   mm_now
-  mm_occasions "$REPLY" || MM_OCC=()
+  MM_OCC=()
+  grep -Eqis '^[[:space:]]*festive[[:space:]]*=[[:space:]]*(off|no|false|0)[[:space:]]*(#|$)' \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/marmot/config" || mm_occasions "$REPLY" || MM_OCC=()
   mm_marmot_dress happy "" 0 "${MM_OCC[@]}"
   MM_LOOK_GREET="run on clean, fast and healthy."
   mm_marmot_draw happy 60 marmot "Keep the machines your coding agents"

@@ -136,6 +136,9 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   time...). Decorations never replace a face that reports a problem. They show in the `mm status`
   header, after `mm --version` on a terminal, on the line of a run with nothing to do, and in
   `install.sh`'s closing art.
+- `festive = off` in `~/.config/marmot/config` turns the marmot's calendar off (seasons,
+  holidays, anniversaries, the year in review); its moods, the milestones and the easter eggs
+  stay. Default on.
 - A few easter eggs, in neither the help nor the completion: `--force` is refused with a wink
   (marmot has none; nothing runs), `mm whistle` tells a true marmot fact a day, `mm 42`,
   `mm make me a sandwich` (xkcd 149: root gets one), and the live `mm status` waves on `w`.

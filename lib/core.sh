@@ -1276,14 +1276,28 @@ mm_log_facts() {
   return 0
 }
 
+# mm_festive — 0 unless the config says `festive = off` (also no, false, 0): then the calendar
+# (lib/mascot.sh) is not consulted anywhere. Moods, milestones and easter eggs are not festive.
+mm_festive() {
+  local v
+  v=$(mm_config festive 2>/dev/null) || return 0
+  [[ "${v,,}" != off && "${v,,}" != no && "${v,,}" != false && "$v" != 0 ]]
+}
+
+# mm_occasions_now NOW — the day's occasions into MM_OCC (mm_occasions, with the first run's date
+# from mm_log_facts, which this calls); none when festive is off.
+mm_occasions_now() {
+  mm_log_facts "$1"
+  MM_OCC=()
+  mm_festive || return 0
+  mm_occasions "$1" "$MM_FACT_SINCE"
+}
+
 # mm_greeting — the day's first greeting (lib/mascot.sh's calendar order) in REPLY; empty on an
-# ordinary day.
+# ordinary day or with festive off.
 mm_greeting() {
-  local now
   mm_now
-  now=$REPLY
-  mm_log_facts "$now"
-  mm_occasions "$now" "$MM_FACT_SINCE"
+  mm_occasions_now "$REPLY"
   mm_marmot_dress happy "" 0 "${MM_OCC[@]}"
   REPLY=${MM_LOOK_GREETS[0]:-}
 }
@@ -1338,8 +1352,7 @@ mm_milestone_line() {
     lines+=("New record: $(mm_human "$mine") is the most marmot has freed here in one run.")
   mm_now
   now=$REPLY
-  mm_log_facts "$now"
-  mm_occasions "$now" "$MM_FACT_SINCE"
+  mm_occasions_now "$now"
   for id in "${MM_OCC[@]}"; do
     [[ "$id" == anniversary || "$id" == review ]] || continue
     printf -v key '%s %(%Y)T' "$id" "$now"

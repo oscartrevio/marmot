@@ -321,6 +321,11 @@ listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
   run "$MM_SRC/install.sh"
   [ "$status" -eq 0 ]
   [[ "$output" != *"$readme"* && "$output" == *"--(mm)--UU--(mm)--"* ]]
+  "$MM_SRC/install.sh" --uninstall >/dev/null
+  mkdir -p "$HOME/.config/marmot" && printf 'festive = off\n' >"$HOME/.config/marmot/config"
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$readme"* ]]
 }
 
 @test "the first-run steps are printed, never run" {

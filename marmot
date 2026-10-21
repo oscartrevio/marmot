@@ -103,8 +103,7 @@ mm_whistle() {
   local now day
   mm_now
   now=$REPLY
-  mm_log_facts "$now"
-  mm_occasions "$now" "$MM_FACT_SINCE"
+  mm_occasions_now "$now"
   mm_marmot_dress whistle "" 0 "${MM_OCC[@]}"
   MM_LOOK_CHEEKS=0 MM_LOOK_BLINK=0 MM_LOOK_WAVE=0 MM_LOOK_GREET=${MM_LOOK_GREETS[0]:-}
   mm_marmot_draw whistle 60 "${C_BOLD}Fweeeet!$C_RESET"

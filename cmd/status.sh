@@ -91,7 +91,9 @@ three samples, o o any other health reason, - o c[_] night shift (an agent busy 
 midnight and 6:00), ¬ ¬ tired (an agent session busy for over 12 hours), ^ ^ ✦ proud (a cleanup
 freed 1GB or more in the last 24 hours), ^ ^ agents at work on a healthy machine, - - z Z no
 agent session busy. It wears a hard hat while a marmot cleanup runs, and blinks now and then
-in the live view. Short terminals drop it first.
+in the live view. On a holiday, in a season or on its anniversary it dresses for the day and
+greets you; the face always says what the machine is. \`festive = off\` in
+$MM_CONFIG_FILE turns the calendar off. Short terminals drop the marmot first.
 EOF
 }
 
@@ -421,8 +423,7 @@ _status_clock() {
 # shellcheck disable=SC2031 # MM_LAST_* are set in this shell by mm_schedule_last (_status_sched)
 _status_facts() {
   local at freed h day w
-  mm_log_facts "$ST_NOW"
-  mm_occasions "$ST_NOW" "$MM_FACT_SINCE"
+  mm_occasions_now "$ST_NOW"
   ST_OCC=("${MM_OCC[@]}")
   at=${MM_FACT_LAST_AT:-0} freed=${MM_FACT_LAST_FREED:-0}
   ((ST_LAST && MM_LAST_EPOCH > at)) && at=$MM_LAST_EPOCH freed=$MM_LAST_FREED

@@ -95,6 +95,22 @@ opens a command picker that previews each command's help.
 Steps that need root ask for your password once, up front, and say what for. Decline, and the
 rest of the run skips those steps instead of asking again.
 
+### The marmot
+
+A marmot peeks over `mm status`. Its face is the health score at a glance, health first: `x x`
+below 60, `O O !` below 80 (cheeks stuffed when a full disk is why), `> <` CPU above 85% for a
+while, `o o` any other health reason, `- o` with a coffee `c[_]` on the night shift (an agent
+busy between midnight and 6:00), `¬ ¬` tired (an agent session busy for over 12 hours), `^ ^ ✦`
+proud the day after a cleanup that freed 1GB or more, `^ ^` agents at work on a healthy machine,
+`- - z Z` nobody busy. It wears a hard hat while a marmot cleanup runs and blinks now and then.
+
+It also knows what day it is (a Santa hat, snow on the rule in winter, a pumpkin and a web for
+Halloween, its shadow on Groundhog Day, an ofrenda on Día de Muertos, its anniversary on this
+machine, and some twenty more; the table is `MM_CALENDAR` in `lib/mascot.sh`). The day never
+changes the face that reports a problem, and `festive = off` in the config turns the calendar
+off. `mm --version` and a run with nothing to do say the day's greeting too, and the closing
+banner of a real run celebrates firsts, round run counts, records and anniversaries, each once.
+
 ## Safety
 
 marmot deletes files, so it refuses rather than guesses.
@@ -154,12 +170,13 @@ and history in `~/.local/state/marmot/`.
 | `catalog` | Cache folders marmot doesn't know yet |
 | `config` | Settings, `key = value` |
 
-Settings in `config`, all off by default:
+Settings in `config`, all off by default but `festive`:
 
 ```ini
 sessions_keep_days = 30   # agent session files older than 30 days, not in use, go to the Trash
 trash_keep_days = 30      # scheduled runs delete Trash items trashed more than 30 days ago
 nix_gc = on               # nix generations older than 30 days, then garbage collection
+festive = off             # no seasons, holidays, anniversaries or year-in-review (default: on)
 ```
 
 marmot knows Claude Code, Codex, Cursor Agent, Gemini CLI, Copilot CLI, opencode, Aider, Amp,

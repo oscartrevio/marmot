@@ -162,3 +162,37 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   mm_marmot_draw alert 60 title facts
   [ "${MM_ART[1]:21}" = title ] && [ "${MM_ART[2]:21}" = facts ] && [ "${MM_ART[3]:21}" = hi ]
 }
+
+@test "festive = off takes the calendar off everything and leaves the moods, milestones and eggs" {
+  mkdir -p "$HOME/.config/marmot"
+  mm_test_now '2026-12-25 12:00'
+  mm_occasions_now "$(date -d '2026-12-25 12:00' +%s)"
+  [ "${MM_OCC[*]}" = "christmas winter" ]
+  mm_greeting
+  [ "$REPLY" = "Merry Christmas" ]
+  printf 'festive = off\n' >"$HOME/.config/marmot/config"
+  mm_occasions_now "$(date -d '2026-12-25 12:00' +%s)"
+  [ "${#MM_OCC[@]}" -eq 0 ]
+  mm_greeting
+  [ -z "$REPLY" ]
+  # mm status reads the same switch when it looks the day up (tests/status.bats runs it whole).
+  . "$MM_SRC/cmd/status.sh"
+  ST_NOW=$(date -d '2026-12-25 12:00' +%s) ST_LAST=0 ST_DAY=""
+  _status_facts
+  [ "${#ST_OCC[@]}" -eq 0 ]
+  run mm whistle
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"     _..--.._  ♫~"* ]]
+  # Off is also no, false and 0; anything else, and no config at all, is on.
+  local v
+  for v in no false 0 OFF; do
+    printf 'festive = %s\n' "$v" >"$HOME/.config/marmot/config"
+    ! mm_festive || { echo "festive = $v should be off"; false; }
+  done
+  for v in on yes 1 maybe; do
+    printf 'festive = %s\n' "$v" >"$HOME/.config/marmot/config"
+    mm_festive || { echo "festive = $v should be on"; false; }
+  done
+  rm "$HOME/.config/marmot/config"
+  mm_festive
+}
