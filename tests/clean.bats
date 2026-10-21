@@ -555,7 +555,7 @@ exec $real \"\$@\""
   exist "$HOME/.cache/pip/wheels/w.whl"
   gone "$HOME/.cache/pip/http-v2"
   [ "$(mm_log_rows refused)" = "$HOME/.cache/pip/wheels"$'\t'"size unknown (timed out)" ]
-  [[ "$output" == *"1 kept"* ]]
+  [[ "$output" == *"1 kept (size unknown (timed out))"* ]]   # the actual reason, not a guess
 }
 
 @test "catalog cache entries used in the last 7 days stay (an MCP server npx runs); older ones go" {

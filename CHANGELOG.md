@@ -89,6 +89,9 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   `mm help COMMAND` shows that command's help.
 - The `mm` menu shows the highlighted command's `--help` in a preview below the list (fzf 0.29
   included).
+- `mm clean` names why it kept items (`2 kept (used by ~/.claude.json)`), the most common reason
+  of that step with a pointer to `mm history` when there are others; it used to print a guess,
+  `(in use/whitelisted)`.
 
 ### Changed
 

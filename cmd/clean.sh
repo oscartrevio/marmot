@@ -135,12 +135,24 @@ _clean_to_bytes() {
   }'
 }
 
-# _clean_detail COUNT NOUN BYTES [KEPT] [FAILED] — "3 items, 1.2GB, 1 kept (in use/whitelisted)".
+# _clean_kept — count one item mm_rm refused in the caller's `kept`, and remember why
+# (MM_SKIP_REASON) for its _clean_detail line.
+_CLEAN_KEPT_WHY=()
+_clean_kept() { kept=$((kept + 1)); _CLEAN_KEPT_WHY+=("$MM_SKIP_REASON"); }
+
+# _clean_detail COUNT NOUN BYTES [KEPT] [FAILED] — "3 items, 1.2GB, 1 kept (in use)". The reason
+# is the most common one of the KEPT last _clean_kept calls (this step's), with a pointer to the
+# rest when they differ.
 _clean_detail() {
-  local noun="$2" d
+  local noun="$2" d why
   (( $1 == 1 )) && noun="${noun%s}"
   d="$1 $noun, $(mm_human "$3")"
-  (( ${4:-0} > 0 )) && d+=", $4 kept (in use/whitelisted)"
+  if (( ${4:-0} > 0 )); then
+    why=$(printf '%s\n' "${_CLEAN_KEPT_WHY[@]: -$4}" | sort | uniq -c | sort -k1,1nr -s | awk -v dry="$MM_DRY_RUN" '
+      NF { n++; if (n == 1) { sub(/^ *[0-9]+ /, ""); top = $0 } }
+      END { if (n > 1) top = top "; other reasons" (dry == 1 ? "" : ": mm history"); print top }')
+    d+=", $4 kept (${why:-refused})"
+  fi
   (( ${5:-0} > 0 )) && d+=", $5 failed"
   printf '%s' "$d"
 }
@@ -188,7 +200,7 @@ _clean_contents() {
     mm_rm "$dir/$w" "$dir"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
-      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
       *) fail=$((fail + 1)) ;;
     esac
   done
@@ -382,7 +394,7 @@ _clean_revisions_row() {
     mm_rm "$dir/${rels[$i]}" "$dir"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
-      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
       *) fail=$((fail + 1)) ;;
     esac
   done
@@ -440,7 +452,7 @@ _clean_versions_row() {
     mm_rm "$dir/$v" "$dir"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
-      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
       *) fail=$((fail + 1)) ;;
     esac
   done
@@ -508,7 +520,7 @@ _clean_trash() {
     mm_rm "$trash/files/$name" "$trash"
     case $? in
       0) n=$((n + 1)) freed=$((freed + MM_LAST_BYTES)) ;;
-      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)); continue ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept; continue ;;
       *) fail=$((fail + 1)); continue ;;
     esac
     # The .trashinfo goes with its item; it is metadata, not a counted item.
@@ -685,7 +697,7 @@ _clean_agent_logs() {
         MM_AGENT_WAIVER=$root mm_rm "$path" "$root"
         case $? in
           0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) t=${t%.*}; (( t < old )) && old=$t ;;
-          1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+          1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
           *) fail=$((fail + 1)) ;;
         esac
       done < <(find "$root" -xdev \( -type d \( "${prune[@]}" \) -prune \) -o \
@@ -905,7 +917,7 @@ _clean_cloud_log_rm() {
   case $? in
     0) n=$((n + 1)) b=$((b + MM_LAST_BYTES))
        if [[ -z "$oldest" ]] || (( $2 < oldest )); then oldest=$2; fi ;;
-    1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+    1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
     *) fail=$((fail + 1)) ;;
   esac
   return 0
@@ -1035,7 +1047,7 @@ _clean_browser_profile() {
     mm_rm "$profile/Default/$leaf" "$profile"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
-      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
       *) fail=$((fail + 1)) ;;
     esac
   done
@@ -1394,7 +1406,9 @@ _clean_root_files() {
   done
   for id in "${!gone[@]}"; do (( ${gone[$id]} >= ${nlink[$id]} )) && freed=$((freed + ${isize[$id]})); done
   _clean_track "$freed" "$removed"
-  mm_ok "$label" "$(_clean_detail "$removed" files "$freed" $((n - removed)))$note"
+  local left=$((n - removed)) kn=""
+  (( left )) && kn=", $left kept (changed or opened since the listing)"
+  mm_ok "$label" "$(_clean_detail "$removed" files "$freed")$kn$note"
 }
 
 # _clean_user_crash_reports — the user's own apport reports (~/.local/share/apport): entries with
@@ -1415,7 +1429,7 @@ _clean_user_crash_reports() {
     mm_rm "$e" "$dir"
     case $? in
       0) n=$((n + 1)) freed=$((freed + MM_LAST_BYTES)) ;;
-      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
       *) fail=$((fail + 1)) ;;
     esac
   done
@@ -1694,7 +1708,7 @@ _clean_editor_builds() {
       mm_rm "$b" "$root"; rc=$?
       case $rc in
         0) n=$((n + 1)); bytes=$((bytes + MM_LAST_BYTES)) ;;
-        1) kept=$((kept + 1)) ;;
+        1) _clean_kept ;;
         2) fail=$((fail + 1)) ;;
       esac
     done
@@ -1720,7 +1734,7 @@ _clean_editor_leftovers() {
         mm_rm "$ext/$e" "$ext"
         case $? in
           0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
-          1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+          1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
           *) fail=$((fail + 1)) ;;
         esac
       done < <(_clean_obsolete_names "$ext/.obsolete")
@@ -1753,7 +1767,7 @@ _clean_jetbrains_backends() {
     mm_rm "$root/$name" "$root"
     case $? in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
-      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
       *) fail=$((fail + 1)) ;;
     esac
   done
@@ -1827,7 +1841,7 @@ _clean_browser_tmp() {
     rc=0; mm_rm "$e" "$root" || rc=$?
     case $rc in
       0) n=$((n + 1)) b=$((b + MM_LAST_BYTES)) ;;
-      1) [[ "$MM_SKIP_REASON" != missing ]] && kept=$((kept + 1)) ;;
+      1) [[ "$MM_SKIP_REASON" != missing ]] && _clean_kept ;;
       *) fail=$((fail + 1)) ;;
     esac
   done
