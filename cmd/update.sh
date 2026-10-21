@@ -189,14 +189,14 @@ mm_cmd_main() {
   fi
   (( ahead > 0 )) && mm_info "$ahead local commit(s) not on $upstream: kept"
   if (( behind > 0 )); then
-    mm_info "$behind new commit(s) on $upstream:"
     # The CHANGELOG bullets say what changes for the user; the commit subjects stand in without them.
     local notes
     notes=$(_update_changelog "$head" "$target")
     if [[ -n "$notes" ]]; then
-      mm_info "From CHANGELOG.md:"
+      mm_info "$behind new commit(s) on $upstream, from CHANGELOG.md:"
       printf '%s\n' "$notes"
     else
+      mm_info "$behind new commit(s) on $upstream:"
       git -C "$_UP_SRC" log --no-decorate --format='%h %s' -n "$_UPDATE_SHOW" "HEAD..$target" | sed 's/^/    /'
       (( behind > _UPDATE_SHOW )) && mm_info "  … and $((behind - _UPDATE_SHOW)) more"
     fi

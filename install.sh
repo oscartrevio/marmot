@@ -264,6 +264,7 @@ _in_the_way() {
 # _finale — the first-run message: the marmot, three next steps, then the completion line for each
 # shell whose rc file does not load it yet. Printed only: nothing is run, no rc file is written.
 _finale() {
+  say ""
   cat <<'ART'
      _..--.._
   ()'        '()     marmot
