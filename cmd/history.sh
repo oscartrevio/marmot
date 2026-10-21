@@ -82,10 +82,13 @@ mm_cmd_main() {
     esac
     shift
   done
-  (( json )) && ! command -v jq >/dev/null && mm_die "jq is required for --json"
   local f; local -a logs=()
   for f in "$MM_LOG_FILE.old" "$MM_LOG_FILE"; do [[ -s "$f" ]] && logs+=("$f"); done
-  (( ${#logs[@]} )) || { echo "No operations recorded yet ($MM_LOG_FILE)."; return 0; }
+  if (( ${#logs[@]} == 0 )); then
+    if (( json )); then echo '[]'; else echo "No operations recorded yet ($MM_LOG_FILE)."; fi
+    return 0
+  fi
+  (( json )) && ! command -v jq >/dev/null && mm_die "jq is required for --json"
 
   if (( json )); then
     _history_awk "$limit" 1 "${logs[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t")

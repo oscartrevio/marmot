@@ -118,6 +118,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 
 - Sizes of 1000-1023 bytes print as `1KB`, not `0KB`, and KB sizes are rounded (1.9KB is `2KB`,
   not `1KB`); `mm history` uses the same formatter.
+- `mm history --json` with nothing logged yet prints `[]` instead of a sentence (and no longer
+  needs jq for that).
 
 ## 0.2.0
 

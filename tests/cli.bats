@@ -25,10 +25,18 @@ teardown() { mm_test_teardown; }
   [ "$status" -eq 0 ]
 }
 
-@test "history with no log says so" {
+@test "history with no log says so; --json prints an empty array, even without jq" {
   run mm history
   [ "$status" -eq 0 ]
   [[ "$output" == "No operations recorded yet"* ]]
+  mkdir -p "$SB/bin"
+  local d f
+  for d in /usr/local/bin /usr/bin /bin; do
+    for f in "$d"/*; do [[ "${f##*/}" == jq || -e "$SB/bin/${f##*/}" ]] || ln -s "$f" "$SB/bin/${f##*/}"; done
+  done
+  PATH="$BATS_TEST_TMPDIR/stubs:$SB/bin" run mm history --json
+  [ "$status" -eq 0 ]
+  [ "$output" = "[]" ]
 }
 
 @test "history reads old 5-column and new 6-column rows, as text and JSON" {
