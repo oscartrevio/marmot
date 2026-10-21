@@ -74,6 +74,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   CPU and whether an agent is at work; a short terminal drops it first.
 - `mm status` names the command for a full disk, full inodes or swap in its compact and full views,
   the same line `--agent` prints.
+- `mm update` and `mm update --check` list the CHANGELOG bullets the incoming commits add, after
+  the commit subjects.
 - `~/.config/marmot/agents`: add any coding agent or orchestrator in the same row format as the
   built-in table; its state is protected and its sessions show in `mm status`.
 - Files that running processes, launchers in `~/.local/bin` and `$PATH` folders in your home,

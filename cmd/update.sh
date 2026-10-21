@@ -133,6 +133,17 @@ _update_ignored_clash() {
   done
 }
 
+# _update_changelog FROM TO — the CHANGELOG.md bullets that the range FROM..TO adds, indented; the
+# first _UPDATE_SHOW, then "… and N more". Prints nothing when the range leaves the file alone.
+_update_changelog() {
+  git -C "$_UP_SRC" diff --unified=0 "$1" "$2" -- CHANGELOG.md 2>/dev/null |
+    awk -v show="$_UPDATE_SHOW" '
+      /^\+- / { on = 1; n++; if (n <= show) print "    " substr($0, 2); next }
+      /^\+  / { if (on && n <= show) print "    " substr($0, 2); next }
+      { on = 0 }
+      END { if (n > show) printf "    … and %d more\n", n - show }'
+}
+
 mm_cmd_main() {
   local report=""
   while (( $# )); do
@@ -183,6 +194,9 @@ mm_cmd_main() {
     mm_info "$behind new commit(s) on $upstream:"
     git -C "$_UP_SRC" log --no-decorate --format='%h %s' -n "$_UPDATE_SHOW" "HEAD..$target" | sed 's/^/    /'
     (( behind > _UPDATE_SHOW )) && mm_info "  … and $((behind - _UPDATE_SHOW)) more"
+    local notes
+    notes=$(_update_changelog "$head" "$target")
+    if [[ -n "$notes" ]]; then mm_info "CHANGELOG.md in that range:"; printf '%s\n' "$notes"; fi
   fi
 
   # The install can lag the checkout (pulled by hand, not reinstalled): reinstalling catches up.
