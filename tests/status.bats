@@ -412,6 +412,25 @@ EOF
   jq -e '.health_reasons | all(test("inodes") | not)' <<<"$JSON"
 }
 
+@test "a full disk names its fix in the compact, full and --agent views" {
+  mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 910 90 1000 0\n"'
+  run env COLUMNS=80 mm status --once
+  [ "$status" -eq 0 ]
+  grep -qF "→ mm clean --dry-run, then mm purge --dry-run" <<<"$output"
+  run env COLUMNS=120 mm status --once --view full
+  grep -qF "→ mm clean --dry-run, then mm purge --dry-run" <<<"$output"
+  run env -u NO_COLOR mm status --agent
+  grep -qxF -- "- disk / 91% full: mm clean --dry-run, then mm purge --dry-run" <<<"$output"
+}
+
+@test "no fix is named while the disk has room" {
+  mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 100 900 1000 0\n"'
+  run env COLUMNS=80 mm status --once
+  [[ "$output" != *"→ mm clean"* ]]
+  run env -u NO_COLOR mm status --agent
+  [[ "$output" != *"disk / "* ]]
+}
+
 @test "marmot's own processes never make the top CPU or memory lists" {
   needs_jq
   # The apt probe runs under mm status: make it the busiest process on the machine while sampled.

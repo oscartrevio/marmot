@@ -1166,6 +1166,7 @@ _status_derive() {
     ((sz > 0)) && ST_ROOT_PCT=$((us * 1000 / sz))
     ((it > 0)) && ST_ROOT_IPCT=$((iu * 1000 / it))
   done
+  _status_fixes
   _status_health
 }
 
@@ -1249,6 +1250,56 @@ _status_slow_load() {
   ((ST_CTR)) && ST_KPENDING=0
   ST_FAILED=()
   read -r -a ST_FAILED <<<"${ST_SLOW[failed]:-}"
+}
+
+# _status_fixes — the problems that have a marmot command addressing them, into ST_FIXES as
+# "key<TAB>problem<TAB>command": disk and inodes per mount, and swap. The compact and full views and
+# --agent all read this list, so a threshold and its command are written once. Commands are shown,
+# never run.
+_status_fixes() {
+  local v m sz us av it iu dp ip
+  ST_FIXES=()
+  for v in "${ST_DF[@]}"; do
+    read -r m sz us av it iu <<<"$v"
+    dp=0 ip=0
+    ((sz > 0)) && dp=$((us * 100 / sz))
+    ((it > 0)) && ip=$((iu * 100 / it))
+    if ((dp >= 80)); then
+      ST_FIXES+=("disk $m"$'\t'"disk $m $dp% full"$'\t'"mm clean --dry-run, then mm purge --dry-run")
+    fi
+    if ((ip >= 90)); then
+      ST_FIXES+=("inodes $m"$'\t'"inodes on $m $ip% used"$'\t'"mm purge --dry-run (node_modules and build output), mm clean --dry-run")
+    fi
+  done
+  if ((ST_SWAP_PCT > 500)); then
+    ST_FIXES+=("swap"$'\t'"swap $((ST_SWAP_PCT / 10))% used"$'\t'"mm optimize (swap reset)")
+  fi
+}
+
+# _status_fix_cmds PATTERN... — the commands of the ST_FIXES entries whose key matches a PATTERN (glob),
+# in ST_FIXCMDS.
+_status_fix_cmds() {
+  local e k p c pat
+  ST_FIXCMDS=()
+  for e in "${ST_FIXES[@]}"; do
+    IFS=$'\t' read -r k p c <<<"$e"
+    for pat in "$@"; do
+      # shellcheck disable=SC2254 # the patterns are globs on purpose
+      case "$k" in $pat) ST_FIXCMDS+=("$c"); break ;; esac
+    done
+  done
+}
+
+# _status_fix_lines WIDTH PATTERN... — the dim "→ command" texts for those fixes, cut to WIDTH, in ST_FIXLINES.
+_status_fix_lines() {
+  local w=$1 c t
+  shift
+  _status_fix_cmds "$@"
+  ST_FIXLINES=()
+  for c in "${ST_FIXCMDS[@]}"; do
+    _status_trunc t "→ $c" "$w"
+    ST_FIXLINES+=("$t")
+  done
 }
 
 # ---------------------------------------------------------------- health
@@ -1349,7 +1400,7 @@ _status_panel_cpu() {
 }
 
 _status_panel_mem() {
-  local bar pct used total avail sw swu
+  local bar pct used total avail sw swu v
   _status_title "▦ Memory"
   _status_gib used $(((ST_MT - ST_MA) * 1024))
   _status_gib total $((ST_MT * 1024))
@@ -1369,6 +1420,8 @@ _status_panel_mem() {
   else
     _status_row Swap "${C_DIM}none$C_RESET"
   fi
+  _status_fix_lines $((ST_W - 9)) swap
+  for v in "${ST_FIXLINES[@]}"; do _status_row "" "$C_DIM$v$C_RESET"; done
   if [[ -n "$ST_PSI" ]]; then
     local p=${ST_PSI%.*} c=""
     if ((p >= 20)); then c=$C_RED; elif ((p >= 5)); then c=$C_YELLOW; fi
@@ -1398,6 +1451,8 @@ _status_panel_disk() {
       _status_row Inodes "$bar $c$(printf '%6s' "$pct%")$C_RESET  $free free"
     fi
   done
+  _status_fix_lines $((ST_W - 9)) 'disk *' 'inodes *'
+  for v in "${ST_FIXLINES[@]}"; do _status_row "" "$C_DIM$v$C_RESET"; done
   if [[ -n "$ST_DISK" ]]; then
     _status_io_level "$ST_RD_BPS"; _status_meter meter "$REPLY"; _status_rate rate "$ST_RD_BPS"
     _status_row Read "$meter $(printf '%10s' "$rate") · $ST_DISK"
@@ -2020,6 +2075,8 @@ _status_compact() {
   ((ST_SWT > 0)) && s="swap $(((ST_SWAP_PCT + 5) / 10))%"
   printf -v t '%s %3d%%  %s GB free%s · %s' "$bar" $(((ST_MEM_USED_PCT + 5) / 10)) "$v" "${ST_CG_MEM_TXT:+ of $ST_CG_MEM_TXT}" "$s"
   _status_cline MEM "$t"
+  _status_fix_lines $((w - 7)) swap
+  for t in "${ST_FIXLINES[@]}"; do ST_FRAME+=("       $C_DIM$t$C_RESET"); done
 
   t=""
   for e in "${ST_DF[@]}"; do
@@ -2041,6 +2098,8 @@ _status_compact() {
     t+="  r ${r% MB/s}  w $wr"
   fi
   _status_cline DISK "$t"
+  _status_fix_lines $((w - 7)) 'disk *' 'inodes *'
+  for t in "${ST_FIXLINES[@]}"; do ST_FRAME+=("       $C_DIM$t$C_RESET"); done
 
   if [[ -n "$ST_IF" ]]; then
     _status_rate r "$ST_RX_BPS"
@@ -2267,19 +2326,15 @@ _status_agent_text() {
     [[ "$kind" == agent ]] && t="orphaned agent"
     probs+=("$t $name (pid $pid) in deleted $cwd: mm optimize")
   done
-  for e in "${ST_DF[@]}"; do
-    read -r m sz us av it iu <<<"$e"
-    ((sz > 0)) || continue
-    p=$((us * 100 / sz))
-    ((p >= 80)) && probs+=("disk $m $p% full: mm clean --dry-run, then mm purge --dry-run")
-    ((it > 0 && iu * 100 / it >= 90)) && probs+=("inodes on $m $((iu * 100 / it))% used: mm purge --dry-run (node_modules and build output), mm clean --dry-run")
+  for e in "${ST_FIXES[@]}"; do
+    IFS=$'\t' read -r _ t p <<<"$e"
+    probs+=("$t: $p")
   done
   IFS=$'\t' read -r pid kb name _ <<<"${ST_TOPMEM[0]:-}"
   if ((ST_MEM_AVAIL_PCT < 200)) && [[ -n "$pid" ]]; then
     _status_gib t $((kb * 1024))
     probs+=("memory $((ST_MEM_AVAIL_PCT / 10))% available: largest is $name (pid $pid, $t GB); idle agent sessions can be closed")
   fi
-  ((ST_SWAP_PCT > 500)) && probs+=("swap $((ST_SWAP_PCT / 10))% used: mm optimize (swap reset)")
   for e in "${ST_REASONS[@]}"; do
     [[ "$e" == CPU* || "$e" == load* ]] || continue
     IFS=$'\t' read -r pid cpu name _ <<<"${ST_TOPCPU[0]:-}"

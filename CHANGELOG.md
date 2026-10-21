@@ -72,6 +72,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - MIT license.
 - `mm status`: a marmot peeks over the dashboard, its face summing up the health score, a busy
   CPU and whether an agent is at work; a short terminal drops it first.
+- `mm status` names the command for a full disk, full inodes or swap in its compact and full views,
+  the same line `--agent` prints.
 - `~/.config/marmot/agents`: add any coding agent or orchestrator in the same row format as the
   built-in table; its state is protected and its sessions show in `mm status`.
 - Files that running processes, launchers in `~/.local/bin` and `$PATH` folders in your home,
