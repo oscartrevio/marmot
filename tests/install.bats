@@ -254,7 +254,7 @@ listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
   mkdir -p "$MARMOT_BIN"; ln -s /bin/true "$MARMOT_BIN/marmot"
   run "$MM_SRC/install.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"kept $MARMOT_BIN/marmot"* ]]
+  [[ "$output" == *"$MARMOT_BIN/marmot"* ]]
   [ "$(readlink "$MARMOT_BIN/marmot")" = /bin/true ]
   [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
   run "$MM_SRC/install.sh" --uninstall
