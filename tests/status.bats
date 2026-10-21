@@ -868,18 +868,17 @@ at() { date -d "$1" +%s; }
 }
 
 @test "blink: the live view closes open eyes for a moment every 8-10 s; a snapshot never does" {
-  (( $(nproc) > 1 )) || skip "one busy core would be all the CPU: squinting, not blinking"
-  mm_test_now '2026-06-10 12:00'
-  cp "$(command -v bash)" "$SB/bin/claude"
-  detached "$SB" "$SB/bin/claude" -c 'while :; do :; done'
+  # A disk at 85% is a health reason: the face is neutral (o o, open) whatever the agents do;
+  # never sleepy (- -), so closed eyes can only be a blink.
+  mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 850 150 1000 0\n"'
   fake_ss "$LISTEN_SSH" ""
   run env COLUMNS=100 mm status --once
   [ "$status" -eq 0 ]
-  grep -qE '^   \|  [\^oO]    [\^oO]  \|' <<<"$output"
+  grep -qE '^   \|  [o<]    [o>]  \|' <<<"$output"
   [[ "$output" != *"|  -    -  |"* ]]
-  live 'sleep 13; printf q'
+  live 'sleep 21; printf q'
   [ "$LIVE_STATUS" -eq 0 ]
-  grep -qE '^   \|  [\^oO]    [\^oO]  \|' <<<"$LIVE_TEXT"
+  grep -qF '   |  o    o  |' <<<"$LIVE_TEXT"
   grep -qF '   |  -    -  |' <<<"$LIVE_TEXT"
 }
 
@@ -980,4 +979,14 @@ fake_cgroup() {
   jq -e '.container == null and .memory.total != 536870912 and (.system.reboot_required | type == "boolean")' <<<"$JSON"
   run mm status --once
   [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" != *container* ]]
+}
+
+@test "live mode: w makes the marmot wave for a moment (a snapshot never shows it)" {
+  fake_ss "$LISTEN_SSH" ""
+  run env COLUMNS=100 mm status --once
+  [[ "$output" != *"(mm)--UU------"* ]]
+  live 'sleep 4; printf w; sleep 1; printf q'
+  [ "$LIVE_STATUS" -eq 0 ]
+  grep -qF -- '--(mm)--UU------' <<<"$LIVE_TEXT"
+  grep -qE '^   \|  .    .  \| +\(mm\)' <<<"$LIVE_TEXT"
 }

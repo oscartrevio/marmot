@@ -12,14 +12,31 @@
 # Every glyph is one terminal column wide in every locale (Unicode East Asian Width N or Na) and
 # none is an emoji; the face's shape carries its meaning without color.
 
-# Moods → "LEFT RIGHT OPEN": the eyes, and 1 when they are open (only open eyes blink).
+# Moods → "LEFT RIGHT OPEN": the eyes, and 1 when they are open (only open eyes blink). whistle
+# is mm whistle's own.
 declare -gA MM_FACES=(
   [happy]='^ ^ 1' [proud]='^ ^ 1' [neutral]='o o 1' [alert]='O O 1' [squint]='> < 0'
-  [dizzy]='x x 0' [sleepy]='- - 0' [night]='- o 0' [tired]='¬ ¬ 0'
+  [dizzy]='x x 0' [sleepy]='- - 0' [night]='- o 0' [tired]='¬ ¬ 0' [whistle]='^ ^ 0'
 )
 # Moods → "COLOR TEXT": the mark after the head (COLOR names a C_* variable).
 declare -gA MM_FACE_MARKS=(
   [alert]='C_YELLOW !' [sleepy]='C_DIM z Z' [night]='C_DIM c[_]' [proud]='C_YELLOW ✦'
+  [whistle]='C_CYAN ♫~'
+)
+# True things about marmots, for mm whistle (one a day).
+MM_MARMOT_FACTS=(
+  "Marmots whistle a sharp alarm to warn their colony; that is why groundhogs are called whistle pigs."
+  "A groundhog is a marmot: Marmota monax, the most widespread of the 15 marmot species."
+  "Alpine marmots hibernate six to eight months a year, the whole family in one burrow."
+  "Hibernating Alpine marmots huddle together, and the adults keep the young ones warm."
+  "In hibernation a marmot's heart beats only a few times a minute."
+  "Marmots store no food for winter: they fatten up all summer and live off the fat."
+  "Marmots line their winter burrows with dry grass they cut and carry in at the end of summer."
+  "Alaska made February 2 Marmot Day in 2009: not only the groundhog gets a day."
+  "Marmots are the heaviest members of the squirrel family."
+  "Alpine marmots whistle once for an eagle overhead, and again and again for a fox on the ground."
+  "The Olympic marmot lives nowhere but the mountains of Washington's Olympic Peninsula."
+  "The Vancouver Island marmot is one of the rarest mammals in North America."
 )
 # Hats → "COLOR TEXT": eight columns that replace the top of the head.
 declare -gA MM_HATS=([hardhat]='C_YELLOW _/====\_' [santa]='C_RED {~~~~~}o' [party]='C_CYAN _../\.._')
@@ -234,10 +251,12 @@ mm_marmot_dress() {
 # its paws and teeth on a rule WIDTH columns wide. The marmot takes the first 21 columns; the
 # caller fits the texts into the rest. MOOD is one of MM_FACES, its eyes in COLOR (an escape
 # sequence). The rest is MM_LOOK_*: CHEEKS=1 stuffs its cheeks and BLINK=1 closes open eyes (the
-# face); HAT, MARK, EYES and RULE as mm_marmot_dress sets them (the decorations).
+# face); HAT, MARK, EYES and RULE as mm_marmot_dress sets them (the decorations); WAVE=1 raises
+# its right paw beside its face (mm status's live view, key w).
 mm_marmot_draw() {
   local LC_ALL=C.UTF-8
   local mood=$1 w=$2 title=${3:-} facts=${4:-} col=${5:-} l r open c t left="     " mark="" head row3 vis
+  local paw='(mm)'
   local rule n i p
   local -a pats
   read -r -a pats <<<"${MM_LOOK_RULE:-}"
@@ -266,6 +285,7 @@ mm_marmot_draw() {
   else row3="|  $col$l$C_RESET    $col$r$C_RESET  |"; fi
   vis=12
   if ((${MM_LOOK_CHEEKS:-0})); then row3="  ($row3)" vis=$((vis + 4)); else row3="   $row3" vis=$((vis + 3)); fi
+  if ((${MM_LOOK_WAVE:-0})); then printf -v row3 '%s%*s(mm)' "$row3" $((16 - vis)) '' && vis=20 paw=$C_DIM----; fi
   [[ -n "$facts" ]] && printf -v row3 '%s%*s%s%s%s' "$row3" $((21 - vis)) '' "$C_DIM" "$facts" "$C_RESET"
   # Row 5: the rule, light snow over all of it, a shadow at its left end, a spider's web or a
   # black cat at its right end.
@@ -293,5 +313,5 @@ mm_marmot_draw() {
     "  ()'        '()${title:+     $title}"
     "$row3"
     "  .--.  \\/  .--.${MM_LOOK_GREET:+     $C_DIM$MM_LOOK_GREET$C_RESET}"
-    "$C_DIM--$C_RESET(mm)$C_DIM--${C_RESET}UU$C_DIM--$C_RESET(mm)$C_DIM--$rule$C_RESET")
+    "$C_DIM--$C_RESET(mm)$C_DIM--${C_RESET}UU$C_DIM--$C_RESET$paw$C_DIM--$rule$C_RESET")
 }

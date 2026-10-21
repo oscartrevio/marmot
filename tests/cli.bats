@@ -362,3 +362,52 @@ said() { grep -cF -- "$1" <<<"$output" || true; }
   MM_TTY=1 run mm purge --yes "$SB"
   [ "$(said "Last year marmot freed")" -eq 0 ]
 }
+
+@test "easter eggs: --force anywhere is an error and nothing runs; the rest print and change nothing" {
+  artifact
+  run mm purge --yes --force "$SB"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no --force"* ]]
+  run mm --force clean
+  [ "$status" -ne 0 ]
+  [ -e "$SB/p/node_modules/blob" ]
+  [ ! -e "$XDG_STATE_HOME/marmot/operations.log" ]
+  run mm 42
+  [ "$status" -eq 0 ] && [ "${#lines[@]}" -eq 1 ]
+  run mm xyzzy
+  [ "$status" -eq 0 ] && [ "${#lines[@]}" -eq 1 ]
+  run mm moo
+  [ "$status" -eq 0 ] && [[ "$output" == *"mm whistle"* ]]
+  run mm make me a sandwich
+  [ "$status" -eq 1 ] && [ "${#lines[@]}" -eq 1 ]
+  run mm make me a coffee
+  [ "$status" -ne 0 ] && [[ "$output" == *"unknown command"* ]]
+  [ -e "$SB/p/node_modules/blob" ]
+  [ ! -e "$XDG_STATE_HOME/marmot" ]                             # nothing logged, no state written
+  # Hidden: neither the help nor the completion offers them.
+  local egg
+  for egg in whistle xyzzy moo sandwich 42; do
+    [[ "$(mm --help)" != *"$egg"* ]] || { echo "help shows $egg"; false; }
+    ! grep -qw -- "$egg" "$MM_SRC/completion/mm.bash" "$MM_SRC/completion/_mm" || { echo "completion offers $egg"; false; }
+  done
+}
+
+@test "easter eggs: sudo mm make me a sandwich gets one" {
+  unshare -r true 2>/dev/null || skip "no user namespaces here to stand for root"
+  run unshare -r "$MM_SRC/marmot" make me a sandwich
+  [ "$status" -eq 0 ] && [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "easter eggs: mm whistle draws the marmot with a true marmot fact, a new one each day" {
+  local one two
+  mm_test_now '2026-06-10 12:00'
+  run mm whistle
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"--(mm)--UU--(mm)--"* ]]
+  one=${lines[-1]}
+  mm_test_now '2026-06-11 12:00'
+  run mm whistle
+  two=${lines[-1]}
+  [ -n "$one" ] && [ "$one" != "$two" ]
+  [ ! -e "$XDG_STATE_HOME/marmot" ]
+}

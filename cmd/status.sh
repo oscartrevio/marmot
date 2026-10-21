@@ -259,7 +259,7 @@ _status_init() {
   ST_CL_VIA="" ST_CL_TRANSPORT=none ST_CL_TTY="" ST_CL_IDLE="" ST_TERM_NAME="" ST_TERM_SSH="" ST_TERM_INO=() ST_TERM_LOCAL=0
   ST_RTTH=() ST_TS_FOR="" ST_TS_AT=0
   # The marmot (see _status_marmot): the clock, whether a cleanup is at work, a blink.
-  ST_NOW=0 ST_DAY="" ST_ATWORK=0 ST_BLINK=0 ST_CHEEKS=0 ST_PROUD_AT=0 ST_PROUD_FREED=0 ST_PROUD_NOTE="" ST_OCC=()
+  ST_NOW=0 ST_DAY="" ST_ATWORK=0 ST_BLINK=0 ST_WAVE=0 ST_CHEEKS=0 ST_PROUD_AT=0 ST_PROUD_FREED=0 ST_PROUD_NOTE="" ST_OCC=()
   _status_sched
   _status_term_find
 }
@@ -1983,7 +1983,7 @@ _status_marmot() {
   _status_mood
   mood=$REPLY
   mm_marmot_dress "$mood" "$ST_SCORE" "$ST_ATWORK" "${ST_OCC[@]}"
-  MM_LOOK_CHEEKS=$ST_CHEEKS MM_LOOK_BLINK=$ST_BLINK
+  MM_LOOK_CHEEKS=$ST_CHEEKS MM_LOOK_BLINK=$ST_BLINK MM_LOOK_WAVE=$ST_WAVE
   _status_greet $((w - 21))
   if [[ "$mood" == proud && -n "$ST_PROUD_NOTE" ]]; then
     _status_vlen len "$title"
@@ -2649,6 +2649,7 @@ _status_paint() {
 
 # _status_live — the live view: a frame every ST_INTERVAL seconds and on a key or a resize. Every
 # 8 to 10 seconds the marmot blinks: ST_BLINK=1 for one frame of 0.15 s (fx_end), between refreshes.
+# Key w (not in the help) makes it wave for 1.5 s (ST_WAVE).
 _status_live() {
   local interval_us=$((ST_INTERVAL * 1000000)) next now rem t key wake blink_at fx_end=0
   ST_STTY=$(stty -g </dev/tty 2>/dev/null)
@@ -2680,7 +2681,7 @@ _status_live() {
       continue
     fi
     if [[ "${ST_RESIZED:-0}" == 1 ]]; then ST_RESIZED=0 ST_REPAINT=1; _status_draw; continue; fi
-    if ((fx_end && now >= fx_end)); then ST_BLINK=0 fx_end=0; _status_draw; continue; fi
+    if ((fx_end && now >= fx_end)); then ST_BLINK=0 ST_WAVE=0 fx_end=0; _status_draw; continue; fi
     if ((!fx_end && now >= blink_at)); then
       ST_BLINK=1 fx_end=$((now + 150000)) blink_at=$((now + 8000000 + RANDOM % 2001 * 1000))
       _status_draw
@@ -2700,6 +2701,10 @@ _status_live() {
           [vV])
             if [[ "$ST_VIEW" == compact ]]; then ST_VIEW=full; else ST_VIEW=compact; fi
             ST_REPAINT=1
+            _status_draw
+            ;;
+          [wW])
+            ST_WAVE=1 ST_BLINK=0 fx_end=$((${EPOCHREALTIME/[.,]/} + 1500000))
             _status_draw
             ;;
         esac

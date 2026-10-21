@@ -97,14 +97,33 @@ mm_unknown_command() {
   mm_die "unknown command: $1.${best:+ Did you mean $best?} (see mm --help)"
 }
 
+# mm_whistle — `mm whistle`: the marmot whistles, dressed for the day, and tells a true marmot
+# fact (lib/mascot.sh MM_MARMOT_FACTS), a new one each day.
+mm_whistle() {
+  local now day
+  mm_now
+  now=$REPLY
+  mm_log_facts "$now"
+  mm_occasions "$now" "$MM_FACT_SINCE"
+  mm_marmot_dress whistle "" 0 "${MM_OCC[@]}"
+  MM_LOOK_CHEEKS=0 MM_LOOK_BLINK=0 MM_LOOK_WAVE=0 MM_LOOK_GREET=${MM_LOOK_GREETS[0]:-}
+  mm_marmot_draw whistle 60 "${C_BOLD}Fweeeet!$C_RESET"
+  printf -v day '%(%j)T' "$now"
+  printf '\n'
+  printf '%s\n' "${MM_ART[@]}"
+  printf '\n%s\n\n' "${MM_MARMOT_FACTS[10#$day % ${#MM_MARMOT_FACTS[@]}]}"
+}
+
 # Global flags may appear anywhere; everything else is passed to the command. -y/--yes belongs to
-# mm purge alone, wherever it is written: decided once the command is known.
+# mm purge alone, wherever it is written: decided once the command is known. marmot has no
+# --force (AGENTS.md: nothing switches a check off), and says so before anything runs.
 args=() yes=()
 for a in "$@"; do
   case "$a" in
     -n|--dry-run) export MM_DRY_RUN=1 ;;
     -y|--yes) yes+=("$a") ;;
     --debug) export MM_DEBUG=1 ;;
+    --force) mm_die "marmot has no --force. May the force be with you, though." ;;
     *) args+=("$a") ;;
   esac
 done
@@ -132,6 +151,15 @@ case "${1:-}" in
     # shellcheck source=cmd/update.sh
     . "$MM_HOME/cmd/update.sh"
     _update_version ;;
+  # Easter eggs: in neither the help nor the completion; each prints and exits, nothing runs.
+  42) echo "Don't panic." ;;
+  xyzzy) echo "Nothing happens." ;;
+  moo) echo "Marmots don't moo. They whistle: mm whistle" ;;
+  whistle) mm_whistle ;;
+  make)
+    [[ "${*:2}" == "me a sandwich" ]] || mm_unknown_command make
+    # xkcd 149: only root gets a sandwich.
+    if (( EUID == 0 )); then echo "Okay."; else echo "What? Make it yourself."; exit 1; fi ;;
   *)
     MM_CMD="$1"; shift
     [[ "$MM_CMD" == analyse ]] && MM_CMD=analyze
