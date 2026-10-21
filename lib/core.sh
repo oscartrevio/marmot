@@ -281,25 +281,72 @@ mm_cg_cores() {
 # root counts as able to, mm_sudo fails, and in-use detection sees only this user's processes.
 # Otherwise sudo never asks mid-run: a command that may need root calls mm_sudo_ask once, up
 # front, and every sudo after it is `sudo -n`, served by passwordless sudo or by the credentials
-# sudo cached when it asked.
+# sudo cached when it asked. mm_sudo_keepalive_start keeps that cache warm for the whole run.
 
 # mm_sudo_ask WHAT — before a run's first root step, on a terminal: unless root, MM_NO_SUDO=1, no
 # sudo, or sudo that works without a password, say that root is needed for WHAT (in a dry run,
 # that nothing will be deleted) and let sudo ask for the password once (`sudo -v`). Refused,
 # failed or not allowed: the rest of the run is MM_NO_SUDO=1, with no more prompts and every root
-# step skipped. Without a terminal nothing is asked.
+# step skipped. Without a terminal nothing is asked. A usable session starts the keepalive.
 mm_sudo_ask() {
   (( EUID == 0 )) && return 0
   [[ "$MM_NO_SUDO" == 1 || "$MM_TTY" != 1 ]] && return 0
   command -v sudo >/dev/null || return 0
-  sudo -n true 2>/dev/null && return 0
+  if sudo -n true 2>/dev/null; then mm_sudo_keepalive_start; return 0; fi
   local dry=""
   [[ "$MM_DRY_RUN" == 1 ]] && dry=" (dry run: it only reads, nothing will be deleted)"
   printf '%s?%s Root is needed for %s%s. sudo asks once; Ctrl-D goes on without it.\n' \
     "$C_YELLOW" "$C_RESET" "$1" "$dry"
-  sudo -v && return 0
+  if sudo -v; then mm_sudo_keepalive_start; return 0; fi
   MM_NO_SUDO=1
   mm_warn "Continuing without sudo: steps that need root are skipped"
+}
+
+# mm_sudo_keepalive_start — start a background loop that refreshes sudo's credential cache with
+# `sudo -n -v` (first after 2 s, then every 30 s; after a failed refresh, again after 5 s), so a
+# run longer than the cache's lifetime keeps its session. Never prompts. Nothing starts as root,
+# with MM_NO_SUDO=1, without a terminal or without sudo; a second call keeps the loop already
+# running. The loop exits when marmot does (it polls this process every second) or at
+# mm_sudo_keepalive_stop. Its stdio is /dev/null and fds 3-9 are closed, so command substitutions
+# and the in-use scan never wait on it or see it holding the user's files. The test suite may
+# shorten the intervals with MM_TEST_SUDO_INTERVAL, honored only inside bats' per-test directory.
+mm_sudo_keepalive_start() {
+  local parent=$$ first=2 period=30 retry=5 box home
+  (( EUID == 0 )) && return 0
+  [[ "$MM_NO_SUDO" == 1 || "$MM_TTY" != 1 ]] && return 0
+  command -v sudo >/dev/null || return 0
+  if [[ -n "${MM_SUDO_KEEPALIVE_PID:-}" ]] && kill -0 "$MM_SUDO_KEEPALIVE_PID" 2>/dev/null; then
+    return 0
+  fi
+  if [[ -n "${MM_TEST_SUDO_INTERVAL:-}" && -n "${BATS_TEST_TMPDIR:-}" ]]; then
+    box=$(realpath -e -- "$BATS_TEST_TMPDIR" 2>/dev/null)
+    home=$(realpath -e -- "$HOME" 2>/dev/null)
+    if [[ -n "$box" && "$home" == "$box"/?* ]]; then
+      first=$MM_TEST_SUDO_INTERVAL period=$MM_TEST_SUDO_INTERVAL retry=$MM_TEST_SUDO_INTERVAL
+    fi
+  fi
+  (
+    cd / || exit 0
+    exec 0</dev/null 1>/dev/null 2>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+    elapsed=0 due=$first
+    while kill -0 "$parent" 2>/dev/null; do
+      sleep 1
+      elapsed=$((elapsed + 1))
+      (( elapsed >= due )) || continue
+      if sudo -n -v >/dev/null 2>&1; then due=$((elapsed + period))
+      else due=$((elapsed + retry)); fi
+    done
+  ) &
+  MM_SUDO_KEEPALIVE_PID=$!
+}
+
+# mm_sudo_keepalive_stop — stop the loop mm_sudo_keepalive_start began, if one is running.
+mm_sudo_keepalive_stop() {
+  local p=${MM_SUDO_KEEPALIVE_PID:-}
+  [[ -n "$p" ]] || return 0
+  kill "$p" 2>/dev/null
+  wait "$p" 2>/dev/null
+  MM_SUDO_KEEPALIVE_PID=""
 }
 
 # mm_can_sudo — 0 if root, or sudo runs without asking (passwordless, or credentials mm_sudo_ask

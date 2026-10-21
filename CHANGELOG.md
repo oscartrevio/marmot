@@ -134,8 +134,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - sudo asks for your password at most once per run. `mm clean` (dry run included), `mm optimize`,
   `mm uninstall` (apt and snap packages) and `mm analyze` (a root-owned folder) ask up front,
   saying what needs root, and use sudo's credential cache after that; `mm clean` asks before the
-  in-use check, which then sees every user's processes. Refused, failed or no sudo: the rest of
-  the run asks nothing more and skips each root step with "needs sudo". It used to prompt again
+  in-use check, which then sees every user's processes. The session stays alive for the whole run,
+  like Mole's: a background `sudo -n -v` refreshes sudo's cache, so a run longer than the cache
+  does not fail its later root steps. Refused, failed or no sudo: the rest of the run asks nothing
+  more and skips each root step with "needs sudo". It used to prompt again
   for every system step, up to `sudo: 3 incorrect password attempts` and beyond. Without a
   terminal, as root and with passwordless sudo nothing changes.
 

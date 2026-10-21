@@ -504,6 +504,63 @@ shift; exec \"\$@\""
   [ ! -e "$SB/sudo.calls" ]
 }
 
+@test "a granted sudo session is refreshed with sudo -n -v for the whole run, and only ever sudo -n" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  # needs a password until sudo -v succeeds; the refresh (-n -v) then succeeds, like a live cache
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'
+case \"\$*\" in
+  -v) touch '$SB/sudo.ok' ;;
+  '-n true') [[ -e '$SB/sudo.ok' ]] ;;
+  '-n -v') ;;
+  *) exit 1 ;;
+esac"
+  export MM_TEST_SUDO_INTERVAL=1
+  MM_TTY=1 mm_sudo_ask "a test" >/dev/null
+  local pid=$MM_SUDO_KEEPALIVE_PID i n
+  [ -n "$pid" ]
+  for ((i = 0; i < 100; i++)); do
+    n=$(grep -c -- '^-n -v$' "$SB/sudo.calls" 2>/dev/null)
+    (( ${n:-0} >= 2 )) && break
+    sleep 0.1
+  done
+  (( ${n:-0} >= 2 ))                                                  # refreshed again and again
+  [ "$(grep -c -- '^-v$' "$SB/sudo.calls")" -eq 1 ]                   # the one password prompt
+  [ -z "$(grep -v -e '^-n ' -e '^-v$' "$SB/sudo.calls")" ]           # every other call was sudo -n
+  mm_sudo_keepalive_start
+  [ "$MM_SUDO_KEEPALIVE_PID" = "$pid" ]                               # a second start keeps one loop
+  mm_sudo_keepalive_stop
+  [ -z "$MM_SUDO_KEEPALIVE_PID" ]
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+@test "the sudo keepalive ends with the marmot process that started it" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  mm_test_fake sudo "exit 0"                                          # passwordless: nothing to ask
+  run env MM_SRC="$MM_SRC" MM_TTY=1 MM_TEST_SUDO_INTERVAL=1 bash -c \
+    '. "$MM_SRC/lib/core.sh"; mm_sudo_ask "a test" >/dev/null; echo "$MM_SUDO_KEEPALIVE_PID"'
+  [ "$status" -eq 0 ]
+  local pid=$output gone s i
+  [[ "$pid" =~ ^[0-9]+$ ]]
+  for ((i = 0; i < 50; i++)); do
+    s=$(cat "/proc/$pid/stat" 2>/dev/null) || break
+    [[ "${s##*) }" == Z* ]] && break                                  # exited, not yet reaped
+    sleep 0.1
+  done
+  s=$(cat "/proc/$pid/stat" 2>/dev/null) || s=""
+  [[ -z "$s" || "${s##*) }" == Z* ]]
+}
+
+@test "nothing starts the sudo keepalive without a terminal, with MM_NO_SUDO=1, or as root" {
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'; exit 0"
+  MM_TTY=0 mm_sudo_keepalive_start
+  [ -z "${MM_SUDO_KEEPALIVE_PID:-}" ]
+  MM_TTY=1 MM_NO_SUDO=1 mm_sudo_keepalive_start
+  [ -z "${MM_SUDO_KEEPALIVE_PID:-}" ]
+  (( EUID == 0 )) && MM_TTY=1 mm_sudo_keepalive_start
+  [ -z "${MM_SUDO_KEEPALIVE_PID:-}" ]
+  [ ! -e "$SB/sudo.calls" ]
+}
+
 @test "a failed mm_run is logged as failed with its reason; a dry run logs nothing" {
   run mm_run "tool step" bash -c 'echo "E: could not get lock" >&2; exit 100'
   [ "$status" -eq 100 ]
