@@ -187,6 +187,7 @@ _optimize_apt_upgrade() {
     _optimize_skipped "Packages" "needs a terminal to confirm"
     return
   fi
+  if ! mm_can_sudo; then _optimize_skipped "Packages" "needs sudo"; return; fi
   local excluded=()
   if (( ${#safe[@]} )); then
     if mm_confirm "Install ${#safe[@]} upgrades?"; then chosen+=("${safe[@]}"); else excluded+=("${safe[@]}"); fi
@@ -258,6 +259,8 @@ _optimize_updates() {
       mm_info "${C_DIM}Using current package lists (apt-get update not run in dry run)${C_RESET}"
     elif [[ "$MM_TTY" != 1 ]]; then
       mm_info "${C_DIM}Using current package lists (no terminal: nothing will be installed)${C_RESET}"
+    elif ! mm_can_sudo; then
+      mm_info "${C_DIM}Using current package lists (no sudo: nothing will be installed)${C_RESET}"
     elif mm_run "apt-get update" mm_sudo apt-get -q -o DPkg::Lock::Timeout=60 update; then
       mm_act "Package lists refreshed"
     else
@@ -884,6 +887,7 @@ mm_cmd_main() {
   done
 
   mm_header "Optimize"
+  [[ "$MM_DRY_RUN" == 1 ]] || mm_sudo_ask "package upgrades, the swap reset, TRIM and the DNS cache flush"
   _optimize_diagnose
   _optimize_updates
   _optimize_swap

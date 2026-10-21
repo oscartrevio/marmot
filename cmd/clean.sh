@@ -2010,7 +2010,7 @@ _clean_tmpfiles_runs() { [[ -d /run/systemd/system ]]; }
 # else only what this user can read) and the OS aging policy, with a fix when nothing ages them.
 _clean_review_tmp() {
   local dir all=0 size age file detail hint fs suggest name
-  if (( EUID != 0 )) && command -v sudo >/dev/null && sudo -n true 2>/dev/null; then all=1; fi
+  if (( EUID != 0 )) && mm_can_sudo; then all=1; fi
   for dir in /tmp /var/tmp; do
     [[ -d "$dir" ]] || continue
     if size=$(MM_SIZE_SUDO=$all mm_size "$dir"); then
@@ -2094,6 +2094,8 @@ mm_cmd_main() {
 
   mm_header "Clean Your System"
   mm_catalog_load
+  # Asked before the snapshot: with root it also sees every user's processes.
+  mm_sudo_ask "the System steps (apt, journal, snaps, old logs, crash dumps) and a full in-use check"
   mm_inuse_refresh
   local free0 free1 total items delta sign=+
   free0=$(mm_free_bytes /)

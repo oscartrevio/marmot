@@ -63,7 +63,7 @@ pick() {
   mkdir -p "$SB/locked"; chmod 000 "$SB/locked"
   MM_TTY=1 run mm_cmd_main "$SB/locked"
   chmod 700 "$SB/locked"
-  [[ "$(cat "$NCDU_ARGS")" == "sudo ncdu "*" -r "*"-- $SB/locked" ]]
+  [[ "$(cat "$NCDU_ARGS")" == "sudo -n ncdu "*" -r "*"-- $SB/locked" ]]
 }
 
 @test "without a terminal, mm analyze PATH lists the largest entries instead of starting ncdu" {

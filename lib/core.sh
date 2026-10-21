@@ -279,20 +279,41 @@ mm_cg_cores() {
 
 # MM_NO_SUDO=1 (unattended runs: mm schedule run) means never run sudo, not even `sudo -n`: only
 # root counts as able to, mm_sudo fails, and in-use detection sees only this user's processes.
+# Otherwise sudo never asks mid-run: a command that may need root calls mm_sudo_ask once, up
+# front, and every sudo after it is `sudo -n`, served by passwordless sudo or by the credentials
+# sudo cached when it asked.
 
-# mm_can_sudo — 0 if root, or sudo is installed and either works without a password or can prompt
-# on a tty.
+# mm_sudo_ask WHAT — before a run's first root step, on a terminal: unless root, MM_NO_SUDO=1, no
+# sudo, or sudo that works without a password, say that root is needed for WHAT (in a dry run,
+# that nothing will be deleted) and let sudo ask for the password once (`sudo -v`). Refused,
+# failed or not allowed: the rest of the run is MM_NO_SUDO=1, with no more prompts and every root
+# step skipped. Without a terminal nothing is asked.
+mm_sudo_ask() {
+  (( EUID == 0 )) && return 0
+  [[ "$MM_NO_SUDO" == 1 || "$MM_TTY" != 1 ]] && return 0
+  command -v sudo >/dev/null || return 0
+  sudo -n true 2>/dev/null && return 0
+  local dry=""
+  [[ "$MM_DRY_RUN" == 1 ]] && dry=" (dry run: it only reads, nothing will be deleted)"
+  printf '%s?%s Root is needed for %s%s. sudo asks once; Ctrl-D goes on without it.\n' \
+    "$C_YELLOW" "$C_RESET" "$1" "$dry"
+  sudo -v && return 0
+  MM_NO_SUDO=1
+  mm_warn "Continuing without sudo: steps that need root are skipped"
+}
+
+# mm_can_sudo — 0 if root, or sudo runs without asking (passwordless, or credentials mm_sudo_ask
+# cached). Never prompts.
 mm_can_sudo() {
   (( EUID == 0 )) && return 0
   [[ "$MM_NO_SUDO" == 1 ]] && return 1
-  command -v sudo >/dev/null && { sudo -n true 2>/dev/null || [[ "$MM_TTY" == 1 ]]; }
+  command -v sudo >/dev/null && sudo -n true 2>/dev/null
 }
-# mm_sudo CMD... — run as root; prompts only when needed.
+# mm_sudo CMD... — run as root; never asks for a password (see mm_sudo_ask).
 mm_sudo() {
   if (( EUID == 0 )); then "$@"
   elif [[ "$MM_NO_SUDO" == 1 ]]; then mm_err "not run without sudo: $*"; return 1
-  elif sudo -n true 2>/dev/null; then sudo -n "$@"
-  else sudo "$@"; fi
+  else sudo -n "$@"; fi
 }
 
 # ---------------------------------------------------------------- in-use detection
@@ -305,12 +326,12 @@ MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""   # what the last snapshot could not 
 # bound unix socket, plus every mount point and bind-mount source (per mount namespace), so a
 # target containing a mount is never removed through it; then add references (_mm_inuse_refs):
 # files that a process's arguments, a launcher, a tool config, a systemd user unit or the crontab name.
-# The scan runs as this user and, as root or through passwordless sudo, again as root for the other
-# users' processes; both are merged, because root without CAP_SYS_PTRACE (a container's default
-# capabilities) may not read this user's process entries. Whatever a scan could not see (a process
-# entry it may not read, a mount it cannot place, no root scan at all) makes the snapshot partial:
-# MM_INUSE_PARTIAL=1, the reason in MM_INUSE_PARTIAL_WHY, warned once. An empty process snapshot is
-# fatal: it would mean "nothing is in use".
+# The scan runs as this user and, as root or through sudo that needs no password (mm_can_sudo),
+# again as root for the other users' processes; both are merged, because root without
+# CAP_SYS_PTRACE (a container's default capabilities) may not read this user's process entries.
+# Whatever a scan could not see (a process entry it may not read, a mount it cannot place, no root
+# scan at all) makes the snapshot partial: MM_INUSE_PARTIAL=1, the reason in MM_INUSE_PARTIAL_WHY,
+# warned once. An empty process snapshot is fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
   local out live refs script root
   script="$(declare -f _mm_inuse_scan _mm_inuse_live _mm_mounts _mm_mount_paths); _mm_inuse_scan"
@@ -318,7 +339,7 @@ mm_inuse_refresh() {
   out=$(bash -c "$script")
   if (( EUID == 0 )); then
     MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$out" | cut -f2-)
-  elif [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; then
+  elif mm_can_sudo; then
     root=$(mm_sudo bash -c "$script")
     MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$root" | cut -f2-)
     out+=$'\n'$root
@@ -1317,18 +1338,16 @@ mm_proc_children() {
 
 # mm_apt_busy — 0, printing why, when apt, dpkg or an unattended-upgrade run is in progress, or a
 # process holds one of the dpkg/apt lock files open. The holders are root's processes, so their
-# open files are read as root; when that fails (sudo password refused) the answer is "busy": a
-# step that runs apt must skip rather than race.
+# open files are read as root; when that fails (sudo stopped working mid-run) the answer is
+# "busy": a step that runs apt must skip rather than race.
 # (unattended-upgrade-shutdown waits for shutdown all day and shares the truncated comm
 # "unattended-upgr" with the run itself, so the run is matched on its command line.)
 mm_apt_busy() {
   if mm_proc_match 'apt|apt-get|aptitude|dpkg' '/unattended-upgrade( |$)'; then echo "apt is running"; return 0; fi
   local out locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock)
-  if (( EUID != 0 )) && ! { command -v sudo >/dev/null && sudo -n true 2>/dev/null; }; then
-    # Without root, passwordless sudo, or a terminal to ask for a password, nothing can run apt as
-    # root either (and a dry run runs nothing): there is no step to protect.
-    [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 ]] && command -v sudo >/dev/null || return 1
-  fi
+  # Without root or sudo that runs without asking, nothing can run apt as root either: there is
+  # no step to protect.
+  mm_can_sudo || return 1
   out=$(mm_sudo bash -c 'if find /proc/[0-9]*/fd -maxdepth 1 -type l -printf "%l\n" 2>/dev/null |
     grep -qxF -f <(printf "%s\n" "$@"); then echo held; else echo free; fi' _ "${locks[@]}")
   case "$out" in

@@ -663,6 +663,12 @@ _uninstall_apply() {
   [[ "$MM_DRY_RUN" == 1 || "$MM_TTY" != 1 ]] && dry=1
   local -a keep=()
   [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" != 1 ]] && mm_warn "No terminal: preview only, nothing will be removed"
+  if (( ! dry )); then
+    for i in "$@"; do
+      [[ "${_UN_SRC[i]}" == apt || "${_UN_SRC[i]}" == snap ]] || continue
+      mm_sudo_ask "removing apt and snap packages"; break
+    done
+  fi
   mm_inuse_refresh
 
   # 1. running processes and high-impact packages
@@ -924,6 +930,7 @@ _uninstall_execute() {
       snap)
         # snapd deletes ~/snap/NAME for every user on remove. A snapshot of marmot's own comes
         # first (no snap goes without one); --purge then skips snapd's duplicate automatic one.
+        if ! mm_can_sudo; then mm_skip "${_UN_NAME[i]}" "needs sudo"; continue; fi
         if snapshot=$(_uninstall_snap_save "${_UN_NAME[i]}"); then
           mm_info "${_UN_NAME[i]} data saved as snapshot ${snapshot:-(id: snap saved ${_UN_NAME[i]})}; bring it back: sudo snap restore ${snapshot:-<id>}"
           _uninstall_tool "$i" "snap remove --purge ${_UN_NAME[i]}" mm_sudo timeout 600 snap remove --purge "${_UN_NAME[i]}" || ok=0

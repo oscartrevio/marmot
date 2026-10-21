@@ -850,6 +850,21 @@ EOF
   [ ! -e "$XDG_STATE_HOME/marmot/operations.log" ]
 }
 
+@test "an interactive clean asks for sudo once, up front; refused, the system steps are skipped" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  fake_tools; fake_docker
+  mm_test_fake sudo 'echo "$*" >>"$BATS_TEST_TMPDIR/sudo.calls"; exit 1'   # needs a password; refused
+  local mode
+  for mode in --dry-run ""; do
+    rm -f "$BATS_TEST_TMPDIR/sudo.calls"
+    # a terminal run (setsid: no terminal to block on if something else asked)
+    MM_TTY=1 run setsid -w mm clean $mode
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/sudo.calls")" = $'-n true\n-v' ] || { echo "mm clean $mode:"; cat "$BATS_TEST_TMPDIR/sudo.calls"; false; }
+    [[ "$output" == *"System cleanup · skipped (needs sudo)"* ]]
+  done
+}
+
 @test "tool-reported sizes above 2 GiB convert to exact bytes" {
   src
   [ "$(_clean_to_bytes 3GiB)" = 3221225472 ]

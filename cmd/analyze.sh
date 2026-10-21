@@ -41,7 +41,7 @@ _analyze_locations() {
 # _analyze_du SUDO PATH — "bytes<TAB>status" where status is complete|partial. On timeout the
 # size is a lower bound: the sum of every directory du finished (depth <= 3) not inside another.
 _analyze_du() {
-  local -a pre=(); [[ "$1" == 1 ]] && (( EUID != 0 )) && sudo -n true 2>/dev/null && pre=(sudo -n)
+  local -a pre=(); [[ "$1" == 1 ]] && (( EUID != 0 )) && mm_can_sudo && pre=(sudo -n)
   local out rc
   out=$(timeout "${MM_ANALYZE_TIMEOUT:-20}" "${pre[@]}" stdbuf -oL du -xB1 -d3 -- "$2" 2>/dev/null); rc=$?
   awk -F'\t' -v root="$2" -v rc="$rc" '
@@ -144,7 +144,8 @@ _analyze_launch() {
   local path=$1 access=${2:-user} note="read-only" offer=0
   local -a pre=()
   if [[ "$access" == root ]] && (( EUID != 0 )); then
-    if mm_can_sudo; then pre=(sudo); note="read-only, opened as root"
+    mm_sudo_ask "reading every folder under $path (read-only)"
+    if mm_can_sudo; then pre=(sudo -n); note="read-only, opened as root"
     else mm_warn "No sudo: some folders under $path will be unreadable"; fi
   fi
   [[ "$MM_TTY" == 1 && "$access" == user && -w "$path" ]] && offer=1
@@ -162,7 +163,7 @@ _analyze_launch() {
     [[ "$MM_TTY" == 1 ]] || why="no terminal: the ncdu explorer needs one"
     printf '\n%sLargest entries under %s%s  %s(%s)%s\n\n' "$C_BOLD" "$path" "$C_RESET" "$C_DIM" "$why" "$C_RESET"
     local line as=""
-    [[ ${#pre[@]} -gt 0 ]] && sudo -n true 2>/dev/null && as=sudo
+    (( ${#pre[@]} )) && as=sudo
     while IFS= read -r line; do
       printf '  %9s  %s\n' "$(mm_human "${line%%$'\t'*}")" "${line#*$'\t'}"
     done < <(_analyze_candidates "$path" "$as" | head -25)

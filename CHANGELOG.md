@@ -131,6 +131,13 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   and of `mm uninstall`'s package removals carry what they freed, and each run's line and the
   all-time total (now "freed") count them with removed files and worktrees. A command that fails
   is logged as `failed` with its exit status and last line of output; it was not logged at all.
+- sudo asks for your password at most once per run. `mm clean` (dry run included), `mm optimize`,
+  `mm uninstall` (apt and snap packages) and `mm analyze` (a root-owned folder) ask up front,
+  saying what needs root, and use sudo's credential cache after that; `mm clean` asks before the
+  in-use check, which then sees every user's processes. Refused, failed or no sudo: the rest of
+  the run asks nothing more and skips each root step with "needs sudo". It used to prompt again
+  for every system step, up to `sudo: 3 incorrect password attempts` and beyond. Without a
+  terminal, as root and with passwordless sudo nothing changes.
 
 ## 0.2.0
 

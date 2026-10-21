@@ -9,8 +9,9 @@
 #     "<cmd> <args>" to $MM_TEST_HOST_CALLS and exits 86. Teardown fails the test when that file is
 #     not empty, so code that reaches the real machine turns a test red instead of passing on one
 #     host and failing on another. A test that needs the command installs a double: mm_test_fake.
-#   - `sudo -n true` answers "no" quietly, so marmot runs its unprivileged paths; so does
-#     `gh auth token` (logged out), so no test asks GitHub anything.
+#   - `sudo -n true` answers "no" quietly and `sudo -v` (the one password prompt) is refused, so
+#     marmot runs its unprivileged paths; so does `gh auth token` (logged out), so no test asks
+#     GitHub anything.
 
 MM_SRC="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 MM_TEST_GUARDED=(sudo apt apt-get apt-mark snap docker systemctl journalctl swapon swapoff mount umount
@@ -65,7 +66,7 @@ mm_test_guard_host() {
 #!/usr/bin/env bash
 cmd=${0##*/}
 case "$cmd $*" in
-  "sudo -n true" | "sudo -k" | "gh auth token") exit 1 ;;   # no sudo, logged out of GitHub
+  "sudo -n true" | "sudo -v" | "sudo -k" | "gh auth token") exit 1 ;;   # no sudo, logged out of GitHub
 esac
 echo "$cmd $*" >>"$MM_TEST_HOST_CALLS"
 echo "test reached the real machine: $cmd $*" >&2

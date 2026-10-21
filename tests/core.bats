@@ -426,19 +426,62 @@ $HOME/.cache/pip removable" ]
   [ "$output" = "apt is running" ]
 }
 
-@test "apt locks that cannot be read count as busy only when an apt step could run" {
+@test "apt locks that cannot be read count as busy only when sudo can run an apt step" {
+  (( EUID != 0 )) || skip "root reads every lock holder"
   # The host's own apt can start at any moment (apt-daily on a freshly booted CI runner): this test
   # is about lock files nobody can read, so no apt process is running here.
   mm_proc_match() { return 1; }
-  # sudo is installed but needs a password, and the password is refused
-  mm_test_fake sudo '[[ "$1" == -n ]] && exit 1; echo "sudo $*" >>"$BATS_TEST_TMPDIR/sudo"; exit 1'
-  MM_TTY=1 run mm_apt_busy
+  # sudo runs without asking, but reading the lock holders as root fails
+  mm_test_fake sudo '[[ "$*" == "-n true" ]] && exit 0; exit 1'
+  run mm_apt_busy
   [ "$status" -eq 0 ]
   [ "$output" = "apt locks not visible without sudo" ]
-  MM_TTY=1 MM_DRY_RUN=1 run mm_apt_busy
+  # sudo needs a password: no step can run apt as root, and nothing asks for the password
+  mm_test_fake sudo 'echo "sudo $*" >>"$BATS_TEST_TMPDIR/sudo"; exit 1'
+  MM_TTY=1 run mm_apt_busy
   [ "$status" -eq 1 ]
-  MM_TTY=0 run mm_apt_busy
+  [ "$(cat "$BATS_TEST_TMPDIR/sudo")" = "sudo -n true" ]
+}
+
+@test "sudo is asked for once, up front; refused, nothing asks again and sudo is not run" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'; exit 1"   # needs a password; every one is refused
+  MM_TTY=1 mm_sudo_ask "a test" >/dev/null
+  [ "$MM_NO_SUDO" = 1 ]
+  MM_TTY=1 run mm_can_sudo
   [ "$status" -eq 1 ]
+  run mm_sudo true
+  [ "$status" -ne 0 ]
+  MM_TTY=1 mm_sudo_ask "a second step" >/dev/null
+  mm_inuse_refresh >/dev/null
+  [ "$(cat "$SB/sudo.calls")" = $'-n true\n-v' ]
+}
+
+@test "a password given once serves the rest of the run through sudo -n, the in-use check included" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  # needs a password until sudo -v succeeds; after that sudo -n runs the command (as this user)
+  mm_test_fake sudo "echo \"\$1 \$2\" >>'$SB/sudo.calls'
+[[ \$1 == -v ]] && { touch '$SB/sudo.ok'; exit 0; }
+[[ \$1 == -n && -e '$SB/sudo.ok' ]] || exit 1
+shift; exec \"\$@\""
+  MM_TTY=1 mm_sudo_ask "a test" >/dev/null
+  [ "$MM_NO_SUDO" = 0 ]
+  run mm_can_sudo
+  [ "$status" -eq 0 ]
+  mm_inuse_refresh >/dev/null 2>&1
+  grep -qx -- '-n bash' "$SB/sudo.calls"                       # the root in-use scan ran
+  [ "$(grep -c -- '^-v' "$SB/sudo.calls")" -eq 1 ]
+  [ -z "$(grep -v -e '^-n ' -e '^-v' "$SB/sudo.calls")" ]       # every other call was sudo -n
+}
+
+@test "with passwordless sudo, or without a terminal, nothing asks for a password" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'; [[ \$* == '-n true' ]]"   # passwordless
+  MM_TTY=1 mm_sudo_ask "a test" >/dev/null
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'; exit 1"                   # needs a password
+  MM_TTY=0 mm_sudo_ask "a test" >/dev/null
+  [ "$MM_NO_SUDO" = 0 ]
+  [ "$(cat "$SB/sudo.calls")" = "-n true" ]
 }
 
 @test "without a sudo binary only root counts as able to sudo" {

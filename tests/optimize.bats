@@ -221,10 +221,21 @@ fake_apt() {
   [ ! -s "$CALLS" ]
 }
 
+@test "without sudo, upgrades are skipped as needing it and apt-get never runs or asks" {
+  load_optimize
+  fake_apt "Inst curl [1] (2 Ubuntu:24.04/noble-updates [amd64])"
+  mm_apt_busy() { return 1; }
+  mm_confirm() { return 0; }
+  MM_TTY=1 run _optimize_updates
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"needs sudo"* ]]
+  [ ! -s "$CALLS" ]
+}
+
 @test "disruptive upgrades are held back when only the safe set is accepted" {
   load_optimize
   fake_apt "Inst curl [1] (2)"
-  mm_sudo() { "$@"; }
+  mm_sudo() { "$@"; }; mm_can_sudo() { return 0; }
   mm_confirm() { [[ "$1" == "Install "* ]]; }   # yes to the safe set, no to docker
   MM_TTY=1 run _optimize_apt_upgrade curl docker-ce containerd.io
   grep -qx 'apt-get .* install --only-upgrade curl' "$CALLS"
@@ -235,7 +246,7 @@ fake_apt() {
 @test "openssh-server, zerotier-one and podman upgrades need their own confirmation" {
   load_optimize
   fake_apt "Inst curl [1] (2)"
-  mm_sudo() { "$@"; }
+  mm_sudo() { "$@"; }; mm_can_sudo() { return 0; }
   mm_confirm() { printf 'confirm %s\n' "$1" >>"$CALLS"; [[ "$1" == "Install "* ]]; }
   MM_TTY=1 run _optimize_apt_upgrade curl openssh-server zerotier-one podman
   grep -qx 'confirm Install 1 upgrades?' "$CALLS"
