@@ -1615,7 +1615,8 @@ _purge_banner() {
       "Space freed: $(mm_human "$MM_FREED")$(mm_banner_trash "$MM_TRASHED") | Artifacts: $MM_COUNT | Projects: $2" \
       "$pn" "$wt" \
       "$(mm_banner_free "$1")" \
-      "$(mm_banner_disk "$_PURGE_PCT0")"
+      "$(mm_banner_disk "$_PURGE_PCT0")" \
+      "$(mm_milestone_line)"
   fi
 }
 

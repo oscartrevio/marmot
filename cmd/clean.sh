@@ -2154,6 +2154,7 @@ mm_cmd_main() {
       "Space freed: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items cleaned: $items" \
       "$(_clean_best_line)" \
       "$(mm_banner_free "$free0")" \
-      "$(mm_banner_disk "$pct0")"
+      "$(mm_banner_disk "$pct0")" \
+      "$(mm_milestone_line)"
   fi
 }

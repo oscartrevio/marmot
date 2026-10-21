@@ -978,6 +978,7 @@ _uninstall_execute() {
   local freed=$(( pkg_bytes + MM_FREED ))
   mm_banner "Uninstall complete" \
     "Space freed: $(mm_human "$freed")$( (( unknown )) && printf ' + %d of unknown size' "$unknown")$(mm_banner_trash "$MM_TRASHED") | Packages removed: ${#removed[@]}${removed[*]:+ (${removed[*]})}" \
-    "$(mm_banner_free "$free_before")"
+    "$(mm_banner_free "$free_before")" \
+    "$(mm_milestone_line)"
   return "$rc"
 }

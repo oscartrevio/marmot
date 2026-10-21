@@ -109,6 +109,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - The first terminal run after scheduled cleanups says what they did, once: `While you were
   away: 3 scheduled runs freed 4.2GB` (plus the Trash and failures, pointing at `mm schedule
   status`). Dry runs and runs without a terminal leave it for later.
+- A real terminal run that carries marmot's lifetime freed total (as `mm history` counts it)
+  across 10, 50, 100, 250 or 500 GB or 1 TB says so in its banner, once per milestone.
 
 ### Changed
 

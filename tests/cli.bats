@@ -252,3 +252,18 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   MM_TTY=1 run mm purge "$SB/empty"
   [[ "$output" != *"While you were away"* ]]                    # said once
 }
+
+@test "a run that carries the lifetime freed total across 10GB says so, once" {
+  log_rows "2026-01-01T00:00:00+00:00"$'\tclean\tremove\t/x/old\t10737418000\t\tR0'   # just under 10GB
+  mkdir -p "$SB/p/node_modules"; echo '{}' >"$SB/p/package.json"
+  head -c 4096 /dev/urandom >"$SB/p/node_modules/blob"; mm_age "$SB" 30
+  MM_TTY=1 run mm purge --dry-run --yes "$SB"
+  [[ "$output" != *"has now freed"* ]]                           # never from a dry run
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ ! -e "$SB/p/node_modules" ]
+  grep -qx 'marmot has now freed 10GB on this machine' <<<"$output"
+  mkdir -p "$SB/p/node_modules"; head -c 4096 /dev/urandom >"$SB/p/node_modules/blob"; mm_age "$SB" 30
+  MM_TTY=1 run mm purge --yes "$SB"
+  [ ! -e "$SB/p/node_modules" ]
+  [[ "$output" != *"has now freed"* ]]                           # above it is not crossing it
+}

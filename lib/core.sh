@@ -1204,6 +1204,29 @@ mm_log() {
 # _mm_logs — the operations logs that exist, oldest first (the rotated one, then the current).
 _mm_logs() { local f; for f in "$MM_LOG_FILE.old" "$MM_LOG_FILE"; do [[ -s "$f" ]] && printf '%s\n' "$f"; done; return 0; }
 
+# Lifetime totals at which a real interactive run says how far marmot has come, in GB.
+MM_MILESTONES_GB=(10 50 100 250 500 1000)
+
+# mm_milestone_line — after a real run on a terminal: "marmot has now freed 100GB on this
+# machine" when this run (its MM_RUN_ID rows) carried the freed total of the logs across one of
+# MM_MILESTONES_GB; the highest one crossed. Nothing otherwise; a total that only stays above a
+# milestone says nothing again.
+mm_milestone_line() {
+  [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 && -n "${MM_RUN_ID:-}" ]] || return 0
+  local -a logs; mapfile -t logs < <(_mm_logs)
+  (( ${#logs[@]} )) || return 0
+  local total mine g hit=""
+  read -r total mine < <(awk -F'\t' -v run="$MM_RUN_ID" "$MM_AWK_FREED"'
+    freed_row($3) && $5 ~ /^[0-9]+$/ { t += $5; if ($7 == run) m += $5 }
+    END { printf "%.0f %.0f\n", t, m }' "${logs[@]}")
+  for g in "${MM_MILESTONES_GB[@]}"; do
+    (( total >= g * 1073741824 && total - mine < g * 1073741824 )) && hit=$g
+  done
+  [[ -n "$hit" ]] || return 0
+  if (( hit >= 1000 )); then hit="$((hit / 1000))TB"; else hit+=GB; fi
+  printf 'marmot has now freed %s on this machine' "$hit"
+}
+
 MM_AWAY_STAMP="$MM_STATE_DIR/schedule-seen"   # when an interactive run last reported scheduled runs
 
 # mm_away_line — on a real terminal run: "While you were away: 3 scheduled runs freed 4.2GB"
