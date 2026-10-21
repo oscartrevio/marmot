@@ -891,6 +891,24 @@ EOF
   grep -qE '^Biggest win: Docker, [0-9.]+[KMG]B$' <<<"$output"   # its images and build cache
 }
 
+# no_bare_headings — every "➤" heading in $output has a line under it.
+no_bare_headings() {
+  awk '/➤/ { h = $0; next } h != "" { if ($0 == "") { print "bare heading: " h; bad = 1 } h = "" } END { exit bad }' <<<"$output"
+}
+
+@test "a clean machine gets a success line, not a banner of zeros, and no empty headings" {
+  local t; for t in npm pnpm bun yarn uv conda brew docker mise go nix-collect-garbage; do mm_test_fake "$t" 'exit 1'; done
+  run mm clean
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"======"* ]]                                 # no closing banner
+  grep -qE '^  ✓ ' <<<"$(tail -2 <<<"$output")"                  # it ends on a success
+  [[ "$(tail -1 <<<"$output")" == *"mm schedule enable"* ]]       # and how to keep it that way
+  no_bare_headings
+  run mm clean --dry-run
+  [[ "$output" != *"======"* ]]
+  no_bare_headings
+}
+
 @test "docker cleanups log the bytes they are counted with" {
   fake_docker
   src

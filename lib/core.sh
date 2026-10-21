@@ -21,6 +21,8 @@ MM_LOG_FILE="${MM_LOG_FILE:-$MM_STATE_DIR/operations.log}"
 # XDG Trash (freedesktop.org spec): items moved here keep a .trashinfo, so `trash-restore`
 # (trash-cli) or any desktop file manager can put them back.
 MM_TRASH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
+# shellcheck source=schedule.sh
+. "$MM_HOME/lib/schedule.sh"
 
 : "${MM_DRY_RUN:=0}" "${MM_DEBUG:=0}" "${MM_NO_SUDO:=0}"
 MM_CMD="${MM_CMD:-marmot}"
@@ -66,18 +68,32 @@ mm_header() {
   [[ "$MM_DRY_RUN" == 1 ]] && printf '  %s(dry run: nothing will change)%s' "$C_YELLOW" "$C_RESET"
   printf '\n\n%s⚙%s %s\n' "$C_CYAN" "$C_RESET" "$(mm_sysline)"
 }
-mm_section() { printf '\n%s➤ %s%s\n' "$C_BOLD$C_BLUE" "$1" "$C_RESET"; }
+mm_section() { _MM_PENDING=""; printf '\n%s➤ %s%s\n' "$C_BOLD$C_BLUE" "$1" "$C_RESET"; }
+# mm_section_lazy TITLE — a heading printed only once a line goes under it (mm_ok, mm_skip,
+# mm_act, mm_warn, mm_info, mm_err): a section with nothing to say prints nothing. An empty TITLE
+# (the section is over) or the next mm_section drops a heading still waiting.
+_MM_PENDING=""
+mm_section_lazy() { _MM_PENDING=$1; }
+_mm_flush() { [[ -n "$_MM_PENDING" ]] && mm_section "$_MM_PENDING"; return 0; }
 # mm_ok LABEL [DETAIL]
-mm_ok()   { printf '  %s✓%s %s%s\n' "$C_GREEN" "$C_RESET" "$1" "${2:+ · $2}"; }
+mm_ok()   { _mm_flush; printf '  %s✓%s %s%s\n' "$C_GREEN" "$C_RESET" "$1" "${2:+ · $2}"; }
 # mm_skip LABEL REASON — also recorded in MM_SKIPS.
 mm_skip() {
+  _mm_flush
   MM_SKIPS+=("$1"$'\t'"$2")
   printf '  %s◎%s %s · %sskipped (%s)%s\n' "$C_DIM" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"
 }
-mm_act()  { printf '  %s→%s %s\n' "$C_CYAN" "$C_RESET" "$1"; }
-mm_warn() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1"; }
-mm_err()  { MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$CE_RED" "$CE_RESET" "$1" >&2; }
-mm_info() { printf '  %s\n' "$1"; }
+mm_act()  { _mm_flush; printf '  %s→%s %s\n' "$C_CYAN" "$C_RESET" "$1"; }
+mm_warn() { _mm_flush; printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1"; }
+mm_err()  { _mm_flush; MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$CE_RED" "$CE_RESET" "$1" >&2; }
+mm_info() { _mm_flush; printf '  %s\n' "$1"; }
+
+# mm_done_empty MESSAGE — close a run that had nothing to do as the success it is: "✓ MESSAGE",
+# then when the next scheduled cleanup is due, or how to schedule one.
+mm_done_empty() {
+  _MM_PENDING=""
+  printf '\n  %s✓%s %s\n  %s%s%s\n' "$C_GREEN" "$C_RESET" "$1" "$C_DIM" "$(mm_schedule_hint)" "$C_RESET"
+}
 mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$CE_DIM" "$1" "$CE_RESET" >&2; return 0; }
 mm_die()  { mm_err "$1"; exit "${2:-1}"; }
 

@@ -1376,10 +1376,8 @@ _purge_run() {
     for rec in "${kept_out[@]}"; do mm_tilde "${rec%%$'\t'*}"; _purge_kept "$REPLY" "${rec#*$'\t'}"; done
   fi
   if (( ${#cand[@]} == 0 )); then
-    printf '\n'
-    if (( ${#arts[@]} )); then mm_ok "No artifacts to purge" "every artifact found is in use or kept"
-    else mm_ok "No build artifacts found"; fi
-    _purge_banner "$free_before" 0
+    if (( ${#arts[@]} )); then _purge_banner "$free_before" 0 "Nothing to purge: every artifact found is in use or kept."
+    else _purge_banner "$free_before" 0 "Nothing to purge: no build artifacts here."; fi
     return 0
   fi
 
@@ -1449,9 +1447,14 @@ _purge_run() {
 
   # ---- selection: dry-run previews the default; --yes is stale only; otherwise ask on the terminal
   local mode=stale; (( all )) && mode=all
+  # Nothing stale and nobody to ask about the rest: that is the whole answer.
+  if (( ! all && stale_n == 0 )) && [[ "$MM_DRY_RUN" == 1 || "$MM_TTY" != 1 ]] || (( ! all && stale_n == 0 && yes )); then
+    _purge_banner "$free_before" 0 "Nothing to purge: no project has been idle for over ${days}d (--all or --days N to look further)."
+    return 0
+  fi
   if [[ "$MM_DRY_RUN" != 1 ]] && (( ! yes )); then
     if [[ "$MM_TTY" != 1 ]]; then
-      mm_info ""
+      printf '\n'
       mm_info "No terminal: nothing removed. Re-run with --yes to purge the stale artifacts."
       _purge_banner "$free_before" 0
       return 0
@@ -1489,9 +1492,11 @@ _purge_run() {
       ;;
   esac
   if (( ${#sel[@]} == 0 )); then
-    mm_info ""
     if [[ "$_PURGE_MODE" == scheduled ]]; then mm_info "Nothing to remove: no project idle > ${days}d."
-    else mm_info "Nothing selected$( [[ "$mode" == stale ]] && echo " (no project idle > ${days}d; use --all or --days N)")."; fi
+    elif [[ "$mode" == stale ]]; then
+      _purge_banner "$free_before" 0 "Nothing to purge: no project has been idle for over ${days}d (--all or --days N to look further)."
+      return 0
+    else mm_info "Nothing selected."; fi
     _purge_banner "$free_before" 0
     return 0
   fi
@@ -1578,11 +1583,16 @@ _purge_run() {
   _purge_banner "$free_before" "${#done_proj[@]}"
 }
 
-# _purge_banner FREE_BEFORE PROJECTS — closing summary (artifacts plus worktrees). After a real
-# run that removed pnpm-managed items it prunes the pnpm store first; a dry run estimates that.
-# A scheduled run gets no banner, only that prune (_purge_scheduled_end).
+# _purge_banner FREE_BEFORE PROJECTS [NOTHING] — closing summary (artifacts plus worktrees), or
+# with NOTHING (why there was nothing to do) that line as a success. After a real run that
+# removed pnpm-managed items it prunes the pnpm store first; a dry run estimates that. A scheduled
+# run gets no banner, only that prune (_purge_scheduled_end), or NOTHING as its line.
 _purge_banner() {
-  [[ "$_PURGE_MODE" == scheduled ]] && { _purge_scheduled_end; return 0; }
+  if [[ "$_PURGE_MODE" == scheduled ]]; then
+    [[ -n "${3:-}" ]] && mm_ok "${3%.}"
+    _purge_scheduled_end; return 0
+  fi
+  if [[ -n "${3:-}" ]] && (( ! ${_PURGE_WT_OFFERED:-0} && ! ${_PURGE_WT_DONE:-0} )); then mm_done_empty "$3"; return 0; fi
   local wt="" pn="" est
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     if (( _PURGE_WT_OFFERED )); then

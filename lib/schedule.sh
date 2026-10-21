@@ -12,6 +12,21 @@ MM_SCHEDULE_MARK="# Written by mm schedule enable; mm schedule disable removes i
 MM_SCHEDULE_CRON_TAG="# marmot"     # ends the crontab line enable adds
 MM_SCHEDULE_NOTE="$MM_STATE_DIR/schedule"         # "systemd daily", "cron weekly": what enable installed
 MM_SCHEDULE_LAST="$MM_STATE_DIR/last-run.json"    # the last real `mm schedule run`
+MM_SCHEDULE_HOUR=3                                # runs start at 03:00 local time (+ a random delay)
+
+# mm_schedule_hint — one closing line for a run with nothing to do: when the next scheduled
+# cleanup is due ("Next scheduled cleanup: in 9h (03:00)"), or how to schedule one.
+mm_schedule_hint() {
+  local inst next
+  if ! inst=$(mm_schedule_installed); then
+    printf 'Keep it that way without thinking about it: mm schedule enable'
+    return
+  fi
+  if [[ "${inst#* }" == weekly ]]; then next=$(date -d "sunday $MM_SCHEDULE_HOUR:00" +%s)
+  else next=$(date -d "today $MM_SCHEDULE_HOUR:00" +%s); fi
+  (( next > $(date +%s) )) || next=$((next + $([[ "${inst#* }" == weekly ]] && echo 604800 || echo 86400)))
+  printf 'Next scheduled cleanup: %s' "$(mm_when "$next")"
+}
 
 # mm_schedule_installed — print "BACKEND FREQUENCY" (systemd|cron, daily|weekly) as recorded by
 # `mm schedule enable`; 1 when nothing is scheduled.

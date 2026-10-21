@@ -115,15 +115,17 @@ _clean_tool_freed() {
   if [[ -z "$4" ]]; then mm_ok "$1" "$2, size freed unknown"; else mm_ok "$1" "$2, $(mm_human "$freed")"; fi
 }
 
-# _clean_cat NAME / _clean_cat_end — a category of steps under its heading. What it freed or
-# moved to the Trash is measured between the two: the largest is the run's biggest win.
+# _clean_cat NAME / _clean_cat_end — a category of steps under its heading, printed with its first
+# line (none: no heading). What it freed or moved to the Trash is measured between the two: the
+# largest is the run's biggest win.
 _clean_cat() {
-  mm_section "$1"
+  mm_section_lazy "$1"
   _CLEAN_CAT_NAME=$1 _CLEAN_CAT_MARK=$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES))
 }
 _clean_cat_end() {
   local d=$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES - _CLEAN_CAT_MARK))
   (( d > _CLEAN_BEST_BYTES )) && _CLEAN_BEST_BYTES=$d _CLEAN_BEST=$_CLEAN_CAT_NAME
+  mm_section_lazy ""
   return 0
 }
 
@@ -2136,6 +2138,11 @@ mm_cmd_main() {
   _clean_review_print
 
   total=$((MM_FREED + _CLEAN_TOOL_BYTES)) items=$((MM_COUNT + _CLEAN_TOOL_ITEMS))
+  if (( total + MM_TRASHED + items == 0 )); then
+    if [[ "$MM_DRY_RUN" == 1 ]]; then mm_done_empty "Nothing to clean right now."
+    else mm_done_empty "Nothing to clean: this machine is already tidy."; fi
+    return 0
+  fi
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     mm_banner "Dry run complete" \
       "Would free: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items to clean: $items" \

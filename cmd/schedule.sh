@@ -19,8 +19,6 @@
 # git worktrees, uninstalls, and mm optimize's process kills and upgrades. A lock keeps two runs
 # from overlapping; each real run leaves its summary in last-run.json (lib/schedule.sh).
 
-# shellcheck source=../lib/schedule.sh
-. "$MM_HOME/lib/schedule.sh"
 # shellcheck source=clean.sh
 . "$MM_HOME/cmd/clean.sh"
 # shellcheck source=purge.sh
@@ -196,7 +194,6 @@ _schedule_run() {
 
 # ---------------------------------------------------------------- enable, disable, status
 
-_SCHEDULE_HOUR=3          # runs start at 03:00 local time, plus a random delay
 _SCHEDULE_DELAY=1h        # systemd RandomizedDelaySec: many machines do not all start at once
 
 _SCHEDULE_SD=""          # 1 or 0 once _schedule_systemd_ok has asked
@@ -386,7 +383,7 @@ _schedule_enable() {
     pins=$(_schedule_pins "$_SCHEDULE_SD_ENV")
     _schedule_pins_check "$pins"
     while IFS= read -r p; do [[ -n "$p" ]] && env+="Environment=$p"$'\n'; done <<<"$pins"
-    cal="*-*-* $(printf '%02d' "$_SCHEDULE_HOUR"):00:00"; [[ "$freq" == weekly ]] && cal="Sun $cal"
+    cal="*-*-* $(printf '%02d' "$MM_SCHEDULE_HOUR"):00:00"; [[ "$freq" == weekly ]] && cal="Sun $cal"
     svc="$MM_SCHEDULE_MARK
 [Unit]
 Description=marmot scheduled cleanup (mm schedule run)
@@ -418,7 +415,7 @@ WantedBy=timers.target
       fi
     done
     if [[ "$MM_DRY_RUN" == 1 ]]; then
-      mm_info "Would write $MM_SCHEDULE_UNIT_DIR/$MM_SCHEDULE_UNIT.service and .timer ($freq at $(printf '%02d' "$_SCHEDULE_HOUR"):00 + up to $_SCHEDULE_DELAY) and enable the timer."
+      mm_info "Would write $MM_SCHEDULE_UNIT_DIR/$MM_SCHEDULE_UNIT.service and .timer ($freq at $(printf '%02d' "$MM_SCHEDULE_HOUR"):00 + up to $_SCHEDULE_DELAY) and enable the timer."
       return 0
     fi
     mkdir -p "$MM_SCHEDULE_UNIT_DIR" || mm_die "cannot create $MM_SCHEDULE_UNIT_DIR"
@@ -439,7 +436,7 @@ WantedBy=timers.target
     pins=$(_schedule_pins "$(_schedule_cron_env "$_SCHEDULE_CRON_KEEP")")
     _schedule_pins_check "$pins"
     min=$((RANDOM % 60)) dow='*'; [[ "$freq" == weekly ]] && dow=0
-    line="$min $_SCHEDULE_HOUR * * $dow PATH=$path${pins:+ ${pins//$'\n'/ }} MM_SCHEDULE_TRIGGER=cron $exe schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG"
+    line="$min $MM_SCHEDULE_HOUR * * $dow PATH=$path${pins:+ ${pins//$'\n'/ }} MM_SCHEDULE_TRIGGER=cron $exe schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG"
     if [[ "$MM_DRY_RUN" == 1 ]]; then mm_info "Would add to your crontab: $line"; return 0; fi
     _schedule_cron_set "$_SCHEDULE_CRON_KEEP$line"$'\n' "add marmot's crontab line" || mm_die "could not install the crontab line"
     _schedule_note cron "$freq"

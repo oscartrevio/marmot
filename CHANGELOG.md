@@ -102,6 +102,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   when it brought the root disk back under a health threshold (`Disk 91% → 84%: back under
   90%`); the 80/90% thresholds live in one place in core, shared with `mm status`. The
   uninformative `Categories: N` is gone.
+- A run with nothing to do ends as the success it is (`✓ Nothing to clean: this machine is
+  already tidy.`) with when the next scheduled cleanup is due, or how to schedule one, instead of
+  a banner of zeros; `mm purge` likewise. Section headings with nothing under them are no longer
+  printed.
 
 ### Changed
 

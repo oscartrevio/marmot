@@ -5,9 +5,6 @@
 # Fast probes read /proc every tick; slow probes (apt, systemd, dpkg, docker) run in the
 # background at start and then every ST_SLOW_EVERY seconds. Nothing here changes the system.
 
-# shellcheck source=../lib/schedule.sh
-. "$MM_HOME/lib/schedule.sh"
-
 ST_SLOW_EVERY=300
 ST_HIST=16
 ST_SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █)
