@@ -93,6 +93,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   durations read `12m 34s` (not `754s`), and anything under a minute ago is `just now` (not
   `0m`). One family of formatters in core (`mm_ago`, `mm_dur`, `mm_when`) serves `mm status`,
   `mm schedule`, `mm optimize` and the banners.
+- Colors follow each stream: an error redirected to a file (`2>log`) carries no escape codes
+  even when the screen gets color, and `TERM=dumb` turns colors off like `NO_COLOR`.
 - CI runs once per pull request, as one job running the suite one file at a time; docs-only
   changes skip it.
 - `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`

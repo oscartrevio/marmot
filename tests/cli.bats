@@ -14,6 +14,19 @@ teardown() { mm_test_teardown; }
   [ "$status" -ne 0 ]
 }
 
+@test "colors only go to a terminal stream, never with TERM=dumb or NO_COLOR" {
+  command -v script >/dev/null || skip "needs script (util-linux)"
+  unset NO_COLOR
+  # stdout is a terminal, stderr a file: the error message carries no escape codes
+  TERM=xterm script -qec "mm nope 2>'$SB/err'" /dev/null >"$SB/out" || true
+  grep -q 'unknown command' "$SB/err"
+  [ "$(grep -c $'\e' "$SB/err")" = 0 ]
+  TERM=xterm script -qec "mm --help" /dev/null >"$SB/out"
+  [ "$(grep -c $'\e\\[1m' "$SB/out")" -gt 0 ]   # the control: a terminal does get color
+  TERM=dumb script -qec "mm --help" /dev/null >"$SB/out"
+  [ "$(grep -c $'\e\\[1m' "$SB/out")" = 0 ]
+}
+
 @test "bare mm opens its menu with fzf older than 0.34 (Ubuntu 22.04) and newer ones" {
   local v
   for v in "0.29 (devel)" "0.38.0 (debian)"; do

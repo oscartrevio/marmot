@@ -1349,7 +1349,7 @@ _purge_run() {
       b="${rec%%$'\t'*}" rec="${rec#*$'\t'}" fb="${rec%%$'\t'*}" rec="${rec#*$'\t'}"
       h="${rec%%$'\t'*}" rec="${rec#*$'\t'}" mt="${rec%%$'\t'*}" p="${rec#*$'\t'}"
       size[$p]=$b frees[$p]=$fb holds[$p]=$h written[$p]=$mt; n=$((n + 1))
-      [[ -t 2 ]] && printf '\r  %sMeasuring %d/%d artifacts…%s' "$C_DIM" "$n" "$total" "$C_RESET" >&2
+      [[ -t 2 ]] && printf '\r  %sMeasuring %d/%d artifacts…%s' "$CE_DIM" "$n" "$total" "$CE_RESET" >&2
     done < <(_purge_measure "${cand_paths[@]}")
     [[ -t 2 ]] && printf '\r\e[K' >&2
   fi

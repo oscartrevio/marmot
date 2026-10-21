@@ -98,7 +98,7 @@ _analyze_overview_rows() {
   if [[ -t 2 ]]; then
     while [[ -n "$(jobs -rp)" ]]; do
       n=$(find "$dir" -maxdepth 1 -type f ! -name '*.tmp' | wc -l)
-      printf '\r  %s%s%s Measuring %d locations… %d done ' "$C_CYAN" "${frames:f++%10:1}" "$C_RESET" "$i" "$n" >&2
+      printf '\r  %s%s%s Measuring %d locations… %d done ' "$CE_CYAN" "${frames:f++%10:1}" "$CE_RESET" "$i" "$n" >&2
       sleep 0.1
     done
     printf '\r\e[K' >&2

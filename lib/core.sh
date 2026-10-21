@@ -44,11 +44,19 @@ fi
 
 # ---------------------------------------------------------------- UI
 
-if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+# Colors: C_* for stdout, CE_* for stderr, each only when that stream is a terminal, and neither
+# with NO_COLOR set (no-color.org) or TERM=dumb.
+_mm_color_ok() { [[ -t "$1" && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; }
+if _mm_color_ok 1; then
   C_BOLD=$'\e[1m' C_DIM=$'\e[2m' C_RED=$'\e[31m' C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m'
   C_BLUE=$'\e[34m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
 else
   C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
+fi
+if _mm_color_ok 2; then
+  CE_DIM=$'\e[2m' CE_RED=$'\e[31m' CE_YELLOW=$'\e[33m' CE_CYAN=$'\e[36m' CE_RESET=$'\e[0m'
+else
+  CE_DIM="" CE_RED="" CE_YELLOW="" CE_CYAN="" CE_RESET=""
 fi
 MM_RULE="======================================================================"
 
@@ -68,9 +76,9 @@ mm_skip() {
 }
 mm_act()  { printf '  %s→%s %s\n' "$C_CYAN" "$C_RESET" "$1"; }
 mm_warn() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1"; }
-mm_err()  { MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; }
+mm_err()  { MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$CE_RED" "$CE_RESET" "$1" >&2; }
 mm_info() { printf '  %s\n' "$1"; }
-mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$C_DIM" "$1" "$C_RESET" >&2; return 0; }
+mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$CE_DIM" "$1" "$CE_RESET" >&2; return 0; }
 mm_die()  { mm_err "$1"; exit "${2:-1}"; }
 
 # mm_banner TITLE LINE... — closing summary block.
@@ -1438,7 +1446,7 @@ mm_apt_busy() {
 mm_pick() {
   if [[ "$MM_TTY" != 1 ]] || ! command -v fzf >/dev/null; then
     cat >/dev/null
-    [[ "$MM_TTY" == 1 ]] && mm_warn "fzf is not installed: nothing selected" >&2
+    [[ "$MM_TTY" == 1 ]] && printf '  %s!%s fzf is not installed: nothing selected\n' "$CE_YELLOW" "$CE_RESET" >&2
     return 0
   fi
   fzf --multi --ansi --reverse --height="$(mm_fzf_height 60)" --header="$1" --header-first \
