@@ -137,9 +137,9 @@ _analyze_render() {
 }
 
 # _analyze_launch PATH [ACCESS] — explore PATH: ncdu, always read-only (ncdu's own delete would
-# bypass marmot's checks), or a largest-entries list when ncdu is missing. ACCESS root opens as
-# root when sudo is available. Afterwards, on a terminal, a user-writable PATH (ACCESS user) gets
-# the offer to move picked entries to the Trash through mm_rm.
+# bypass marmot's checks), or a largest-entries list when ncdu is missing or there is no terminal
+# for it. ACCESS root opens as root when sudo is available. Afterwards, on a terminal, a
+# user-writable PATH (ACCESS user) gets the offer to move picked entries to the Trash via mm_rm.
 _analyze_launch() {
   local path=$1 access=${2:-user} note="read-only" offer=0
   local -a pre=()
@@ -150,16 +150,17 @@ _analyze_launch() {
   [[ "$MM_TTY" == 1 && "$access" == user && -w "$path" ]] && offer=1
   (( offer )) && note+="; afterwards marmot offers to move picked items to the Trash"
   [[ "$access" == keep ]] && note+="; agent state is reported, never removed"
-  if command -v ncdu >/dev/null; then
+  if [[ "$MM_TTY" == 1 ]] && command -v ncdu >/dev/null; then
     local -a cmd=(ncdu -x -r --color dark)
     ncdu --help 2>&1 | grep -q -- '--exclude-kernfs' && cmd+=(--exclude-kernfs)
     printf '\n  %sKeys:%s g graph · q quit  %s(%s)%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$note" "$C_RESET"
     printf '  %sOpening %s in ncdu%s\n' "$C_DIM" "$path" "$C_RESET"
-    [[ "$MM_TTY" == 1 ]] && sleep 0.5
+    sleep 0.5
     "${pre[@]}" "${cmd[@]}" -- "$path"
   else
-    printf '\n%sLargest entries under %s%s  %s(install ncdu for an interactive browser)%s\n\n' \
-      "$C_BOLD" "$path" "$C_RESET" "$C_DIM" "$C_RESET"
+    local why="install ncdu for an interactive browser"
+    [[ "$MM_TTY" == 1 ]] || why="no terminal: the ncdu explorer needs one"
+    printf '\n%sLargest entries under %s%s  %s(%s)%s\n\n' "$C_BOLD" "$path" "$C_RESET" "$C_DIM" "$why" "$C_RESET"
     local line as=""
     [[ ${#pre[@]} -gt 0 ]] && sudo -n true 2>/dev/null && as=sudo
     while IFS= read -r line; do
@@ -241,8 +242,9 @@ Usage: mm analyze [PATH] [--json]
 
 Sizes ending in + are lower bounds (scan hit the ${MM_ANALYZE_TIMEOUT:-20}s limit or unreadable folders).
 Exploring uses ncdu, always read-only (root-owned locations as root, when sudo is available);
-without ncdu the largest entries are listed. Afterwards, for a folder of yours, marmot offers to
-move picked items to the Trash (fzf; same safety checks as mm clean; dry-run only reports).
+without ncdu or without a terminal the largest entries are listed. Afterwards, for a folder of
+yours, marmot offers to move picked items to the Trash (fzf; same safety checks as mm clean;
+dry-run only reports).
 Agent state (Claude Code, Codex, ... see lib/agents.sh) is reported only.
 Environment: MM_ANALYZE_TIMEOUT (seconds per location).
 EOF

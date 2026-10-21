@@ -124,6 +124,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   come before the command. It is still refused for every command but `mm purge`.
 - Bare `mm` opens its command menu with fzf older than 0.34 (Ubuntu 22.04 ships 0.29); it
   quit without a word. The menu and the pickers share one fzf version check.
+- `mm analyze PATH` without a terminal lists the largest entries under PATH instead of
+  starting ncdu, which only complained that standard input is not a TTY.
 
 ## 0.2.0
 
