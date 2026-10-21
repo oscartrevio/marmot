@@ -96,10 +96,14 @@ mm_err()  { _mm_flush; MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$CE_RED" "$CE
 mm_info() { _mm_flush; printf '  %s\n' "$1"; }
 
 # mm_done_empty MESSAGE — close a run that had nothing to do as the success it is: "✓ MESSAGE",
-# then when the next scheduled cleanup is due, or how to schedule one.
+# on a terminal with the day's greeting (mm_greeting), then when the next scheduled cleanup is
+# due, or how to schedule one.
 mm_done_empty() {
+  local g=""
   _MM_PENDING=""
-  printf '\n  %s✓%s %s\n  %s%s%s\n' "$C_GREEN" "$C_RESET" "$1" "$C_DIM" "$(mm_schedule_hint)" "$C_RESET"
+  if [[ "$MM_TTY" == 1 ]]; then mm_greeting; g=$REPLY; fi
+  printf '\n  %s✓%s %s%s\n  %s%s%s\n' "$C_GREEN" "$C_RESET" "$1" "${g:+  $C_DIM$g$C_RESET}" \
+    "$C_DIM" "$(mm_schedule_hint)" "$C_RESET"
 }
 mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$CE_DIM" "$1" "$CE_RESET" >&2; return 0; }
 mm_die()  { mm_err "$1"; exit "${2:-1}"; }
@@ -1219,25 +1223,69 @@ MM_AWK_EPOCH='function epoch(t,   y, m, s, o) {
   return s
 }'
 
-# mm_log_facts — what the operations logs say about the newest run, for the marmot's moods:
-# MM_FACT_LAST_AT (epoch of its last row) and MM_FACT_LAST_FREED (the bytes it freed); both empty
-# when nothing is logged. A run is its run id's rows (an old row without one: its command and hour).
+# mm_log_facts [NOW] — what the operations logs say, for the marmot (lib/mascot.sh); each is empty
+# when unknown. MM_FACT_LAST_AT and MM_FACT_LAST_FREED: when the newest run wrote its last row
+# (epoch) and the bytes it freed. MM_FACT_SINCE: when marmot first ran here (the oldest row, or
+# install.sh's record if that is older). MM_FACT_YEAR_FREED: freed in NOW's year (default: now).
+# MM_FACT_PREV_RUNS, MM_FACT_PREV_FREED, MM_FACT_PREV_BIG_AT and MM_FACT_PREV_BIG: the runs that
+# freed something in the year before, their total, and the biggest single item with its size.
+# MM_FACT_BIG_AT and MM_FACT_BIG: the biggest item ever freed. Sizes are mm_human text, paths
+# with ~. A run is its run id's rows (an old row without one: its command and hour).
 mm_log_facts() {
   local -a logs
-  local out
-  MM_FACT_LAST_AT="" MM_FACT_LAST_FREED=""
+  local out y mt
+  MM_FACT_LAST_AT="" MM_FACT_LAST_FREED="" MM_FACT_SINCE="" MM_FACT_YEAR_FREED="" MM_FACT_PREV_RUNS=""
+  MM_FACT_PREV_FREED="" MM_FACT_PREV_BIG_AT="" MM_FACT_PREV_BIG="" MM_FACT_BIG_AT="" MM_FACT_BIG=""
+  if [[ -z "${1:-}" ]]; then mm_now; set -- "$REPLY"; fi
+  printf -v y '%(%Y)T' "$1"
   mapfile -t logs < <(_mm_logs)
-  (( ${#logs[@]} )) || return 0
-  out=$(awk -F'\t' "$MM_AWK_FREED"$'\n'"$MM_AWK_EPOCH"'
-    NF < 3 { next }
-    {
-      run = (NF >= 7 && $7 != "") ? $7 : $2 "@" substr($1, 1, 13)
-      if (freed_row($3) && $5 ~ /^[0-9]+$/) f[run] += $5
-      last = run; at[run] = $1
-    }
-    END { if (last != "") printf "%.0f\t%.0f\n", epoch(at[last]), f[last] }' "${logs[@]}")
-  IFS=$'\t' read -r MM_FACT_LAST_AT MM_FACT_LAST_FREED <<<"$out"
+  if (( ${#logs[@]} )); then
+    out=$(awk -F'\t' -v year="$y" -v home="$HOME" "$MM_AWK_HUMAN"$'\n'"$MM_AWK_FREED"$'\n'"$MM_AWK_EPOCH"'
+      function tilde(p) { return index(p, home "/") == 1 ? "~" substr(p, length(home) + 1) : p }
+      function or(v) { return v == "" ? "-" : v }
+      NF < 3 { next }
+      {
+        if (first == "") first = $1
+        run = (NF >= 7 && $7 != "") ? $7 : $2 "@" substr($1, 1, 13)
+        last = run; at[run] = $1
+        if (!freed_row($3) || $5 !~ /^[0-9]+$/) next
+        b = $5 + 0; f[run] += b
+        if (b > big) { big = b; bigat = $4 }
+        if (substr($1, 1, 4) == year) ytd += b
+        if (substr($1, 1, 4) == year - 1) {
+          pf += b; if (!(run in pr)) { pr[run] = 1; pn++ }
+          if (b > pbig) { pbig = b; pbigat = $4 }
+        }
+      }
+      END {
+        if (last == "") exit
+        printf "%.0f\t%.0f\t%.0f\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", epoch(at[last]), f[last], epoch(first),
+          (ytd > 0 ? human(ytd) : "-"), pn, (pn ? human(pf) : "-"), or(tilde(pbigat)), (pbig > 0 ? human(pbig) : "-"),
+          or(tilde(bigat)), (big > 0 ? human(big) : "-")
+      }' "${logs[@]}")
+    IFS=$'\t' read -r MM_FACT_LAST_AT MM_FACT_LAST_FREED MM_FACT_SINCE MM_FACT_YEAR_FREED MM_FACT_PREV_RUNS \
+      MM_FACT_PREV_FREED MM_FACT_PREV_BIG_AT MM_FACT_PREV_BIG MM_FACT_BIG_AT MM_FACT_BIG <<<"$out"
+    local v
+    for v in MM_FACT_YEAR_FREED MM_FACT_PREV_FREED MM_FACT_PREV_BIG_AT MM_FACT_PREV_BIG MM_FACT_BIG_AT MM_FACT_BIG; do
+      [[ "${!v}" == - ]] && printf -v "$v" ''
+    done
+  fi
+  if [[ -f "$MM_HOME/.install-source" ]] && mt=$(stat -c %Y -- "$MM_HOME/.install-source" 2>/dev/null); then
+    if [[ -z "$MM_FACT_SINCE" ]] || (( mt < MM_FACT_SINCE )); then MM_FACT_SINCE=$mt; fi
+  fi
   return 0
+}
+
+# mm_greeting — the day's first greeting (lib/mascot.sh's calendar order) in REPLY; empty on an
+# ordinary day.
+mm_greeting() {
+  local now
+  mm_now
+  now=$REPLY
+  mm_log_facts "$now"
+  mm_occasions "$now" "$MM_FACT_SINCE"
+  mm_marmot_dress happy "" 0 "${MM_OCC[@]}"
+  REPLY=${MM_LOOK_GREETS[0]:-}
 }
 
 # Lifetime totals at which a real interactive run says how far marmot has come, in GB.

@@ -143,6 +143,13 @@ mm_test_clock() {
   export -f date
 }
 
+# mm_test_now DATE — marmot's calendar and clock (lib/mascot.sh mm_now) read DATE (local time,
+# as `date -d` takes it) as now, for the rest of this test.
+mm_test_now() {
+  date -d "$1" +%s >"$BATS_TEST_TMPDIR/now"
+  export MM_TEST_NOW="$BATS_TEST_TMPDIR/now"
+}
+
 # mm_test_pids [--parent PID] [--comm NAME] [--cmdline TEXT] [--cmdline-has TEXT] — PIDs matching
 # every filter given: parent, exact name, exact command line (arguments joined by spaces), or a
 # command line containing TEXT. Read from /proc: procps (pgrep) is not installed everywhere.

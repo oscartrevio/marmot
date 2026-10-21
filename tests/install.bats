@@ -309,6 +309,20 @@ listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
   [[ "$output" != *"marmot is installed"* ]]
 }
 
+@test "the closing art is the README's marmot, dressed for the day on an occasion" {
+  local readme
+  readme=$(sed -n '2,6p' "$MM_SRC/README.md")
+  mm_test_now '2026-06-10 12:00'
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$readme"* ]]
+  "$MM_SRC/install.sh" --uninstall >/dev/null
+  mm_test_now '2026-12-25 12:00'
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"$readme"* && "$output" == *"--(mm)--UU--(mm)--"* ]]
+}
+
 @test "the first-run steps are printed, never run" {
   local calls="$SB/mm-calls"
   mm_test_fake mm "echo \"\$*\" >>'$calls'"

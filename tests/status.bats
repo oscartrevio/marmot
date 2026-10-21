@@ -779,11 +779,8 @@ exit 0'
   [ "$(grep -cE '^  codex ' "$HOME/short")" -eq "$n" ]
 }
 
-# at DATE — epoch of DATE (local time), for ST_NOW and MM_TEST_NOW.
+# at DATE — epoch of DATE (local time), for ST_NOW.
 at() { date -d "$1" +%s; }
-
-# clock DATE — mm status (and mm) run as if it were DATE (MM_TEST_NOW, bats only).
-clock() { at "$1" >"$BATS_TEST_TMPDIR/now"; export MM_TEST_NOW="$BATS_TEST_TMPDIR/now"; }
 
 @test "the marmot's face: health first, then a busy CPU, any health reason, then agents at work" {
   status_lib '
@@ -872,7 +869,7 @@ clock() { at "$1" >"$BATS_TEST_TMPDIR/now"; export MM_TEST_NOW="$BATS_TEST_TMPDI
 
 @test "blink: the live view closes open eyes for a moment every 8-10 s; a snapshot never does" {
   (( $(nproc) > 1 )) || skip "one busy core would be all the CPU: squinting, not blinking"
-  clock '2026-06-10 12:00'
+  mm_test_now '2026-06-10 12:00'
   cp "$(command -v bash)" "$SB/bin/claude"
   detached "$SB" "$SB/bin/claude" -c 'while :; do :; done'
   fake_ss "$LISTEN_SSH" ""
@@ -884,6 +881,19 @@ clock() { at "$1" >"$BATS_TEST_TMPDIR/now"; export MM_TEST_NOW="$BATS_TEST_TMPDI
   [ "$LIVE_STATUS" -eq 0 ]
   grep -qE '^   \|  [\^oO]    [\^oO]  \|' <<<"$LIVE_TEXT"
   grep -qF '   |  -    -  |' <<<"$LIVE_TEXT"
+}
+
+@test "the day's occasions dress the header; an ordinary day has none" {
+  mm_test_now '2026-12-25 12:00'
+  status_lib '_status_init; _status_first 0; _status_frame_compact 200; _status_cleanup
+    echo "${ST_OCC[*]}|$MM_LOOK_HAT|${MM_LOOK_GREET:+greeting}"'
+  [ "$status" -eq 0 ]
+  # Another test's cleanup may be at work alongside: then the hard hat is the right hat.
+  [[ "$output" == "christmas winter|santa|greeting" || "$output" == "christmas winter|hardhat|greeting" ]]
+  mm_test_now '2026-06-10 12:00'
+  status_lib '_status_init; _status_first 0; _status_frame_compact 200; _status_cleanup
+    echo "${ST_OCC[*]}|${MM_LOOK_GREET:+greeting}"'
+  [ "$output" = "|" ]
 }
 
 @test "views: v switches live between compact and full, repainting the screen" {

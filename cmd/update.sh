@@ -41,7 +41,8 @@ _update_is_checkout() {
 }
 
 # _update_version — "marmot 0.2.0 (1a2b3c4)": the commit this copy was installed from, or HEAD
-# when marmot runs straight from a git checkout; "-dirty" when it had uncommitted changes.
+# when marmot runs straight from a git checkout; "-dirty" when it had uncommitted changes. On a
+# terminal, the day's greeting follows (mm_greeting) on an occasion.
 _update_version() {
   local commit describe=""
   commit=$(_update_field commit)
@@ -56,6 +57,9 @@ _update_version() {
   else
     printf 'marmot %s\n' "$MM_VERSION"
   fi
+  [[ -t 1 ]] || return 0
+  mm_greeting
+  [[ -z "$REPLY" ]] || printf '%s%s%s\n' "$C_DIM" "$REPLY" "$C_RESET"
 }
 
 # _update_resolve — set _UP_SRC (the checkout), _UP_INSTALLED (commit of this copy), _UP_BIN

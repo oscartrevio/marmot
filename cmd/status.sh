@@ -259,7 +259,7 @@ _status_init() {
   ST_CL_VIA="" ST_CL_TRANSPORT=none ST_CL_TTY="" ST_CL_IDLE="" ST_TERM_NAME="" ST_TERM_SSH="" ST_TERM_INO=() ST_TERM_LOCAL=0
   ST_RTTH=() ST_TS_FOR="" ST_TS_AT=0
   # The marmot (see _status_marmot): the clock, whether a cleanup is at work, a blink.
-  ST_NOW=0 ST_DAY="" ST_ATWORK=0 ST_BLINK=0 ST_CHEEKS=0 ST_PROUD_AT=0 ST_PROUD_FREED=0 ST_PROUD_NOTE=""
+  ST_NOW=0 ST_DAY="" ST_ATWORK=0 ST_BLINK=0 ST_CHEEKS=0 ST_PROUD_AT=0 ST_PROUD_FREED=0 ST_PROUD_NOTE="" ST_OCC=()
   _status_sched
   _status_term_find
 }
@@ -414,13 +414,16 @@ _status_clock() {
   _status_facts
 }
 
-# _status_facts — the newest cleanup, for the proud face: ST_PROUD_AT (epoch) and ST_PROUD_FREED
+# _status_facts — what the marmot wears and says today: the day's occasions (lib/mascot.sh) in
+# ST_OCC. Then the newest cleanup, for the proud face: ST_PROUD_AT (epoch) and ST_PROUD_FREED
 # (bytes) of the last scheduled run (lib/schedule.sh) or of the newest run in the operations log,
 # whichever is newer, and ST_PROUD_NOTE for the title ("freed 4.2GB last night").
 # shellcheck disable=SC2031 # MM_LAST_* are set in this shell by mm_schedule_last (_status_sched)
 _status_facts() {
   local at freed h day w
-  mm_log_facts
+  mm_log_facts "$ST_NOW"
+  mm_occasions "$ST_NOW" "$MM_FACT_SINCE"
+  ST_OCC=("${MM_OCC[@]}")
   at=${MM_FACT_LAST_AT:-0} freed=${MM_FACT_LAST_FREED:-0}
   ((ST_LAST && MM_LAST_EPOCH > at)) && at=$MM_LAST_EPOCH freed=$MM_LAST_FREED
   ST_PROUD_AT=$at ST_PROUD_FREED=$freed ST_PROUD_NOTE=""
@@ -1970,21 +1973,34 @@ _status_panel_sys() {
 
 # _status_marmot WIDTH TITLE FACTS COLOR — the header as five rows into ST_FRAME: the marmot
 # (lib/mascot.sh) peeking over the dashboard, TITLE and FACTS (dimmed) beside its ears and eyes,
-# its paws and teeth on a rule WIDTH wide. The face is _status_mood's, the eyes in the health
-# COLOR; a proud face adds its note to TITLE when it fits. A cleanup at work puts on the hard hat,
-# and ST_BLINK=1 (the live view, for a moment) closes open eyes. The caller checks that TITLE
-# fits: 21 columns go to the marmot.
+# the day's greetings beside its paws, its paws and teeth on a rule WIDTH wide. The face is
+# _status_mood's, the eyes in the health COLOR; a proud face adds its note to TITLE when it fits.
+# The day's occasions (ST_OCC) dress it, a cleanup at work puts on the hard hat, and ST_BLINK=1
+# (the live view, for a moment) closes open eyes. The caller checks that TITLE fits: 21 columns
+# go to the marmot.
 _status_marmot() {
-  local w=$1 title=$2 len
+  local w=$1 title=$2 len mood
   _status_mood
-  MM_LOOK_CHEEKS=$ST_CHEEKS MM_LOOK_BLINK=$ST_BLINK MM_LOOK_HAT="" MM_LOOK_GREET=""
-  ((ST_ATWORK)) && MM_LOOK_HAT=hardhat
-  if [[ "$REPLY" == proud && -n "$ST_PROUD_NOTE" ]]; then
+  mood=$REPLY
+  mm_marmot_dress "$mood" "$ST_SCORE" "$ST_ATWORK" "${ST_OCC[@]}"
+  MM_LOOK_CHEEKS=$ST_CHEEKS MM_LOOK_BLINK=$ST_BLINK
+  _status_greet $((w - 21))
+  if [[ "$mood" == proud && -n "$ST_PROUD_NOTE" ]]; then
     _status_vlen len "$title"
     ((len + 2 + ${#ST_PROUD_NOTE} <= w - 21)) && title+="  $C_DIM$ST_PROUD_NOTE$C_RESET"
   fi
-  mm_marmot_draw "$REPLY" "$w" "$title" "$3" "$4"
+  mm_marmot_draw "$mood" "$w" "$title" "$3" "$4"
   ST_FRAME+=("${MM_ART[@]}")
+}
+
+# _status_greet ROOM — MM_LOOK_GREETS joined by " / " into MM_LOOK_GREET, as many as fit ROOM
+# columns in calendar order; a first one longer than ROOM is cut.
+_status_greet() {
+  local g t=""
+  for g in "${MM_LOOK_GREETS[@]}"; do
+    if [[ -z "$t" ]]; then t=$g; elif ((${#t} + 3 + ${#g} <= $1)); then t+=" / $g"; fi
+  done
+  _status_trunc MM_LOOK_GREET "$t" "$1"
 }
 
 # _status_frame_full COLS — render the dashboard into ST_FRAME (array of lines).

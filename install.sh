@@ -22,12 +22,12 @@ manifest=.install-manifest
 # What install copies: the launcher, libraries, commands, completion, and this installer (for
 # --uninstall). Tests and git metadata stay in the checkout.
 PAYLOAD=(marmot install.sh lib cmd completion)
-# Everything an install made before .install-manifest existed can hold (no file has left these
-# folders since): such a copy is replaced or removed only when it holds nothing else.
+# Every file an install can hold, also one made before .install-manifest existed (no file has
+# left these folders since): such a copy is replaced or removed only when it holds nothing else.
 LEGACY_DIRS=(lib cmd completion)
-LEGACY_FILES=(marmot install.sh .install-source lib/agents.sh lib/catalog.sh lib/core.sh lib/schedule.sh
-  cmd/analyze.sh cmd/clean.sh cmd/history.sh cmd/optimize.sh cmd/purge.sh cmd/schedule.sh cmd/status.sh
-  cmd/uninstall.sh cmd/update.sh completion/_mm completion/mm.bash)
+LEGACY_FILES=(marmot install.sh .install-source lib/agents.sh lib/catalog.sh lib/core.sh lib/mascot.sh
+  lib/schedule.sh cmd/analyze.sh cmd/clean.sh cmd/history.sh cmd/optimize.sh cmd/purge.sh cmd/schedule.sh
+  cmd/status.sh cmd/uninstall.sh cmd/update.sh completion/_mm completion/mm.bash)
 
 # Lines look like marmot's own (lib/core.sh mm_ok/mm_warn/mm_err), which this does not source: it
 # would canonicalize HOME and probe the terminal. Color only when that stream is a terminal.
@@ -261,17 +261,20 @@ _in_the_way() {
     die "$prefix already has ${blocked[*]:0:5}, which marmot did not install and would overwrite; nothing changed: move them away or set MARMOT_PREFIX"
 }
 
-# _finale — the first-run message: the marmot, three next steps, then the completion line for each
-# shell whose rc file does not load it yet. Printed only: nothing is run, no rc file is written.
+# _finale — the first-run message: the marmot (dressed for the day: lib/mascot.sh, which this does
+# source, has no side effects), three next steps, then the completion line for each shell whose
+# rc file does not load it yet. Printed only: nothing is run, no rc file is written.
 _finale() {
+  local C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
+  # shellcheck source=lib/mascot.sh
+  . "$src/lib/mascot.sh"
+  mm_now
+  mm_occasions "$REPLY" || MM_OCC=()
+  mm_marmot_dress happy "" 0 "${MM_OCC[@]}"
+  MM_LOOK_GREET="run on clean, fast and healthy."
+  mm_marmot_draw happy 60 marmot "Keep the machines your coding agents"
   say ""
-  cat <<'ART'
-     _..--.._
-  ()'        '()     marmot
-   |  ^    ^  |      Keep the machines your coding agents
-  .--.  \/  .--.     run on clean, fast and healthy.
---(mm)--UU--(mm)--------------------------------------------
-ART
+  printf '%s\n' "${MM_ART[@]}"
   say ""
   say "marmot is installed. Three next steps:"
   say "  1. mm clean --dry-run    preview: lists what mm clean would remove, deletes nothing"

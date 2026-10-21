@@ -267,3 +267,24 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   [ ! -e "$SB/p/node_modules" ]
   [[ "$output" != *"has now freed"* ]]                           # above it is not crossing it
 }
+
+@test "on an occasion mm --version on a terminal and a run with nothing to do add the day's greeting" {
+  command -v script >/dev/null || skip "needs script (util-linux)"
+  mkdir -p "$SB/empty"
+  local ordinary
+  mm_test_now '2026-06-10 12:00'
+  run script -qec "mm --version" /dev/null
+  [ "$(tr -d '\r' <<<"$output" | wc -l)" -eq 1 ]
+  MM_TTY=1 run mm purge "$SB/empty"
+  ordinary=$(grep '✓' <<<"$output")
+  [ -n "$ordinary" ]
+  mm_test_now '2026-12-25 12:00'
+  run script -qec "mm --version" /dev/null
+  [ "$(tr -d '\r' <<<"$output" | wc -l)" -eq 2 ]
+  run mm --version                                              # for a script: the version alone
+  [ "${#lines[@]}" -eq 1 ]
+  MM_TTY=1 run mm purge "$SB/empty"
+  [[ "$(grep '✓' <<<"$output")" == "$ordinary  "?* ]]
+  run mm purge "$SB/empty"                                      # no terminal: no greeting
+  [ "$(grep '✓' <<<"$output")" = "$ordinary" ]
+}

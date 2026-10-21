@@ -124,6 +124,15 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   over 12 hours), `^ ^ ✦` proud the day after a cleanup that freed 1GB or more ("freed 4.2GB last
   night" beside the title), and stuffed cheeks when a full disk is why it is alert or dizzy. It
   wears a hard hat while a marmot cleanup runs and blinks now and then in the live view.
+- The marmot keeps a calendar (`lib/mascot.sh`): a Santa hat for Christmas, snow on the rule all
+  winter, a spider's web and a pumpkin for Halloween week, Groundhog (and Alaska's Marmot) Day's
+  shadow when health is below 100, Día de Muertos remembering the biggest item it ever freed,
+  Thanksgiving's total, last year's review in the first week of January, the anniversary of its
+  first run here, and about twenty more (Pi Day, May 4th, Towel Day, Sysadmin Day, the 256th day,
+  Debian Day, Linux's birthday, World Backup Day, Ada Lovelace Day, Friday the 13th, a round Unix
+  time...). Decorations never replace a face that reports a problem. They show in the `mm status`
+  header, after `mm --version` on a terminal, on the line of a run with nothing to do, and in
+  `install.sh`'s closing art.
 
 ### Changed
 
