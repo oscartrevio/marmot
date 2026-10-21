@@ -519,7 +519,7 @@ esac"
   local pid=$MM_SUDO_KEEPALIVE_PID i n
   [ -n "$pid" ]
   for ((i = 0; i < 100; i++)); do
-    n=$(grep -c -- '^-n -v$' "$SB/sudo.calls" 2>/dev/null)
+    n=$(grep -c -- '^-n -v$' "$SB/sudo.calls" 2>/dev/null || true)
     (( ${n:-0} >= 2 )) && break
     sleep 0.1
   done

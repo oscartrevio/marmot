@@ -345,7 +345,7 @@ mm_sudo_keepalive_stop() {
   local p=${MM_SUDO_KEEPALIVE_PID:-}
   [[ -n "$p" ]] || return 0
   kill "$p" 2>/dev/null
-  wait "$p" 2>/dev/null
+  wait "$p" 2>/dev/null || :
   MM_SUDO_KEEPALIVE_PID=""
 }
 
