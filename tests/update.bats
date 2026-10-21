@@ -114,15 +114,17 @@ unchanged() {
   unchanged "$old" "$old"
 }
 
-@test "--check lists the CHANGELOG bullets the incoming commits add" {
+@test "--check lists the CHANGELOG bullets the incoming commits add instead of their subjects" {
+  publish "plain subject"
   printf '## Unreleased\n\n- Shows the changelog on update.\n' >"$DEV/CHANGELOG.md"
   mm_test_git "$DEV" add CHANGELOG.md
   publish "changelog bullet"
   run "$MARMOT_BIN/mm" update --check
   [ "$status" -eq 10 ]
-  [[ "$output" == *"CHANGELOG.md in that range:"* ]]
   [[ "$output" == *"- Shows the changelog on update."* ]]
   [[ "$output" != *"## Unreleased"* ]]
+  [[ "$output" != *"plain subject"* ]]
+  [[ "$output" != *"changelog bullet"* ]]
 }
 
 @test "--check exits non-zero but not 10 when the checkout cannot be updated" {

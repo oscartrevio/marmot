@@ -190,11 +190,16 @@ mm_cmd_main() {
   (( ahead > 0 )) && mm_info "$ahead local commit(s) not on $upstream: kept"
   if (( behind > 0 )); then
     mm_info "$behind new commit(s) on $upstream:"
-    git -C "$_UP_SRC" log --no-decorate --format='%h %s' -n "$_UPDATE_SHOW" "HEAD..$target" | sed 's/^/    /'
-    (( behind > _UPDATE_SHOW )) && mm_info "  … and $((behind - _UPDATE_SHOW)) more"
+    # The CHANGELOG bullets say what changes for the user; the commit subjects stand in without them.
     local notes
     notes=$(_update_changelog "$head" "$target")
-    if [[ -n "$notes" ]]; then mm_info "CHANGELOG.md in that range:"; printf '%s\n' "$notes"; fi
+    if [[ -n "$notes" ]]; then
+      mm_info "From CHANGELOG.md:"
+      printf '%s\n' "$notes"
+    else
+      git -C "$_UP_SRC" log --no-decorate --format='%h %s' -n "$_UPDATE_SHOW" "HEAD..$target" | sed 's/^/    /'
+      (( behind > _UPDATE_SHOW )) && mm_info "  … and $((behind - _UPDATE_SHOW)) more"
+    fi
   fi
 
   # The install can lag the checkout (pulled by hand, not reinstalled): reinstalling catches up.

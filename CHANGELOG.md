@@ -74,8 +74,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   CPU and whether an agent is at work; a short terminal drops it first.
 - `mm status` names the command for a full disk, full inodes or swap in its compact and full views,
   the same line `--agent` prints.
-- `mm update` and `mm update --check` list the CHANGELOG bullets the incoming commits add, after
-  the commit subjects.
+- `mm update` and `mm update --check` list the CHANGELOG bullets the incoming commits add, in
+  place of the commit subjects (which they list when CHANGELOG.md gains no bullet).
 - `install.sh` ends a fresh install with three next steps (`mm clean --dry-run` as a preview,
   `mm status`, `mm schedule enable`), printed only, then the shell completion line for a shell
   whose rc file does not load it yet, and names the apt packages for the optional tools it lacks.
