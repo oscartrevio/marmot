@@ -2,7 +2,7 @@
 _mm() {
   local cur=${COMP_WORDS[COMP_CWORD]} cmd=${COMP_WORDS[1]:-}
   if (( COMP_CWORD == 1 )); then
-    mapfile -t COMPREPLY < <(compgen -W "clean status analyze optimize purge uninstall schedule history update --help --version" -- "$cur")
+    mapfile -t COMPREPLY < <(compgen -W "clean status analyze optimize purge uninstall schedule history update -h --help -v --version" -- "$cur")
     return
   fi
   local opts="--dry-run -n --debug --help"

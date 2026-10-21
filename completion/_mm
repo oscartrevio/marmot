@@ -16,7 +16,11 @@ _mo() {
   global=('(-n --dry-run)'{-n,--dry-run}'[preview only]' '--debug[verbose logs]')
 
   if (( CURRENT == 2 )); then
-    _describe 'command' commands
+    if [[ $words[2] == -* ]]; then
+      _arguments '(-h --help)'{-h,--help}'[help]' '(-v --version)'{-v,--version}'[version]'
+    else
+      _describe 'command' commands
+    fi
     return
   fi
   case $words[2] in
