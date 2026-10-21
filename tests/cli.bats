@@ -133,7 +133,8 @@ teardown() { mm_test_teardown; }
   run mm history --limit 1 --json
   [ "$(jq -r 'map(.target) | join(",")' <<<"$output")" = "/tmp/b,/tmp/c" ]
   run mm history -l 1
-  [[ "$output" == *"/tmp/b"*"/tmp/c"* && "$output" != *"/tmp/a"* ]]
+  local rows; rows=$(grep '^  ' <<<"$output")    # the listed rows (the closing story is all-time)
+  [[ "$rows" == *"/tmp/b"*"/tmp/c"* && "$rows" != *"/tmp/a"* ]]
 }
 
 @test "history groups rows by run: one line per run with its totals; old rows by command and time" {
@@ -168,7 +169,20 @@ teardown() { mm_test_teardown; }
   run mm history
   [ "$status" -eq 0 ]
   grep -qx '2026-10-13 10:00:00+00:00  clean · 2 ran 2KB · 1 removed 2KB' <<<"$output"
-  [[ "$output" == *"All-time: 8KB freed"* ]]
+  [[ "$output" == *"Since 2026-10-13: 2 runs · 8KB freed"* ]]
+}
+
+@test "history ends with the story so far: since when, runs, freed, Trash, refused, biggest wins" {
+  mkdir -p "$XDG_STATE_HOME/marmot"
+  printf '%s\n' $'2026-10-12T10:00:00+00:00\tclean\tremove\t'"$HOME"$'/.cache/big\t3145728\t\tR1' \
+    $'2026-10-12T10:00:01+00:00\tclean\trefused\t/x/node_modules\t0\tin use\tR1' \
+    $'2026-10-13T10:00:00+00:00\tclean\ttrash\t/tmp/doc\t2097152\t/t/doc\tR2' \
+    $'2026-10-13T10:00:01+00:00\tclean\trun\tnpm cache\t1048576\t\tR2' \
+    $'2026-10-14T10:00:00+00:00\tpurge\tremove\t/tmp/small\t1024\t\tR3' >"$XDG_STATE_HOME/marmot/operations.log"
+  run mm history
+  [ "$status" -eq 0 ]
+  grep -qx 'Since 2026-10-12: 3 runs · 4.0MB freed · 2.0MB to Trash (restore: trash-restore) · 1 refused (each with its reason above)' <<<"$output"
+  grep -qx 'Biggest wins: ~/.cache/big 3.0MB, /tmp/doc 2.0MB, npm cache 1.0MB' <<<"$output"
 }
 
 @test "history reads the rotated operations.log.old before the current log" {

@@ -144,6 +144,10 @@ MM_AWK_HUMAN='function human(b, u, i) {
   return sprintf("%.1f%s", b, u[i])
 }'
 
+# MM_AWK_FREED — awk source of freed_row(ACTION): 1 for the operations-log rows whose bytes count
+# as freed (remove, run, worktree), the one definition of "freed" mm history and milestones use.
+MM_AWK_FREED='function freed_row(a) { return a == "remove" || a == "run" || a == "worktree" }'
+
 # mm_human BYTES — 1.2GB / 340.0MB / 12KB.
 mm_human() { awk -v b="${1:-0}" "$MM_AWK_HUMAN"' BEGIN { printf "%s", human(b) }'; }
 

@@ -882,7 +882,7 @@ EOF
   [ "$(jq -r 'map(select(.action == "run" and .target == "npm cache")) | .[0].bytes' <<<"$output")" -eq "$want" ]
   run mm history
   [[ "$output" == *"clean · 1 ran $(mm_human "$want")"* ]]
-  [[ "$output" == *"All-time: $(mm_human "$want") freed"* ]]
+  [[ "$output" == *": 1 run · $(mm_human "$want") freed"* ]]
 }
 
 @test "docker cleanups log the bytes they are counted with" {

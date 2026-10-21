@@ -22,10 +22,13 @@ EOF
 }
 
 # _history_awk LIMIT JSON FILE... — the rows of the newest LIMIT runs (0 = all) in FILEs: as
-# 7-field TSV when JSON=1, else as the text listing with all-time totals.
+# 7-field TSV when JSON=1, else as the text listing closed by the story so far: since when, how
+# many runs, what was freed (MM_AWK_FREED rows), moved to the Trash and refused, and the three
+# biggest single wins.
 _history_awk() {
   awk -F'\t' -v limit="$1" -v json="$2" -v dim="$C_DIM" -v red="$C_RED" -v yellow="$C_YELLOW" \
-    -v bold="$C_BOLD" -v reset="$C_RESET" "$MM_AWK_HUMAN"'
+    -v bold="$C_BOLD" -v reset="$C_RESET" -v home="$HOME" "$MM_AWK_HUMAN"$'\n'"$MM_AWK_FREED"'
+    function tilde(p) { return index(p, home "/") == 1 ? "~" substr(p, length(home) + 1) : p }
     # minute(ISO time) — minutes since a fixed epoch (days from the civil date), offset ignored.
     function minute(t, y, m) {
       y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0
@@ -47,7 +50,13 @@ _history_awk() {
     {
       n++; row[n] = $0
       b = ($5 ~ /^[0-9]+$/) ? $5 + 0 : 0
-      if ($3 == "remove" || $3 == "run" || $3 == "worktree") all_f += b; else if ($3 == "trash") all_t += b
+      if (freed_row($3)) all_f += b; else if ($3 == "trash") all_t += b; else if ($3 == "refused") refused++
+      # the three biggest single wins (freed or to Trash), kept by hand: mawk has no sort
+      if ((freed_row($3) || $3 == "trash") && b > 0) {
+        if (b > wb[1]) { wb[3] = wb[2]; wt[3] = wt[2]; wb[2] = wb[1]; wt[2] = wt[1]; wb[1] = b; wt[1] = $4 }
+        else if (b > wb[2]) { wb[3] = wb[2]; wt[3] = wt[2]; wb[2] = b; wt[2] = $4 }
+        else if (b > wb[3]) { wb[3] = b; wt[3] = $4 }
+      }
       run = (NF >= 7) ? $7 : ""; min = minute($1)
       if (n == 1 || run != prun || (run == "" && ($2 != pcmd || min - pmin > 30))) { g++; gtime[g] = $1; gcmd[g] = $2 }
       prun = run; pcmd = $2; pmin = min; grp[n] = g
@@ -67,8 +76,18 @@ _history_awk() {
         if (f[3] == "refused" || f[3] == "failed") note = " (" f[6] ")"; else if (f[3] == "trash") note = " → Trash"
         size = (f[5] ~ /^[0-9]+$/ && f[5] + 0 > 0) ? " " human(f[5] + 0) : ""
         printf "  %s%-7s %s%s%s%s%s%s\n", color, f[3], f[4], reset, dim, size, note, reset
+        if (f[3] == "refused") shown_refused = 1
       }
-      if (!json) printf "\nAll-time: %s freed, %s moved to Trash (restore: trash-restore), %d log rows\n", human(all_f), human(all_t), n
+      if (json || n == 0) exit
+      s = sprintf("Since %s: %d run%s · %s freed", substr(row[1], 1, 10), g, (g == 1 ? "" : "s"), human(all_f))
+      if (all_t > 0) s = s " · " human(all_t) " to Trash (restore: trash-restore)"
+      if (refused > 0) s = s " · " refused " refused" (shown_refused ? " (each with its reason above)" : "")
+      printf "\n%s%s%s\n", bold, s, reset
+      if (wb[1] > 0) {
+        s = "Biggest wins: " tilde(wt[1]) " " human(wb[1])
+        for (i = 2; i <= 3; i++) if (wb[i] > 0) s = s ", " tilde(wt[i]) " " human(wb[i])
+        print s
+      }
     }' "${@:3}"
 }
 

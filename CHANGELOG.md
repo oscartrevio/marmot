@@ -95,6 +95,9 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - A spinner on the terminal while marmot checks what is in use and while `mm purge` scans; the
   `mm analyze` overview names the folder it is still measuring. Never on stdout, without a
   terminal, or with `--json`.
+- `mm history` ends with the story so far: `Since 2026-10-12: 7 runs · 4.2GB freed · 300.0MB to
+  Trash · 2 refused`, then the three biggest single wins. It replaces the "All-time" total, which
+  was wrong once the log had rotated twice.
 
 ### Changed
 
