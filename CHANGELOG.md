@@ -95,6 +95,7 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   `mm schedule`, `mm optimize` and the banners.
 - Colors follow each stream: an error redirected to a file (`2>log`) carries no escape codes
   even when the screen gets color, and `TERM=dumb` turns colors off like `NO_COLOR`.
+- `mm status` prints sizes like the rest of marmot (`705.0MB`, `3.4GB`), not `705 MB`.
 - CI runs once per pull request, as one job running the suite one file at a time; docs-only
   changes skip it.
 - `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`

@@ -356,13 +356,13 @@ fake_omp_helpers() {
   [ "$status" -eq 0 ]
   grep -E "^  omp $SESSION " <<<"$output"
   [ "$(grep -cE "^  omp ($MUX|$DAEMON|$INNER) " <<<"$output")" -eq 0 ]
-  grep -E '^agent helpers: omp [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+  grep -E '^agent helpers: omp [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
   [[ "$output" != *"(pid $TSC)"* ]]
   run env MM_STATUS_LINGER_AGE=0 mm status --once
-  grep -E '^  omp helpers · [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+  grep -E '^  omp helpers · [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
   [[ "$output" != *"tsc $TSC"* ]]
   run env MM_STATUS_LINGER_AGE=0 COLUMNS=120 mm status --once --view full
-  grep -E '^omp helpers · [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+  grep -E '^omp helpers · [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
 }
 
 @test "a helper that retitled itself (omp daemon brok) is known by argv[0] and heads its tree" {
@@ -845,13 +845,13 @@ fake_cgroup() {
   # details out of the header.
   run env MM_CONTAINER=1 COLUMNS=400 mm status --once --view full
   [ "$status" -eq 0 ]
-  [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" == *" · container · "*"512 MB limit"* ]]
+  [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" == *" · container · "*"512.0MB limit"* ]]
   [[ "$output" == *"of 1.5-core limit"* && "$output" == *"(host, "* ]]
   [[ "$output" != *"✓ kernel"* && "$output" != *"! kernel"* && "$output" != *"✓ reboot"* ]]
   run env MM_CONTAINER=1 mm status --agent
-  grep -E "^machine: [^ ]+ · container · .* · 1\.5 of [0-9]+ cores · 512 MB RAM limit · " <<<"$output"
+  grep -E "^machine: [^ ]+ · container · .* · 1\.5 of [0-9]+ cores · 512\.0MB RAM limit · " <<<"$output"
   grep -E '^cpu: [0-9.]+% of a 1\.5-core limit · host load ' <<<"$output"
-  grep -E '^memory: 39% used of a 512 MB limit · ' <<<"$output"
+  grep -E '^memory: 39% used of a 512\.0MB limit · ' <<<"$output"
 }
 
 @test "outside a container the cgroup limits change nothing" {

@@ -1594,10 +1594,13 @@ _status_mid() {
   printf -v "$1" '%s' "$__t"
 }
 
-# _status_mem VAR KB — "705 MB" below a gigabyte, "3.4 GB" above.
+# _status_mem VAR KB — core's mm_human style without a subshell (status renders every tick):
+# "999KB", "705.0MB", "3.4GB"; at most 7 characters below 1000 GB.
 _status_mem() {
-  if (($2 >= 1048576)); then _status_gib "$1" $(($2 * 1024)); printf -v "$1" '%s GB' "${!1}"
-  else printf -v "$1" '%d MB' $((($2 + 512) / 1024)); fi
+  local __k=$2 __t
+  if ((__k < 1000)); then printf -v "$1" '%dKB' "$__k"; return; fi
+  if ((__k < 1024000)); then __t=$(((__k * 10 + 512) / 1024)); printf -v "$1" '%d.%dMB' $((__t / 10)) $((__t % 10)); return; fi
+  __t=$(((__k * 10 + 524288) / 1048576)); printf -v "$1" '%d.%dGB' $((__t / 10)) $((__t % 10))
 }
 
 # _status_agent_rows INDENT WIDTH LIMIT NAMEW — append agent session rows to ST_PANEL: up to LIMIT
