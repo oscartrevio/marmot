@@ -1242,7 +1242,7 @@ mm_log_facts() {
   if (( ${#logs[@]} )); then
     out=$(awk -F'\t' -v year="$y" -v home="$HOME" "$MM_AWK_HUMAN"$'\n'"$MM_AWK_FREED"$'\n'"$MM_AWK_EPOCH"'
       function tilde(p) { return index(p, home "/") == 1 ? "~" substr(p, length(home) + 1) : p }
-      function or(v) { return v == "" ? "-" : v }
+      function dash(v) { return v == "" ? "-" : v }
       NF < 3 { next }
       {
         if (first == "") first = $1
@@ -1260,8 +1260,8 @@ mm_log_facts() {
       END {
         if (last == "") exit
         printf "%.0f\t%.0f\t%.0f\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", epoch(at[last]), f[last], epoch(first),
-          (ytd > 0 ? human(ytd) : "-"), pn, (pn ? human(pf) : "-"), or(tilde(pbigat)), (pbig > 0 ? human(pbig) : "-"),
-          or(tilde(bigat)), (big > 0 ? human(big) : "-")
+          (ytd > 0 ? human(ytd) : "-"), pn, (pn ? human(pf) : "-"), dash(tilde(pbigat)), (pbig > 0 ? human(pbig) : "-"),
+          dash(tilde(bigat)), (big > 0 ? human(big) : "-")
       }' "${logs[@]}")
     IFS=$'\t' read -r MM_FACT_LAST_AT MM_FACT_LAST_FREED MM_FACT_SINCE MM_FACT_YEAR_FREED MM_FACT_PREV_RUNS \
       MM_FACT_PREV_FREED MM_FACT_PREV_BIG_AT MM_FACT_PREV_BIG MM_FACT_BIG_AT MM_FACT_BIG <<<"$out"
