@@ -88,12 +88,30 @@ EOF
 # _clean_track BYTES ITEMS — account a tool-driven clean.
 _clean_track() { _CLEAN_TOOL_BYTES=$((_CLEAN_TOOL_BYTES + $1)); _CLEAN_TOOL_ITEMS=$((_CLEAN_TOOL_ITEMS + $2)); }
 
-# _clean_tool_freed LABEL VERB BEFORE AFTER — account and report a tool-driven clean that freed
-# BEFORE - AFTER bytes. An empty AFTER (size unknown) counts the clean but no bytes.
+# _clean_ran DESC BYTES ITEMS — after `mm_run --measured DESC`: log its "run" row with the BYTES
+# it freed (so mm history counts what the summary does) and account them. Dry runs log nothing.
+_clean_ran() { mm_log run "$1" "$2"; _clean_track "$2" "$3"; }
+
+# _clean_shares TOTAL WEIGHT... — TOTAL split in proportion to the WEIGHTs (equally when all are
+# 0), one share per line, together exactly TOTAL: the rows of steps whose space was measured once.
+_clean_shares() {
+  awk -v t="$1" 'BEGIN {
+    n = ARGC - 1; for (i = 1; i <= n; i++) s += ARGV[i]
+    for (i = 1; i <= n; i++) {
+      x = (i == n) ? t - g : int(s > 0 ? t * ARGV[i] / s : t / n)
+      g += x; printf "%.0f\n", x
+    }
+  }' "${@:2}"
+}
+
+# _clean_tool_freed LABEL VERB BEFORE AFTER [DESC] — after `mm_run --measured DESC` (default:
+# LABEL): log, account and report a tool-driven clean that freed BEFORE - AFTER bytes. An empty
+# AFTER (size unknown) counts the clean but no bytes.
 _clean_tool_freed() {
-  if [[ -z "$4" ]]; then _clean_track 0 1; mm_ok "$1" "$2, size freed unknown"; return; fi
-  local freed=$(( $3 > $4 ? $3 - $4 : 0 ))
-  _clean_track "$freed" 1; mm_ok "$1" "$2, $(mm_human "$freed")"
+  local freed=0
+  [[ -n "$4" ]] && freed=$(( $3 > $4 ? $3 - $4 : 0 ))
+  _clean_ran "${5:-$1}" "$freed" 1
+  if [[ -z "$4" ]]; then mm_ok "$1" "$2, size freed unknown"; else mm_ok "$1" "$2, $(mm_human "$freed")"; fi
 }
 
 _clean_cat() {
@@ -271,7 +289,7 @@ _clean_tool() {
     fi
     _clean_track "$before" 1; mm_ok "$label" "$(mm_human "$before")"; return
   fi
-  mm_run "$label" env -C / "$@" || return 0
+  mm_run --measured "$label" env -C / "$@" || return 0
   (( prune )) && verb=pruned
   _clean_tool_freed "$label" "$verb" "$before" "$(mm_frees "$dir")"
 }
@@ -611,8 +629,8 @@ _clean_pnpm() {
     mm_ok "pnpm store" "$(mm_human "$before") store, would prune unreferenced packages (size unknown until run)"
     return
   fi
-  mm_run "pnpm store prune" env -C "$HOME" pnpm store prune || return 0
-  _clean_tool_freed "pnpm store" pruned "$before" "$(mm_size "$store")"
+  mm_run --measured "pnpm store prune" env -C "$HOME" pnpm store prune || return 0
+  _clean_tool_freed "pnpm store" pruned "$before" "$(mm_size "$store")" "pnpm store prune"
 }
 
 # ---------------------------------------------------------------- agent logs
@@ -925,7 +943,7 @@ _clean_conda() {
     _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") of tarballs, index cache and logs"; return
   fi
   before=$(mm_size "${dirs[@]}") || { mm_skip "$label" "size unknown"; return; }
-  mm_run "$label" env -C / conda clean --yes --index-cache --tarballs --logfiles || return 0
+  mm_run --measured "$label" env -C / conda clean --yes --index-cache --tarballs --logfiles || return 0
   _clean_tool_freed "$label" cleaned "$before" "$(mm_size "${dirs[@]}")"
 }
 
@@ -949,7 +967,7 @@ _clean_brew() {
     _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") (brew's estimate)"; return
   fi
   before=$(mm_size "$cache" "$cellar") || { mm_skip "$label" "size unknown"; return; }
-  mm_run "$label" env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew cleanup --prune=30 || return 0
+  mm_run --measured "$label" env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew cleanup --prune=30 || return 0
   _clean_tool_freed "$label" cleaned "$before" "$(mm_size "$cache" "$cellar")"
 }
 
@@ -973,12 +991,12 @@ _clean_nix() {
     mm_ok "$label" "would delete generations older than 30 days and collect garbage (size known after the run)"; return
   fi
   log=$(mktemp -t marmot-nix.XXXXXX) || return 0
-  if mm_run "nix-collect-garbage --delete-older-than 30d" env -C / bash -c \
+  if mm_run --measured "nix-collect-garbage --delete-older-than 30d" env -C / bash -c \
        'set -o pipefail; nix-collect-garbage --delete-older-than 30d 2>&1 | tee "$1"' _ "$log"; then
     # "1234 store paths deleted, 567.89 MiB freed"
     out=$(grep -oE '[0-9.]+ (bytes|KiB|MiB|GiB|TiB) freed' "$log" | tail -1)
     freed=$(_clean_to_bytes "${out% freed}")
-    _clean_track "$freed" 1
+    _clean_ran "nix-collect-garbage --delete-older-than 30d" "$freed" 1
     mm_ok "$label" "collected, $(mm_human "$freed")"
   fi
   rm -f -- "$log" # SAFE: the mktemp copy of nix's output created above
@@ -1073,8 +1091,13 @@ _clean_system() {
   _clean_cat_end
 }
 
-# _clean_apt_run DESC ARGS... — noninteractive apt-get as root.
-_clean_apt_run() { local d="$1"; shift; mm_run "$d" mm_sudo env DEBIAN_FRONTEND=noninteractive apt-get "$@"; }
+# _clean_apt_run DESC BYTES ITEMS ARGS... — noninteractive apt-get as root; on success its row
+# carries BYTES, which are accounted with ITEMS.
+_clean_apt_run() {
+  local d="$1" b="$2" n="$3"; shift 3
+  mm_run --measured "$d" mm_sudo env DEBIAN_FRONTEND=noninteractive apt-get "$@" || return
+  _clean_ran "$d" "$b" "$n"
+}
 
 # _clean_pkg_bytes PKG... — Installed-Size total in bytes.
 _clean_pkg_bytes() {
@@ -1104,8 +1127,7 @@ _clean_apt_cache() {
   read -r n b < <(mm_sudo find /var/cache/apt/archives -type f \( -name '*.deb' -o -path '*/partial/*' \) \
     -printf '%b\n' 2>/dev/null | awk '{ n++; s += $1 * 512 } END { printf "%.0f %.0f\n", n, s }')
   if (( n == 0 )); then mm_ok "APT package cache" "nothing to clean"; return; fi
-  _clean_apt_run "apt-get clean" clean || return 0
-  _clean_track "$b" "$n"
+  _clean_apt_run "apt-get clean" "$b" "$n" clean || return 0
   mm_ok "APT package cache" "$(_clean_detail "$n" packages "$b")"
 }
 
@@ -1119,8 +1141,7 @@ _clean_apt_autoremove() {
   if (( ${#pkgs[@]} == 0 )); then mm_ok "Unused packages" "none"; return; fi
   b=$(_clean_pkg_bytes "${pkgs[@]}")
   _clean_confirm_pkgs "Unused packages" "Autoremove ${#pkgs[@]} packages (their config files stay)?" "${pkgs[@]}" || return 0
-  _clean_apt_run "apt-get autoremove" -y autoremove || return 0
-  _clean_track "$b" "${#pkgs[@]}"
+  _clean_apt_run "apt-get autoremove" "$b" "${#pkgs[@]}" -y autoremove || return 0
   mm_ok "Unused packages" "$(_clean_detail "${#pkgs[@]}" packages "$b")"
 }
 
@@ -1150,8 +1171,7 @@ _clean_apt_residual() {
   if (( ${#pick[@]} == 0 )); then mm_ok "Residual configs" "nothing to purge${note}"; return; fi
   _clean_confirm_pkgs "Residual configs" \
     "Purge the config files of ${#pick[@]} removed packages (this runs their purge scripts)?" "${pick[@]}" || return 0
-  _clean_apt_run "purge residual configs" -y purge "${pick[@]}" || return 0
-  _clean_track 0 "${#pick[@]}"
+  _clean_apt_run "purge residual configs" 0 "${#pick[@]}" -y purge "${pick[@]}" || return 0
   mm_ok "Residual configs" "${#pick[@]} packages purged${note}"
 }
 
@@ -1213,8 +1233,7 @@ _clean_kernels() {
   if (( ${#pkgs[@]} == 0 )); then mm_ok "Old kernels" "none (running $running, newest $newest)"; return; fi
   b=$(_clean_pkg_bytes "${pkgs[@]}")
   _clean_confirm_pkgs "Old kernels" "Purge ${#pkgs[@]} old kernel packages (keeping $running and $newest)?" "${pkgs[@]}" || return 0
-  _clean_apt_run "purge old kernels" -y purge "${pkgs[@]}" || return 0
-  _clean_track "$b" "${#pkgs[@]}"
+  _clean_apt_run "purge old kernels" "$b" "${#pkgs[@]}" -y purge "${pkgs[@]}" || return 0
   mm_ok "Old kernels" "$(_clean_detail "${#pkgs[@]}" packages "$b"), kept $running and $newest"
 }
 
@@ -1226,10 +1245,10 @@ _clean_journal() {
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     freed=$((used - target))
   else
-    mm_run "journalctl --vacuum-size=300M" mm_sudo journalctl --vacuum-size=300M || return 0
+    mm_run --measured "journalctl --vacuum-size=300M" mm_sudo journalctl --vacuum-size=300M || return 0
     after=$(_clean_journal_bytes); freed=$(( used > after ? used - after : 0 ))
   fi
-  _clean_track "$freed" 1
+  _clean_ran "journalctl --vacuum-size=300M" "$freed" 1
   mm_ok "Journal" "vacuumed to 300MB, $(mm_human "$freed")"
 }
 # _clean_journal_bytes — journald's disk usage; 0 without journalctl or a journal directory
@@ -1242,18 +1261,19 @@ _clean_journal_bytes() {
 _clean_snaps() {
   # snap needs snapd; without its socket (containers, WSL without systemd) there is nothing to ask.
   command -v snap >/dev/null && [[ -S /run/snapd.socket ]] || return 0
-  local name rev f n=0 b=0 s
+  local name rev f n=0 b=0 s d
   local -a revs
   mapfile -t revs < <(timeout 20 snap list --all 2>/dev/null | awk 'NR > 1 && $NF ~ /disabled/ { print $1, $3 }')
   if (( ${#revs[@]} == 0 )); then mm_ok "Old snap revisions" "none"; return; fi
   for f in "${revs[@]}"; do
     read -r name rev <<<"$f"
     s=$(stat -c %s "/var/lib/snapd/snaps/${name}_${rev}.snap" 2>/dev/null || echo 0)
-    mm_run "snap remove $name --revision=$rev" mm_sudo timeout 300 snap remove "$name" --revision="$rev" || continue
+    d="snap remove $name --revision=$rev"
+    mm_run --measured "$d" mm_sudo timeout 300 snap remove "$name" --revision="$rev" || continue
     n=$((n + 1)) b=$((b + s))
+    _clean_ran "$d" "$s" 1
     mm_debug "snap $name revision $rev ($(mm_human "$s"))"
   done
-  _clean_track "$b" "$n"
   mm_ok "Old snap revisions" "$(_clean_detail "$n" revisions "$b")"
 }
 
@@ -1422,8 +1442,8 @@ _clean_docker() {
   b=$(timeout 30 docker builder du --filter until=168h 2>/dev/null | awk '/^Reclaimable:/ { print $2 }')
   b=$(_clean_to_bytes "${b:-0}")
   if (( b == 0 )); then mm_ok "Build cache" "nothing older than 7 days"
-  elif mm_run "docker builder prune" timeout 600 docker builder prune -f --filter until=168h; then
-    _clean_track "$b" 1; mm_ok "Build cache" "$(mm_human "$b") older than 7 days"
+  elif mm_run --measured "docker builder prune" timeout 600 docker builder prune -f --filter until=168h; then
+    _clean_ran "docker builder prune" "$b" 1; mm_ok "Build cache" "$(mm_human "$b") older than 7 days"
   fi
 
   _clean_docker_volumes
@@ -1469,7 +1489,7 @@ _clean_dockerd_here() {
 # on their own: `docker image prune -f` would take the lot with no prompt, including unattended
 # runs. Removal names each id, without -f, so the daemon still refuses one a container uses.
 _clean_docker_dangling() {
-  local out row id size n=0 b=0
+  local out row id size n=0 b=0 d
   local -a ids=()
   if ! out=$(timeout 30 docker images -f dangling=true --no-trunc --format $'{{.ID}}\t{{.Size}}' 2>/dev/null); then
     mm_skip "Dangling images" "cannot list images"; return
@@ -1486,8 +1506,8 @@ _clean_docker_dangling() {
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"; return
   fi
-  mm_run "docker image rm $n untagged images" timeout 600 docker image rm "${ids[@]}" || return 0 # SAFE: listed, confirmed untagged images; no -f, so the daemon refuses ones a container uses
-  _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
+  d="docker image rm $n untagged images"; mm_run --measured "$d" timeout 600 docker image rm "${ids[@]}" || return 0 # SAFE: listed, confirmed untagged images; no -f, so the daemon refuses ones a container uses
+  _clean_ran "$d" "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
 }
 
 # Stopped containers whose last run ended 7+ days ago (never-started ones: created 7+ days ago).
@@ -1495,7 +1515,7 @@ _clean_docker_dangling() {
 # stopped minutes ago, so candidates come from inspect data, are listed and confirmed, then removed
 # by ID. `docker rm` without -f refuses running containers and keeps their volumes.
 _clean_docker_containers() {
-  local now cutoff row id name status finished created image size t what n=0 b=0
+  local now cutoff row id name status finished created image size t what n=0 b=0 d
   local -a ids=() rows=() pick=() lines=()
   now=$(date +%s); cutoff=$((now - 7 * 86400))
   mapfile -t ids < <(timeout 30 docker ps -aq --no-trunc --filter status=exited --filter status=created 2>/dev/null)
@@ -1518,8 +1538,8 @@ _clean_docker_containers() {
   if (( n == 0 )); then mm_ok "Stopped containers" "none stopped for 7+ days"; return; fi
   for row in "${lines[@]}"; do mm_act "$row"; done
   _clean_ask "Stopped containers" "Remove $n stopped containers ($(mm_human "$b"))?" || return 0
-  mm_run "docker rm $n containers" timeout 300 docker rm "${pick[@]}" || return 0 # SAFE: listed, confirmed set of containers stopped 7+ days; no -f, so running ones are refused
-  _clean_track "$b" "$n"
+  d="docker rm $n containers"; mm_run --measured "$d" timeout 300 docker rm "${pick[@]}" || return 0 # SAFE: listed, confirmed set of containers stopped 7+ days; no -f, so running ones are refused
+  _clean_ran "$d" "$b" "$n"
   mm_ok "Stopped containers" "$(_clean_detail "$n" containers "$b") stopped 7+ days"
 }
 
@@ -1533,8 +1553,9 @@ _clean_docker_containers() {
 # on. Space freed is `docker system df` before/after.
 _clean_docker_images() {
   local now cutoff out row id tags created tagged digests t last what n=0 b=0 est before after freed ok=0 fail=0
+  local i d share
   local -A used=() uniq=()
-  local -a cids=() ids=() lines=() rm_tags=() argv=() only_here=()
+  local -a cids=() ids=() lines=() rm_tags=() rm_est=() argv=() only_here=() done_d=() done_est=()
   now=$(date +%s); cutoff=$((now - _CLEAN_IMAGE_DAYS * 86400))
   # Fail closed: an image whose container went unseen would be offered.
   if ! out=$(timeout 30 docker ps -aq --no-trunc 2>/dev/null); then mm_skip "Unused images" "cannot list containers"; return; fi
@@ -1572,7 +1593,7 @@ _clean_docker_images() {
     est=${uniq[$id]:-0}
     # No digest means no registry has it: it was built, committed or loaded here, never pushed.
     if [[ "$digests" == 0 ]]; then only_here+=("$row ($(mm_human "$est"))"); continue; fi
-    rm_tags+=("$tags") n=$((n + 1)) b=$((b + est))
+    rm_tags+=("$tags") rm_est+=("$est") n=$((n + 1)) b=$((b + est))
     lines+=("$row · $what $(( (now - t) / 86400 ))d ago, $(mm_human "$est")")
   done <<<"$out"
   (( ${#only_here[@]} )) && _clean_review "Docker images no registry has" \
@@ -1585,15 +1606,20 @@ _clean_docker_images() {
     _clean_track "$b" "$n"; mm_ok "Unused images" "$(_clean_detail "$n" images "$b") unused for ${_CLEAN_IMAGE_DAYS}+ days"; return
   fi
   before=$(_clean_docker_images_bytes)
-  for tags in "${rm_tags[@]}"; do
-    read -r -a argv <<<"$tags"
-    if mm_run "docker image rm $tags" timeout 300 docker image rm "${argv[@]}"; then # SAFE: listed, confirmed image unused by every container; no -f, so the daemon refuses images in use
-      ok=$((ok + 1))
+  for i in "${!rm_tags[@]}"; do
+    read -r -a argv <<<"${rm_tags[i]}"
+    d="docker image rm ${rm_tags[i]}"; if mm_run --measured "$d" timeout 300 docker image rm "${argv[@]}"; then # SAFE: listed, confirmed image unused by every container; no -f, so the daemon refuses images in use
+      ok=$((ok + 1)) done_d+=("$d") done_est+=("${rm_est[i]}")
     else
       fail=$((fail + 1))
     fi
   done
   after=$(_clean_docker_images_bytes); freed=$(( before > after ? before - after : 0 ))
+  # The space is measured once for all of them: each row gets its share by estimate.
+  i=0
+  while IFS= read -r share; do
+    mm_log run "${done_d[i]}" "$share"; i=$((i + 1))
+  done < <(_clean_shares "$freed" "${done_est[@]}")
   _clean_track "$freed" "$ok"
   mm_ok "Unused images" "$(_clean_detail "$ok" images "$freed" 0 "$fail") unused for ${_CLEAN_IMAGE_DAYS}+ days"
 }

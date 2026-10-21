@@ -114,6 +114,18 @@ teardown() { mm_test_teardown; }
   [[ "$output" != *"0KB"* ]]
 }
 
+@test "history counts the bytes of run and worktree rows in each run's line and the total" {
+  mkdir -p "$XDG_STATE_HOME/marmot"
+  printf '%s\n' $'2026-10-13T10:00:00+00:00\tclean\trun\tnpm cache\t2048\t\tR1' \
+    $'2026-10-13T10:00:01+00:00\tclean\trun\tapt-get update\t0\t\tR1' \
+    $'2026-10-13T10:00:02+00:00\tclean\tremove\t/tmp/a\t2048\t\tR1' \
+    $'2026-10-14T10:00:00+00:00\tpurge\tworktree\t/w\t4096\tfeat\tR2' >"$XDG_STATE_HOME/marmot/operations.log"
+  run mm history
+  [ "$status" -eq 0 ]
+  grep -qx '2026-10-13 10:00:00+00:00  clean · 2 ran 2KB · 1 removed 2KB' <<<"$output"
+  [[ "$output" == *"All-time: 8KB freed"* ]]
+}
+
 @test "history reads the rotated operations.log.old before the current log" {
   local log="$XDG_STATE_HOME/marmot/operations.log" i
   mkdir -p "$XDG_STATE_HOME/marmot" "$SB/p/node_modules"

@@ -752,7 +752,7 @@ _purge_store_frees() {
 
 # _purge_pnpm_prune — real runs, after pnpm-managed removals: `pnpm store prune` unless pnpm is
 # missing or running or the store is whitelisted. Sets _PURGE_PRUNE_LINE (the banner line) and
-# _PURGE_STORE_BYTES (freed, from the store filesystem's df delta).
+# _PURGE_STORE_BYTES (freed, from the store filesystem's df delta), which its history row carries.
 _purge_pnpm_prune() {
   local store before after
   _PURGE_PRUNE_LINE="" _PURGE_STORE_BYTES=0
@@ -760,11 +760,12 @@ _purge_pnpm_prune() {
   if mm_whitelisted "$store"; then _PURGE_PRUNE_LINE='pnpm store prune: skipped (store whitelisted)'; return 0; fi
   if mm_proc_running pnpm; then _PURGE_PRUNE_LINE='pnpm store prune: skipped (pnpm busy)'; return 0; fi
   before=$(mm_free_bytes "$store")
-  if ! mm_run "prune the pnpm store" env -C "$HOME" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 timeout 300 pnpm store prune </dev/null; then
+  if ! mm_run --measured "prune the pnpm store" env -C "$HOME" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 timeout 300 pnpm store prune </dev/null; then
     _PURGE_PRUNE_LINE='pnpm store prune: failed'; return 0
   fi
   after=$(mm_free_bytes "$store")
   _PURGE_STORE_BYTES=$(( after > before ? after - before : 0 ))
+  mm_log run "prune the pnpm store" "$_PURGE_STORE_BYTES"
   _PURGE_PRUNE_LINE="pnpm store prune: freed $(mm_human "$_PURGE_STORE_BYTES")"
 }
 

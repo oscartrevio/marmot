@@ -2,7 +2,9 @@
 # mm history [-l N | --all] [--json] — show recorded operations (read-only), grouped by run.
 # (-n is marmot's global --dry-run, so the limit is -l/--limit.)
 # Log rows: time, command, action, target, bytes, detail, run id. Older rows have fewer fields:
-# 5 (no detail) or 6 (no run id). operations.log.old (rotated by mm_log) is read first.
+# 5 (no detail) or 6 (no run id). operations.log.old (rotated by mm_log) is read first. Freed
+# space is what remove, run (a tool's own clean; older run rows carry no bytes) and worktree
+# rows record.
 # Rows without a run id form one run per stretch of the same command with no gap over 30 minutes.
 
 _history_usage() {
@@ -45,7 +47,7 @@ _history_awk() {
     {
       n++; row[n] = $0
       b = ($5 ~ /^[0-9]+$/) ? $5 + 0 : 0
-      if ($3 == "remove") all_r += b; else if ($3 == "trash") all_t += b
+      if ($3 == "remove" || $3 == "run" || $3 == "worktree") all_f += b; else if ($3 == "trash") all_t += b
       run = (NF >= 7) ? $7 : ""; min = minute($1)
       if (n == 1 || run != prun || (run == "" && ($2 != pcmd || min - pmin > 30))) { g++; gtime[g] = $1; gcmd[g] = $2 }
       prun = run; pcmd = $2; pmin = min; grp[n] = g
@@ -66,7 +68,7 @@ _history_awk() {
         size = (f[5] ~ /^[0-9]+$/ && f[5] + 0 > 0) ? " " human(f[5] + 0) : ""
         printf "  %s%-7s %s%s%s%s%s%s\n", color, f[3], f[4], reset, dim, size, note, reset
       }
-      if (!json) printf "\nAll-time: %s removed, %s moved to Trash (restore: trash-restore), %d log rows\n", human(all_r), human(all_t), n
+      if (!json) printf "\nAll-time: %s freed, %s moved to Trash (restore: trash-restore), %d log rows\n", human(all_f), human(all_t), n
     }' "${@:3}"
 }
 

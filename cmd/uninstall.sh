@@ -867,10 +867,21 @@ _uninstall_apt_recheck() {
   [[ "$(sort <<<"$now")" == "$(sort <<<"$expected")" ]]
 }
 
+# _uninstall_apt_installed PKG — 0 while dpkg still has PKG installed.
+_uninstall_apt_installed() { [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null)" == ii* ]]; }
+
+# _uninstall_tool IDX DESC CMD... — mm_run a package manager's own removal of package IDX; its
+# history row carries the package's size, as the banner counts it (0 when unknown).
+_uninstall_tool() {
+  local i=$1 desc=$2; shift 2
+  mm_run --measured "$desc" "$@" || return
+  mm_log run "$desc" "${_UN_BYTES[i]:-0}"
+}
+
 # _uninstall_execute APT_STEPS APT_EXTRA_BYTES APT_PLAN IDX... — APT_STEPS: 2 remove+autoremove,
 # 1 remove only. APT_PLAN: the simulated removal set the user confirmed, re-checked here.
 _uninstall_execute() {
-  local apt_steps=$1 apt_extra_bytes=$2 apt_plan=$3 i busy rc pkg_bytes=0 unknown=0 free_before ok found p
+  local apt_steps=$1 apt_extra_bytes=$2 apt_plan=$3 i busy rc pkg_bytes=0 unknown=0 free_before ok found p b
   shift 3
   local -a removed=() removed_idx=() apt_sel=() apt_idx=()
   free_before=$(mm_free_bytes /)
@@ -890,11 +901,16 @@ _uninstall_execute() {
     else
       # remove, never purge: purge runs maintainer scripts that delete data (PostgreSQL clusters,
       # /var/lib/docker). The confirmed plan said config and data are kept.
-      mm_run "apt-get remove ${apt_sel[*]}" mm_sudo env DEBIAN_FRONTEND=noninteractive \
-        apt-get -y -o DPkg::Lock::Timeout=60 remove "${apt_sel[@]}"
+      if mm_run --measured "apt-get remove ${apt_sel[*]}" mm_sudo env DEBIAN_FRONTEND=noninteractive \
+        apt-get -y -o DPkg::Lock::Timeout=60 remove "${apt_sel[@]}"; then
+        # the row carries what the banner counts: the extra packages, and each selected one gone
+        b=$apt_extra_bytes
+        for i in "${apt_idx[@]}"; do _uninstall_apt_installed "${_UN_NAME[i]}" || b=$(( b + ${_UN_BYTES[i]:-0} )); done
+        mm_log run "apt-get remove ${apt_sel[*]}" "$b"
+        pkg_bytes=$(( pkg_bytes + apt_extra_bytes ))
+      fi
       (( apt_steps >= 2 )) && mm_run "apt-get autoremove" mm_sudo env DEBIAN_FRONTEND=noninteractive \
         apt-get -y -o DPkg::Lock::Timeout=60 autoremove
-      pkg_bytes=$(( pkg_bytes + apt_extra_bytes ))
     fi
   fi
 
@@ -904,20 +920,20 @@ _uninstall_execute() {
     case "${_UN_SRC[i]}" in
       apt)
         [[ " ${apt_idx[*]} " == *" $i "* ]] || continue
-        [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "${_UN_NAME[i]}" 2>/dev/null)" == ii* ]] && ok=0 ;;
+        _uninstall_apt_installed "${_UN_NAME[i]}" && ok=0 ;;
       snap)
         # snapd deletes ~/snap/NAME for every user on remove. A snapshot of marmot's own comes
         # first (no snap goes without one); --purge then skips snapd's duplicate automatic one.
         if snapshot=$(_uninstall_snap_save "${_UN_NAME[i]}"); then
           mm_info "${_UN_NAME[i]} data saved as snapshot ${snapshot:-(id: snap saved ${_UN_NAME[i]})}; bring it back: sudo snap restore ${snapshot:-<id>}"
-          mm_run "snap remove --purge ${_UN_NAME[i]}" mm_sudo timeout 600 snap remove --purge "${_UN_NAME[i]}" || ok=0
+          _uninstall_tool "$i" "snap remove --purge ${_UN_NAME[i]}" mm_sudo timeout 600 snap remove --purge "${_UN_NAME[i]}" || ok=0
         else
           ok=0
         fi ;;
-      npm)  mm_run "npm rm -g ${_UN_NAME[i]}" timeout 300 npm rm -g "${_UN_NAME[i]}" || ok=0 ;; # SAFE: confirmed package-manager removal via mm_run
-      bun)  mm_run "bun remove -g ${_UN_NAME[i]}" timeout 300 bun remove -g "${_UN_NAME[i]}" || ok=0 ;;
-      pipx) mm_run "pipx uninstall ${_UN_NAME[i]}" timeout 300 pipx uninstall "${_UN_NAME[i]}" || ok=0 ;;
-      uv)   mm_run "uv tool uninstall ${_UN_NAME[i]}" timeout 300 uv tool uninstall "${_UN_NAME[i]}" || ok=0 ;;
+      npm)  _uninstall_tool "$i" "npm rm -g ${_UN_NAME[i]}" timeout 300 npm rm -g "${_UN_NAME[i]}" || ok=0 ;; # SAFE: confirmed package-manager removal via mm_run
+      bun)  _uninstall_tool "$i" "bun remove -g ${_UN_NAME[i]}" timeout 300 bun remove -g "${_UN_NAME[i]}" || ok=0 ;;
+      pipx) _uninstall_tool "$i" "pipx uninstall ${_UN_NAME[i]}" timeout 300 pipx uninstall "${_UN_NAME[i]}" || ok=0 ;;
+      uv)   _uninstall_tool "$i" "uv tool uninstall ${_UN_NAME[i]}" timeout 300 uv tool uninstall "${_UN_NAME[i]}" || ok=0 ;;
       bin)
         if ! mm_rm --trash "${_UN_PATH[i]}" "$HOME/.local/bin"; then
           mm_skip "${_UN_NAME[i]}" "${MM_SKIP_REASON:-move to Trash failed}"; continue

@@ -856,6 +856,31 @@ EOF
   [ "$(_clean_to_bytes 2.5GB)" = 2500000000 ]
 }
 
+@test "the bytes a tool's own clean frees are on its history row and in the history totals" {
+  blob "$HOME/.npm/_cacache/gone"; blob "$HOME/.npm/_cacache/stays"
+  fake_rec npm '[[ "$*" == "cache clean --force" ]] && rm -f "$HOME/.npm/_cacache/gone"; exit 0'
+  src
+  local want; want=$(mm_frees "$HOME/.npm/_cacache/gone")
+  MM_CMD=clean _clean_tool "npm cache" npm "$HOME/.npm/_cacache" npm cache clean --force >/dev/null
+  [ "$_CLEAN_TOOL_BYTES" -eq "$want" ]          # what the closing banner counts
+  run mm history --json
+  [ "$(jq -r 'map(select(.action == "run" and .target == "npm cache")) | .[0].bytes' <<<"$output")" -eq "$want" ]
+  run mm history
+  [[ "$output" == *"clean · 1 ran $(mm_human "$want")"* ]]
+  [[ "$output" == *"All-time: $(mm_human "$want") freed"* ]]
+}
+
+@test "docker cleanups log the bytes they are counted with" {
+  fake_docker
+  src
+  mm_confirm() { return 0; }
+  MM_CMD=clean _clean_docker >/dev/null 2>&1
+  local logged
+  logged=$(awk -F'\t' '$3 == "run" { s += $5 } END { printf "%.0f", s }' "$XDG_STATE_HOME/marmot/operations.log")
+  [ "$_CLEAN_TOOL_BYTES" -gt 0 ]
+  [ "$logged" -eq "$_CLEAN_TOOL_BYTES" ]
+}
+
 # ---------------------------------------------------------------- agent session retention
 
 # sessions_fixture — Claude Code and Codex CLI homes, everything 90 days old except one fresh

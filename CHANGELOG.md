@@ -126,6 +126,11 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   quit without a word. The menu and the pickers share one fzf version check.
 - `mm analyze PATH` without a terminal lists the largest entries under PATH instead of
   starting ncdu, which only complained that standard input is not a TTY.
+- `mm history` accounts for every byte the closing summaries claim: the `run` rows of tool-driven
+  cleans (npm, pnpm, apt, journal, snap revisions, Docker, ...), of `mm purge`'s pnpm store prune
+  and of `mm uninstall`'s package removals carry what they freed, and each run's line and the
+  all-time total (now "freed") count them with removed files and worktrees. A command that fails
+  is logged as `failed` with its exit status and last line of output; it was not logged at all.
 
 ## 0.2.0
 

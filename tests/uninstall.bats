@@ -257,6 +257,8 @@ _trashed() { [[ -e "$XDG_DATA_HOME/Trash/files/$1" && -f "$XDG_DATA_HOME/Trash/i
   [ -d "$XDG_DATA_HOME/Trash/files/fakebin.2" ]   # ~/.cache/fakebin
   _trashed fakenpm
   [ "$(cat "$CALLS")" = "npm rm -g fakenpm" ]
+  # its history row carries the size the banner counts for it
+  [ "$(awk -F'\t' '$3 == "run" && $4 == "npm rm -g fakenpm" { print $5 }' "$XDG_STATE_HOME/marmot/operations.log")" = 4096 ]
   [[ "$output" == *"Moved to Trash"*"trash-restore"* ]]
 }
 

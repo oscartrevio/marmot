@@ -461,6 +461,16 @@ $HOME/.cache/pip removable" ]
   [ ! -e "$SB/sudo.calls" ]
 }
 
+@test "a failed mm_run is logged as failed with its reason; a dry run logs nothing" {
+  run mm_run "tool step" bash -c 'echo "E: could not get lock" >&2; exit 100'
+  [ "$status" -eq 100 ]
+  [ "$(mm_log_rows failed)" = $'tool step\texit 100: E: could not get lock' ]
+  [ -z "$(mm_log_rows run)" ]
+  MM_DRY_RUN=1 run mm_run "dry step" false
+  [ "$status" -eq 0 ]
+  [ "$(mm_log_rows failed | wc -l)" -eq 1 ]
+}
+
 @test "skips and errors of a run are collected for its summary, failed deletes included" {
   mkdir -p "$SB/root/x"
   mm_skip "Thing" "needs sudo" >/dev/null
