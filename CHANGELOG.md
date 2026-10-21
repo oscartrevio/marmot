@@ -85,6 +85,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   reads both.
 - Every operations log row carries a run id; `mm history` groups rows by run with totals and
   `--json` includes `run`.
+- A mistyped command suggests the one probably meant (`mm cleen`: `Did you mean clean?`), and
+  `mm help COMMAND` shows that command's help.
 
 ### Changed
 

@@ -37,7 +37,7 @@ EOF
 Global options:
   -n, --dry-run   Preview; change nothing
       --debug     Verbose logs
-  -h, --help      Help (also: mm <command> --help)
+  -h, --help      Help (also: mm help <command>, or mm <command> --help)
   -v, --version   Version
 
 Confirmations need a terminal: run without one (cron, pipes) and every step that asks is
@@ -61,6 +61,35 @@ mm_menu() {
     mm_usage; exit 0
   fi
   exec "$0" "$choice"
+}
+
+# mm_distance A B — the edit distance (insertions, deletions, substitutions) between A and B.
+mm_distance() {
+  local s=$1 t=$2 i j cost
+  local -a prev cur
+  for ((j = 0; j <= ${#t}; j++)); do prev[j]=$j; done
+  for ((i = 1; i <= ${#s}; i++)); do
+    cur=("$i")
+    for ((j = 1; j <= ${#t}; j++)); do
+      cost=1; [[ "${s:i-1:1}" == "${t:j-1:1}" ]] && cost=0
+      cur[j]=$(( prev[j] + 1 < cur[j-1] + 1 ? prev[j] + 1 : cur[j-1] + 1 ))
+      (( prev[j-1] + cost < cur[j] )) && cur[j]=$(( prev[j-1] + cost ))
+    done
+    prev=("${cur[@]}")
+  done
+  printf '%d' "${prev[${#t}]}"
+}
+
+# mm_unknown_command NAME — die naming NAME and, when one is close (at most 2 edits, fewer than
+# NAME has letters), the command that was probably meant.
+mm_unknown_command() {
+  local c d best="" bd=3
+  for c in "${MM_COMMANDS[@]}" analyse; do
+    d=$(mm_distance "$1" "$c")
+    (( d < bd && d < ${#1} )) && { bd=$d best=$c; }
+  done
+  [[ "$best" == analyse ]] && best=analyze
+  mm_die "unknown command: $1.${best:+ Did you mean $best?} (see mm --help)"
 }
 
 # Global flags may appear anywhere; everything else is passed to the command. -y/--yes belongs to
@@ -87,7 +116,13 @@ export MM_RUN_ID
 
 case "${1:-}" in
   "") mm_menu ;;
-  -h|--help|help) mm_usage ;;
+  -h|--help) mm_usage ;;
+  help)
+    # mm help COMMAND: that command's own --help
+    [[ -n "${2:-}" ]] || { mm_usage; exit 0; }
+    c=$2; [[ "$c" == analyse ]] && c=analyze
+    [[ " ${MM_COMMANDS[*]} " == *" $c "* ]] || mm_unknown_command "$c"
+    exec "$0" "$c" --help ;;
   -v|--version)
     # shellcheck source=cmd/update.sh
     . "$MM_HOME/cmd/update.sh"
@@ -95,7 +130,7 @@ case "${1:-}" in
   *)
     MM_CMD="$1"; shift
     [[ "$MM_CMD" == analyse ]] && MM_CMD=analyze
-    [[ " ${MM_COMMANDS[*]} " == *" $MM_CMD "* ]] || mm_die "unknown command: $MM_CMD (see mm --help)"
+    [[ " ${MM_COMMANDS[*]} " == *" $MM_CMD "* ]] || mm_unknown_command "$MM_CMD"
     # shellcheck source=/dev/null
     . "$MM_HOME/cmd/$MM_CMD.sh"
     mm_cmd_main "$@"

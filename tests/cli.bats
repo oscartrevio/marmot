@@ -14,6 +14,27 @@ teardown() { mm_test_teardown; }
   [ "$status" -ne 0 ]
 }
 
+@test "a mistyped command names the one probably meant; mm help COMMAND shows that command's help" {
+  run mm cleen
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"clean?"* ]]
+  run mm analize
+  [[ "$output" == *"analyze?"* ]]
+  run mm zzzzzzzz
+  [ "$status" -ne 0 ]
+  [[ "$output" != *"?"* ]]                       # nothing close: no suggestion
+  local want; want=$(mm purge --help)
+  run mm help purge
+  [ "$status" -eq 0 ]
+  [ "$output" = "$want" ]
+  run mm help
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Usage: mm"* ]]
+  run mm help cleen
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"clean?"* ]]
+}
+
 @test "colors only go to a terminal stream, never with TERM=dumb or NO_COLOR" {
   command -v script >/dev/null || skip "needs script (util-linux)"
   unset NO_COLOR
