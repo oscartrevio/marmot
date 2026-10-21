@@ -169,9 +169,7 @@ mm_cmd_main() {
   upstream=$(git -C "$_UP_SRC" rev-parse -q --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) ||
     mm_die "branch $branch in $_UP_SRC tracks no upstream: git -C '$_UP_SRC' branch --set-upstream-to=<remote>/<branch>"
 
-  printf '\n%smarmot update%s' "$C_BOLD" "$C_RESET"
-  [[ "$MM_DRY_RUN" == 1 ]] && printf '  %s(dry run: nothing will change)%s' "$C_YELLOW" "$C_RESET"
-  printf '\n\n'
+  mm_header "marmot update"
   mm_info "Checkout: $_UP_SRC ($branch, tracking $upstream)"
   _update_git fetch --quiet || mm_die "git fetch failed in $_UP_SRC; nothing changed"
 
