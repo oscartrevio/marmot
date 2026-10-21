@@ -61,6 +61,17 @@ teardown() { mm_test_teardown; }
   done
 }
 
+@test "the menu previews each command's --help" {
+  # an fzf that runs its --preview command for the purge row, then picks nothing
+  mm_test_fake fzf "[[ \$1 == --version ]] && { echo '0.29 (devel)'; exit 0; }
+    while (( \$# )); do [[ \$1 == --preview ]] && p=\$2; shift; done
+    cat >/dev/null
+    bash -c \"\${p//\{1\}/purge}\" >'$SB/preview'; exit 130"
+  MM_TTY=1 run mm
+  [ "$status" -eq 0 ]
+  [ "$(cat "$SB/preview")" = "$(mm purge --help)" ]
+}
+
 @test "-y/--yes is rejected everywhere except mm purge, where it may come before the command" {
   local args
   for args in "clean -y" "clean --yes" "-y clean" "uninstall --yes ncdu" "optimize -y" "analyze -y" "history -y" \

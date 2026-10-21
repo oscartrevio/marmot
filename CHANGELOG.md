@@ -87,6 +87,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   `--json` includes `run`.
 - A mistyped command suggests the one probably meant (`mm cleen`: `Did you mean clean?`), and
   `mm help COMMAND` shows that command's help.
+- The `mm` menu shows the highlighted command's `--help` in a preview below the list (fzf 0.29
+  included).
 
 ### Changed
 

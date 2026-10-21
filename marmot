@@ -51,11 +51,16 @@ Files:
 EOF
 }
 
+# mm_menu — bare `mm` on a terminal: pick a command (its --help in a preview below the list) and
+# run it; without a terminal or fzf, the usage. --preview and the colon form of --preview-window
+# both work on fzf 0.29 (Ubuntu 22.04).
 mm_menu() {
-  local choice
+  local choice self
   if command -v fzf >/dev/null && [[ "$MM_TTY" == 1 ]]; then
+    printf -v self '%q' "$0"
     choice=$(for c in "${MM_COMMANDS[@]}"; do printf '%-11s %s\n' "$c" "${MM_DESC[$c]}"; done |
-      fzf --reverse --height="$(mm_fzf_height 40)" --header='marmot: pick a command' --no-multi) || exit 0
+      fzf --reverse --height="$(mm_fzf_height 80)" --header='marmot: pick a command' --no-multi \
+        --preview "$self {1} --help" --preview-window='down:60%:wrap') || exit 0
     choice=${choice%% *}
   else
     mm_usage; exit 0
