@@ -93,14 +93,19 @@ mm_confirm() {
 
 # ---------------------------------------------------------------- formatting
 
+# MM_AWK_HUMAN — awk source of human(BYTES): "1.2GB" / "340.0MB" / "12KB" / "999B", for awk
+# programs that print sizes. Units step up at 1000 of the current one, so 1000-1023 bytes are
+# "1KB", never "0KB"; KB is rounded, not truncated (1.9KB is "2KB").
+MM_AWK_HUMAN='function human(b, u, i) {
+  split("B KB MB GB TB", u, " "); i = 1
+  while (b >= 1000 && i < 5) { b /= 1024; i++ }
+  if (i == 1) return sprintf("%dB", b)
+  if (i == 2) return sprintf("%dKB", int(b + 0.5))
+  return sprintf("%.1f%s", b, u[i])
+}'
+
 # mm_human BYTES — 1.2GB / 340.0MB / 12KB.
-mm_human() {
-  awk -v b="${1:-0}" 'BEGIN {
-    split("B KB MB GB TB", u, " "); i = 1
-    while (b >= 1000 && i < 5) { b /= 1024; i++ }
-    if (i == 1) printf "%dB", b; else if (i == 2) printf "%dKB", b; else printf "%.1f%s", b, u[i]
-  }'
-}
+mm_human() { awk -v b="${1:-0}" "$MM_AWK_HUMAN"' BEGIN { printf "%s", human(b) }'; }
 
 # mm_ago SECONDS — a span as one unit: "16m" under an hour, "16h" under two days, else "3d".
 mm_ago() {

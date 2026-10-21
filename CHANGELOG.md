@@ -114,6 +114,11 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   can't be measured is shown as unknown and the item is kept; it was counted as 0 before.
 - `mm history -l N` counts runs, not rows (default 10).
 
+### Fixed
+
+- Sizes of 1000-1023 bytes print as `1KB`, not `0KB`, and KB sizes are rounded (1.9KB is `2KB`,
+  not `1KB`); `mm history` uses the same formatter.
+
 ## 0.2.0
 
 ### Added

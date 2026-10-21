@@ -299,6 +299,22 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   [ "$(mm_size_frees "$SB/root")" = "3000000001024 3000000001024" ]
 }
 
+@test "sizes never print as 0 of a unit, and KB rounds instead of truncating" {
+  local b want
+  while read -r b want; do
+    [ "$(mm_human "$b")" = "$want" ] || { echo "$b: $(mm_human "$b"), want $want"; return 1; }
+  done <<'EOF'
+0 0B
+999 999B
+1000 1KB
+1023 1KB
+1946 2KB
+12288 12KB
+356515840 340.0MB
+1288490189 1.2GB
+EOF
+}
+
 @test "frees counts only files whose every hard link is inside; mm_rm frees exactly that" {
   mkdir -p "$SB/root/a" "$SB/store"
   head -c 40960 /dev/urandom >"$SB/store/shared"; ln "$SB/store/shared" "$SB/root/a/shared"

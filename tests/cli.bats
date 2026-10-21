@@ -75,6 +75,15 @@ teardown() { mm_test_teardown; }
   grep -qx '2026-10-13 10:00:00+00:00  purge · 1 removed 2KB · 1 to Trash 4KB · 1 refused' <<<"$output"
 }
 
+@test "history prints 1000-1023 bytes as 1KB, like the rest of marmot" {
+  mkdir -p "$XDG_STATE_HOME/marmot"
+  printf '%s\n' $'2026-10-13T10:00:00+00:00\tclean\tremove\t/tmp/k\t1000\t\tR1' >"$XDG_STATE_HOME/marmot/operations.log"
+  run mm history
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"/tmp/k 1KB"* ]]
+  [[ "$output" != *"0KB"* ]]
+}
+
 @test "history reads the rotated operations.log.old before the current log" {
   local log="$XDG_STATE_HOME/marmot/operations.log" i
   mkdir -p "$XDG_STATE_HOME/marmot" "$SB/p/node_modules"

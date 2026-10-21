@@ -23,14 +23,7 @@ EOF
 # 7-field TSV when JSON=1, else as the text listing with all-time totals.
 _history_awk() {
   awk -F'\t' -v limit="$1" -v json="$2" -v dim="$C_DIM" -v red="$C_RED" -v yellow="$C_YELLOW" \
-    -v bold="$C_BOLD" -v reset="$C_RESET" '
-    function human(b, u, i) {
-      split("B KB MB GB TB", u, " "); i = 1
-      while (b >= 1000 && i < 5) { b /= 1024; i++ }
-      if (i == 1) return sprintf("%dB", b)
-      if (i == 2) return sprintf("%dKB", b)
-      return sprintf("%.1f%s", b, u[i])
-    }
+    -v bold="$C_BOLD" -v reset="$C_RESET" "$MM_AWK_HUMAN"'
     # minute(ISO time) — minutes since a fixed epoch (days from the civil date), offset ignored.
     function minute(t, y, m) {
       y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0
