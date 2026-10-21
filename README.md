@@ -47,7 +47,7 @@ Purge project artifacts  (dry run: nothing will change)
 ======================================================================
 Dry run complete
 Would free: 648.0MB | Artifacts: 3 | Projects: 2
-Free space: 89.2GB
+Free space: 89.2GB now, ~89.8GB after
 Run without --dry-run to apply.
 ======================================================================
 ```
@@ -61,9 +61,11 @@ its deploy keypair, so it stays too.
 git clone https://github.com/oscartrevio/marmot.git && cd marmot && ./install.sh
 ```
 
-No root needed. The installer copies marmot to `~/.local/share/marmot` and links `mm` into
-`~/.local/bin`. Update with `mm update`. `./install.sh --uninstall` turns off the schedule and
-removes only what the installer put in place. Your config, history and Trash stay.
+No root needed. The installer copies marmot to `~/.local/share/marmot`, links `mm` into
+`~/.local/bin`, and ends with three first steps (a preview, the dashboard, the schedule) and the
+completion line for your shell. Update with `mm update`, which shows the CHANGELOG entries it
+brings. `./install.sh --uninstall` turns off the schedule and removes only what the installer
+put in place. Your config, history and Trash stay.
 
 ## Quick start
 
@@ -87,7 +89,11 @@ mm schedule enable    # a safe part of clean and purge, daily, no prompts, no su
 | `mm history` | What marmot removed, moved to the Trash or refused, run by run |
 | `mm update` | Updates marmot from the git checkout it was installed from |
 
-`mm <command> --help` explains each command and its options. `mm` alone opens a command picker.
+`mm help <command>` (or `mm <command> --help`) explains each command and its options. `mm` alone
+opens a command picker that previews each command's help.
+
+Steps that need root ask for your password once, up front, and say what for. Decline, and the
+rest of the run skips those steps instead of asking again.
 
 ## Safety
 
