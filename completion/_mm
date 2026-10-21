@@ -1,46 +1,69 @@
 #compdef mm marmot
 
-_mo() {
+# Option lists follow each command's usage in cmd/*.sh; descriptions follow MM_DESC in marmot.
+_mm() {
   local -a commands global
+  local cmd="" pos=0 i w sub
   commands=(
     'clean:Remove caches, old builds, logs, and package/Docker leftovers'
-    'status:Live system health dashboard'
+    'status:Live system health dashboard (--once for a snapshot)'
     'analyze:Interactive disk explorer'
-    'optimize:Updates, trim, swap reset, orphaned processes'
-    'purge:Remove build artifacts from idle projects'
-    'uninstall:Remove packages plus their leftovers'
-    'schedule:Run a safe cleanup on a timer'
+    'optimize:Updates, trim, swap reset, orphaned processes, pending reboot'
+    'purge:Remove build artifacts (node_modules, .next, target...) from idle projects'
+    'uninstall:Remove apt/snap/global packages plus their leftovers'
+    'schedule:Run a safe cleanup on a timer (systemd user timer or cron)'
     'history:Show what marmot has changed'
-    'update:Update marmot from its git checkout'
+    'update:Update marmot from its git checkout (--check only reports)'
   )
-  global=('(-n --dry-run)'{-n,--dry-run}'[preview only]' '--debug[verbose logs]')
+  global=('(-n --dry-run)'{-n,--dry-run}'[preview only]' '--debug[verbose logs]' '(-h --help)'{-h,--help}'[help]')
 
-  if (( CURRENT == 2 )); then
-    if [[ $words[2] == -* ]]; then
-      _arguments '(-h --help)'{-h,--help}'[help]' '(-v --version)'{-v,--version}'[version]'
+  # The command: the first word after mm that is not a global flag.
+  for (( i = 2; i < CURRENT; i++ )); do
+    w=$words[i]
+    case $w in -n|--dry-run|--debug|-y|--yes) continue ;; esac
+    cmd=$w pos=$i
+    break
+  done
+  [[ $cmd == analyse ]] && cmd=analyze
+
+  if [[ -z $cmd ]]; then
+    if [[ $PREFIX == -* ]]; then
+      _arguments $global '(-v --version)'{-v,--version}'[version]'
     else
       _describe 'command' commands
     fi
     return
   fi
-  case $words[2] in
-    clean)     _arguments $global '--whitelist[edit protected paths]' '--sessions[move agent sessions older than N days to the Trash]:days' ;;
-    status)    _arguments '--once[single snapshot]' '--json[machine-readable]' '--agent[plain text for AI agents]' '--view[layout]:view:(compact full)' '--interval[refresh seconds]:seconds' ;;
-    analyze|analyse) _arguments $global '--json[print the overview as JSON]' '*:directory:_files -/' ;;
+
+  # _arguments reads words[2..] as its own arguments, so hand it only the words after the command.
+  words=(mm "${(@)words[pos+1,-1]}")
+  (( CURRENT -= pos - 1 ))
+
+  case $cmd in
+    help)
+      (( CURRENT == 2 )) && _describe 'command' commands ;;
+    clean)     _arguments $global '--sessions[move agent sessions older than N days to the Trash]:days' '--whitelist[edit protected paths]' ;;
+    status)    _arguments $global '--once[single snapshot]' '--json[machine-readable]' '--agent[plain text for AI agents]' '--view[layout]:view:(compact full)' '--interval[refresh seconds]:seconds' ;;
+    analyze)   _arguments $global '--json[print the overview as JSON]' '*:directory:_files -/' ;;
     optimize)  _arguments $global ;;
     purge)     _arguments $global '(-y --yes)'{-y,--yes}'[unattended: remove stale artifacts only]' '--all[include recent projects (interactive)]' '--paths[edit project roots]' '--days[idle days]:days' '*:directory:_files -/' ;;
     uninstall) _arguments $global '(-l --list)'{-l,--list}'[list removable packages]' '(-a --all)'{-a,--all}'[also list shared libraries]' '--app-data[offer ~/.NAME and ~/.local/share/NAME, one confirmation each]' '*:package:' ;;
-    history)   _arguments '--json[JSON output]' '--all[full log]' '(-l --limit)'{-l,--limit}'[entries]:count' ;;
+    history)   _arguments $global '(-l --limit)'{-l,--limit}'[show the newest N runs]:count' '--all[every run]' '--json[JSON output]' ;;
     schedule)
-      if (( CURRENT == 3 )); then
+      if (( CURRENT == 2 )); then
         local -a subs=('status:what is scheduled, the next and the last run' 'enable:turn the timer on'
           'disable:remove what enable created' 'run:run the scheduled cleanup now')
         _describe 'subcommand' subs
       else
-        _arguments $global '(--daily --weekly)--daily[enable: run every day]' '(--daily --weekly)--weekly[enable: run every week]'
+        sub=$words[2]
+        if [[ $sub == enable ]]; then
+          _arguments $global '1:subcommand:(status enable disable run)' '(--daily --weekly)--daily[enable: run every day]' '(--daily --weekly)--weekly[enable: run every week]'
+        else
+          _arguments $global '1:subcommand:(status enable disable run)'
+        fi
       fi ;;
     update)    _arguments $global '--check[only report; exit 10 when an update is available]' ;;
   esac
 }
 
-_mo "$@"
+_mm "$@"

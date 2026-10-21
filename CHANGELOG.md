@@ -166,6 +166,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - Sizes are measured with a time limit (`MM_SIZE_TIMEOUT`, 300 s). A size that times out or
   can't be measured is shown as unknown and the item is kept; it was counted as 0 before.
 - `mm history -l N` counts runs, not rows (default 10).
+- Shell completion (bash and zsh) completes after global flags (`mm -n clean --`), offers each
+  command's options, `help` topics, `analyze` for `analyse`, and `schedule` subcommands.
 
 ### Fixed
 
