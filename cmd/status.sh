@@ -1264,10 +1264,10 @@ _status_fixes() {
     dp=0 ip=0
     ((sz > 0)) && dp=$((us * 100 / sz))
     ((it > 0)) && ip=$((iu * 100 / it))
-    if ((dp >= 80)); then
+    if ((dp >= MM_DISK_WARN_PCT)); then
       ST_FIXES+=("disk $m"$'\t'"disk $m $dp% full"$'\t'"mm clean --dry-run, then mm purge --dry-run")
     fi
-    if ((ip >= 90)); then
+    if ((ip >= MM_DISK_FULL_PCT)); then
       ST_FIXES+=("inodes $m"$'\t'"inodes on $m $ip% used"$'\t'"mm purge --dry-run (node_modules and build output), mm clean --dry-run")
     fi
   done
@@ -1321,7 +1321,7 @@ _status_health() {
   if ((ST_ROOT_PCT >= MM_DISK_FULL_PCT * 10)); then _status_pen 25 "disk $((ST_ROOT_PCT / 10))% full"
   elif ((ST_ROOT_PCT >= MM_DISK_WARN_PCT * 10)); then _status_pen 10 "disk $((ST_ROOT_PCT / 10))% full"; fi
   ((ST_REBOOT || ${ST_KPENDING:-0})) && _status_pen 10 "reboot required"
-  if ((ST_ROOT_IPCT >= 900)); then _status_pen 20 "inodes $((ST_ROOT_IPCT / 10))% used"; fi
+  if ((ST_ROOT_IPCT >= MM_DISK_FULL_PCT * 10)); then _status_pen 20 "inodes $((ST_ROOT_IPCT / 10))% used"; fi
   ((${#ST_FAILED[@]})) && _status_pen 10 "${#ST_FAILED[@]} failed unit$( ((${#ST_FAILED[@]} > 1)) && echo s)"
   ((${#ST_ORPHANS[@]})) && _status_pen 5 "${#ST_ORPHANS[@]} orphaned process$( ((${#ST_ORPHANS[@]} > 1)) && echo es)"
   ((ST_SCORE < 0)) && ST_SCORE=0
