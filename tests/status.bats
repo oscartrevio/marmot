@@ -1024,6 +1024,8 @@ fake_cgroup() {
   live 'sleep 4; printf w; sleep 2.5; printf q'
   [ "$LIVE_STATUS" -eq 0 ]
   grep -qF -- '--(mm)--UU------' <<<"$LIVE_TEXT"
-  grep -qE '^   \|  .    .  \| +\(mm\)' <<<"$LIVE_TEXT"
-  grep -qF "'()  //" <<<"$LIVE_TEXT" && grep -qF "'() \\\\" <<<"$LIVE_TEXT"
+  # The paw up level with the top of the head, in both poses, the arm clear of the title.
+  grep -qE '_\.\.--\.\._    \(mm\) \) \)$' <<<"$LIVE_TEXT"
+  grep -qE '_\.\.--\.\._   \(mm\) \)$' <<<"$LIVE_TEXT"
+  grep -qE "^  \(\)'        '\(\) [/|]   mm status" <<<"$LIVE_TEXT"
 }

@@ -11,8 +11,13 @@
 # of it is art in MM_PARTS and MM_EYES, none in code.
 # Sourcing this file defines names only; nothing here writes a file or runs a command but `date`
 # for a YYYY-MM-DD argument: install.sh sources it as it is.
-# Every character drawn is printable ASCII (0x20-0x7E): one column in every terminal and font,
-# never an emoji or a glyph from a fallback font. The shapes carry the meaning without color.
+# Every character drawn is printable ASCII (0x20-0x7E) or on MM_GLYPHS: one column in every
+# terminal and font, never an emoji or a glyph from a fallback font. The shapes carry the meaning
+# without color.
+
+# The only characters drawn beyond ASCII: ∆ (U+2206, jack-o'-lantern eyes), East Asian Width N,
+# no emoji presentation, in JetBrains Mono, Menlo, DejaVu Sans Mono and Ubuntu Mono.
+MM_GLYPHS=(∆)
 
 # Moods → "LEFT RIGHT OPEN": the eyes, and 1 when they are open (only open eyes blink).
 declare -gA MM_FACES=(
@@ -22,7 +27,7 @@ declare -gA MM_FACES=(
 # Festive eyes → "INK|EYES": the ten columns inside the face on the eyes row. L and R are the
 # mood's own eyes (and blink); the rest is drawn in INK (see MM_PARTS).
 declare -gA MM_EYES=(
-  [groucho]='.| (L)--(R) ' [pirate]='.|  #    R  ' [jack]='y| /\    /\ ' [calavera]='y| (*)  (*) '
+  [groucho]='.| (L)--(R) ' [pirate]='.|  #    R  ' [jack]='y|  ∆    ∆  ' [calavera]='y| (*)  (*) '
 )
 # Everything else drawn, one part per line: "NAME|ROW|COL|INK|TEXT", in drawing order (a later
 # part covers an earlier one, spaces too). NAME is SLOT:NAME (the slots of mm_marmot_draw).
@@ -43,27 +48,28 @@ MM_PARTS=(
   'marmot:|5|2|.|(mm)--UU--(mm)'
   'marmot:|5|6|d|--'
   'marmot:|5|10|d|--'
-  # Hats: a cone with a pom-pom and dots; floppy, with a fur brim and a pom-pom; a dome with a
+  # Hats, all on the hard hat's footprint (the sky row and the top of the head): a striped cone
+  # with a pom-pom; a cap flopping to one side into its pom-pom over a fur brim; a dome with a
   # ridge and a brim.
+  'hat:party|0|7|c|/()\'
   'hat:party|0|8|y|()'
-  'hat:party|1|5|c|  /**\  '
-  'hat:party|1|8|m|**'
-  'hat:party|2|5|c|_/o*o*\_'
-  'hat:party|2|7|y|o'
-  'hat:party|2|9|y|o'
-  'hat:party|2|8|m|*'
-  'hat:party|2|10|m|*'
-  'hat:santa|0|6|r|_.---._'
-  'hat:santa|1|5|r|/       `\.'
-  'hat:santa|2|5|w|{######}'
-  'hat:santa|2|17|w|@'
+  'hat:party|1|4|c|_/======\_'
+  'hat:party|1|6|m|='
+  'hat:party|1|8|m|='
+  'hat:party|1|10|m|='
+  'hat:party|1|7|y|='
+  'hat:party|1|9|y|='
+  'hat:party|1|11|y|='
+  'hat:santa|0|6|r|.----._'
+  'hat:santa|0|13|w|o'
+  'hat:santa|1|4|w|(########)'
   'hat:hardhat|0|6|y|.-||-.'
   'hat:hardhat|1|4|y|_/__||__\_'
   # Marks: before the head, in the sky, over the title.
   'mark:heart|1|2|r|<3'
   'mark:pi|1|0|c|3.14'
-  'mark:fireworks|0|0|y|.\|/.'
-  "mark:fireworks|1|0|y|'/|\\'"
+  'mark:fireworks|0|0|y|\|/'
+  'mark:fireworks|1|0|y|/|\'
   'mark:fireworks|0|27|r|\|/'
   'mark:fireworks|1|27|r|/|\'
   'mark:fireworks|1|32|m|*'
@@ -78,6 +84,11 @@ MM_PARTS=(
   'mark:picado|0|9|c|[#]'
   'mark:picado|0|13|r|[#]'
   'mark:picado|0|17|g|[#]'
+  # A jack-o'-lantern beside the head: ribbed and round, a green stem, triangle eyes, a toothy
+  # grin; clear of the face's marks (they end by column 21).
+  'mark:pumpkin|0|23|y|_.--)--._'
+  'mark:pumpkin|0|27|g|)'
+  'mark:pumpkin|1|22|y|(( ^vVv^ ))'
   # On the rule, by place (MM_RULE_AT): all of it first, then its ends and beside the right paw.
   'rule:snow|5|23+17|d|*'
   'rule:snow|5|26+11|d|.'
@@ -87,11 +98,10 @@ MM_PARTS=(
   'rule:cat|5|-8|d|=^.^='
   'rule:saber|5|16|w|[|||]'
   'rule:saber|5|21|c|===================='
-  'rule:pumpkin|4|18|g|_)'
-  'rule:pumpkin|5|16|y|(^vvv^)'
-  'rule:tree|3|16|g|.@@.'
-  'rule:tree|4|16|g|@@@@'
-  'rule:tree|5|17|y|||'
+  'rule:tree|2|17|g|.@.'
+  'rule:tree|3|17|g|@@@'
+  'rule:tree|4|18|y||'
+  'rule:tree|5|18|y||'
   # Teeth: vampire fangs beside the incisors.
   'teeth:fangs|5|7|w|V'
   'teeth:fangs|5|10|w|V'
@@ -99,24 +109,27 @@ MM_PARTS=(
   'face:sleepy|1|+0|d|z Z'
   'face:alert|1|+0|y|!'
   'face:proud|1|+0|y|+*'
-  'face:night|0|+1|d|) ) )'
-  'face:night|1|+0|.||___|)'
+  'face:night|0|+1|d|) )'
+  'face:night|1|+0|.|[__]D'
   'face:cheeks|3|2|.|('
   'face:cheeks|3|15|.|)'
-  # Waving (mm status's live view, key w): the right paw up beside the face, swinging between
-  # two poses, its place on the rule empty.
-  'wave:1|2|17|.|\\'
-  'wave:1|3|16|.|(mm)'
-  'wave:1|4|16|.|/'
+  # Waving (mm status's live view, key w): the right arm up from the shoulder, the paw level with
+  # the top of the head and swinging between two poses, motion marks behind it, its place on the
+  # rule empty. Nothing within a column of the title.
+  'wave:1|1|17|.|(mm)'
+  'wave:1|1|22|.|) )'
+  'wave:1|2|17|.|/'
+  'wave:1|3|16|.|/'
   'wave:1|5|12|d|----'
-  'wave:2|2|18|.|//'
-  'wave:2|3|16|.|(mm)'
-  'wave:2|4|16|.|/'
+  'wave:2|1|16|.|(mm)'
+  'wave:2|1|21|.|)'
+  'wave:2|2|17|.||'
+  'wave:2|3|16|.|/'
   'wave:2|5|12|d|----'
 )
 # Rule props → their place: bg (along the whole rule), right (its right end) or paw (beside the
 # right paw). One prop per place.
-declare -gA MM_RULE_AT=([snow]=bg [marigolds]=bg [web]=right [cat]=right [saber]=paw [pumpkin]=paw [tree]=paw)
+declare -gA MM_RULE_AT=([snow]=bg [marigolds]=bg [web]=right [cat]=right [saber]=paw [tree]=paw)
 
 # The calendar: one occasion per row, "id|when|hat|mark|rule|eyes|teeth|greeting", in priority
 # order: when two occasions want the same slot (a hat, a mark, the eyes, the teeth, one place on
@@ -153,8 +166,8 @@ MM_CALENDAR=(
   'mexico|09-15~09-16||||||Viva Mexico!'
   'pirate|09-19||||pirate||Arr, it be Talk Like a Pirate Day'
   "ada|nth:10:2:2||||||Ada Lovelace Day: she programmed a machine nobody had built yet"
-  'halloween|10-31|||pumpkin web|jack|fangs|Happy Halloween'
-  'spooky|10-24~10-30|||pumpkin web||fangs|'
+  'halloween|10-31||pumpkin|web|jack|fangs|Happy Halloween'
+  'spooky|10-24~10-30||pumpkin|web||fangs|'
   'muertos|11-01~11-02||picado|marigolds|calavera||@'
   'thanksgiving|nth:11:4:4||||||@'
   'friday13|dow:5:13|||cat|||Friday the 13th: marmot checks twice, as always'
@@ -330,8 +343,10 @@ _mm_put() {
 # MOOD is one of MM_FACES, its eyes in COLOR (an escape sequence). The rest is MM_LOOK_*:
 # CHEEKS=1 stuffs its cheeks, BLINK=1 half-closes open eyes and BLINK=2 shuts them (the face);
 # HAT, MARK, EYES, RULE and TEETH as mm_marmot_dress sets them (the decorations); WAVE=1 or 2
-# raises its right paw beside its face in one of two poses (mm status's live view, key w).
+# raises its right paw in one of two poses instead of the face's marks (live view, key w).
 mm_marmot_draw() {
+  # Characters, not bytes: MM_GLYPHS are multibyte.
+  local LC_ALL=C.UTF-8
   local mood=$1 w=$2 title=${3:-} facts=${4:-} col=${5:-} l r open ink eyes t i c n row at text
   local step lim line out e run blank right=0 sky=0
   local -a R K
@@ -339,9 +354,11 @@ mm_marmot_draw() {
   # Here-strings cost a pipe each: the tables are split with expansions instead.
   t=${MM_FACES[$mood]:-o o 1} && l=${t%% *} && t=${t#* } && r=${t%% *} && open=${t#* }
   for t in marmot: "hat:${MM_LOOK_HAT:-}" "mark:${MM_LOOK_MARK:-}" "teeth:${MM_LOOK_TEETH:-}" \
-    "face:$mood" "wave:${MM_LOOK_WAVE:-0}"; do
+    "wave:${MM_LOOK_WAVE:-0}"; do
     want[$t]=1
   done
+  # A waving marmot is awake: its paw takes the place of the face's marks.
+  ((${MM_LOOK_WAVE:-0})) || want[face:$mood]=1
   t=${MM_LOOK_RULE:-}
   while [[ -n "$t" ]]; do
     want[rule:${t%% *}]=1

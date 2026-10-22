@@ -106,10 +106,11 @@ proud the day after a cleanup that freed 1GB or more, `^ ^` agents at work on a 
 blinks every few seconds.
 
 It also knows what day it is: a party hat and fireworks at New Year, a Santa hat, snow on the
-rule all winter, vampire fangs and a jack-o'-lantern in Halloween week, papel picado, marigolds
-and calavera eyes on Día de Muertos, a lightsaber on May 4, a tree on Earth Day, its anniversary
-on this machine, and some twenty more (the table is `MM_CALENDAR` in `lib/mascot.sh`, the art
-`MM_PARTS`; all of it plain ASCII, so no terminal shows an emoji). The day never changes the face
+rule all winter, vampire fangs and a jack-o'-lantern beside its head in Halloween week (and
+`∆ ∆` eyes on the day), papel picado, marigolds and calavera eyes on Día de Muertos, a lightsaber on May 4,
+a tree on Earth Day, its anniversary on this machine, and some twenty more (the table is
+`MM_CALENDAR` in `lib/mascot.sh`, the art `MM_PARTS`; all of it printable ASCII but the `∆` eyes,
+one column everywhere, so no terminal shows an emoji). The day never changes the face
 that reports a problem, and `festive = off` in the config turns the calendar off. `mm --version`
 and a run with nothing to do say the day's greeting too, and the closing banner of a real run
 celebrates firsts, round run counts, records and anniversaries, each once.

@@ -79,13 +79,13 @@ dress() {
 
 @test "dress: a problem face keeps its eyes and still wears the day's hat, mark, teeth and rule" {
   [ "$(dress dizzy 0 christmas winter)" = "santa||||snow|Merry Christmas" ]
-  [ "$(dress happy 0 halloween)" = "||jack|fangs|pumpkin web|Happy Halloween" ]
-  [ "$(dress happy 0 spooky)" = "|||fangs|pumpkin web|" ]
+  [ "$(dress happy 0 halloween)" = "|pumpkin|jack|fangs|web|Happy Halloween" ]
+  [ "$(dress happy 0 spooky)" = "|pumpkin||fangs|web|" ]
   [ "$(dress sleepy 0 halloween | cut -d'|' -f3)" = jack ]
   [ "$(dress proud 0 halloween | cut -d'|' -f3)" = jack ]
   local mood
   for mood in alert dizzy squint neutral night tired; do
-    [ "$(dress "$mood" 0 halloween)" = "|||fangs|pumpkin web|Happy Halloween" ] || { echo "$mood"; false; }
+    [ "$(dress "$mood" 0 halloween)" = "|pumpkin||fangs|web|Happy Halloween" ] || { echo "$mood"; false; }
   done
   [ "$(dress dizzy 0 aprilfools | cut -d'|' -f3)" = "" ]
   [ "$(dress happy 0 aprilfools | cut -d'|' -f3)" = groucho ]
@@ -101,7 +101,7 @@ dress() {
   [ "$(dress happy 0 newyear anniversary)" = "party|fireworks||||Happy New Year/3 years keeping this machine tidy" ]
   [ "$(dress happy 0 valentine anniversary | cut -d'|' -f1,2)" = "party|heart" ]
   # The rule: one prop per place, the upper row's; one for each place combines.
-  [ "$(dress happy 0 friday13 spooky | cut -d'|' -f5)" = "pumpkin web" ]
+  [ "$(dress happy 0 friday13 spooky | cut -d'|' -f5)" = web ]
   [ "$(dress happy 0 friday13 winter | cut -d'|' -f5)" = "cat snow" ]
   # The teeth: the upper row's too, the other row's other slots still show.
   MM_CALENDAR=('first|01-01|||||fangs|' 'second|01-01||heart|||gap|')
@@ -145,16 +145,17 @@ names() {
 }
 
 # check MOOD LABEL — draw MOOD as the MM_LOOK_* say, 60 columns wide with every color on, and
-# print LABEL when the drawing breaks a rule: printable ASCII only once the color escapes are
-# stripped, five or six rows, the rule 60 columns and nothing longer, and the title, facts and
+# print LABEL when the drawing breaks a rule: printable ASCII or MM_GLYPHS only once the color
+# escapes are stripped (a glyph counts as one column), five or six rows, the rule 60 columns and nothing longer, and the title, facts and
 # greeting from column 21 with a blank column before them.
 check() {
-  local r n bad=""
+  local r g n bad=""
   local -a rows=()
   mm_marmot_draw "$1" 60 title facts "$C_GREEN"
   for r in "${MM_ART[@]}"; do
     r=${r//"$esc"[0-9]m/} && r=${r//"$esc"[0-9][0-9]m/}
-    [[ "$r" == *[!\ -~]* ]] && bad=" not ASCII"
+    for g in "${MM_GLYPHS[@]}"; do r=${r//"$g"/G}; done
+    [[ "$r" == *[!\ -~]* ]] && bad=" not ASCII nor MM_GLYPHS"
     rows+=("$r")
   done
   n=${#rows[@]}
@@ -192,17 +193,17 @@ draw_all() {
   done; done; done; done
 }
 
-@test "draw: every mood, hat, mark, eyes, rule, teeth and overlay is printable ASCII in its place" {
+@test "draw: every mood, hat, mark, eyes, rule, teeth and overlay is ASCII or MM_GLYPHS, in its place" {
   local -a hats marks rules teeth eyes overs pids=()
   local mood
   mapfile -t hats < <(echo; names hat)
   mapfile -t marks < <(echo; names mark)
-  mapfile -t rules < <(echo; names rule; echo "pumpkin web")
+  mapfile -t rules < <(echo; names rule; echo "snow cat")
   mapfile -t teeth < <(echo; names teeth)
   eyes=("" "${!MM_EYES[@]}")
   overs=("" CHEEKS=1 BLINK=1 BLINK=2 WAVE=1 WAVE=2)
-  [ "${#hats[@]}" -eq 4 ] && [ "${#marks[@]}" -eq 5 ] && [ "${#rules[@]}" -eq 9 ] && [ "${#teeth[@]}" -eq 2 ]
-  # One process per mood, 2232 drawings each, without bats' per-command trap (it would take the
+  [ "${#hats[@]}" -eq 4 ] && [ "${#marks[@]}" -eq 6 ] && [ "${#rules[@]}" -eq 8 ] && [ "${#teeth[@]}" -eq 2 ]
+  # One process per mood, 2304 drawings each, without bats' per-command trap (it would take the
   # loop from seconds to an hour).
   for mood in "${!MM_FACES[@]}"; do
     (trap - DEBUG ERR && set +eET && draw_all "$mood") >"$BATS_TEST_TMPDIR/broken.$mood" &
@@ -211,6 +212,32 @@ draw_all() {
   wait "${pids[@]}"
   cat "$BATS_TEST_TMPDIR"/broken.*
   [ -z "$(cat "$BATS_TEST_TMPDIR"/broken.*)" ]
+}
+
+# emoji CODEPOINT — 0 if CODEPOINT is in a block where Unicode gives characters an emoji
+# presentation (Emoji_Presentation or common text-default emoji).
+emoji() {
+  local r lo hi
+  for r in 00A9-00A9 00AE-00AE 203C-203C 2049-2049 2122-2122 2139-2139 2194-21AA 231A-23FF \
+    24C2-24C2 25AA-25FE 2600-27BF 2934-2935 2B05-2B55 3030-3030 303D-303D 3297-3299 FE0F-FE0F \
+    1F000-1FAFF; do
+    lo=$((16#${r%-*})) hi=$((16#${r#*-}))
+    (($1 >= lo && $1 <= hi)) && return 0
+  done
+  return 1
+}
+
+@test "draw: beyond ASCII only the allowlisted glyphs, each one column wide and none an emoji" {
+  # Adding a glyph is a decision: it has to be added here too.
+  [ "${MM_GLYPHS[*]}" = ∆ ]
+  local g cp
+  for g in "${MM_GLYPHS[@]}"; do
+    cp=$(export LC_ALL=C.UTF-8 && printf '%d' "'$g")
+    ((cp > 126)) || { echo "$g is ASCII"; false; }
+    [ "$(printf '%s' "$g" | LC_ALL=C.UTF-8 wc -L)" -eq 1 ] || { echo "$g is not one column"; false; }
+    ! emoji "$cp" || { echo "$g can show as an emoji"; false; }
+  done
+  emoji $((16#2726)) && emoji $((16#1F383))
 }
 
 @test "draw: a sky row only when something reaches above the head; the texts keep their rows" {
@@ -236,7 +263,7 @@ draw_all() {
   MM_LOOK_BLINK=2 mm_marmot_draw sleepy 60
   [ "${MM_ART[2]}" = "   |  -    -  |" ]
   MM_LOOK_BLINK=2 MM_LOOK_EYES=jack mm_marmot_draw happy 60
-  [ "${MM_ART[2]}" = '   | /\    /\ |' ]
+  [ "${MM_ART[2]}" = '   |  ∆    ∆  |' ]
 }
 
 @test "festive = off takes the calendar off everything and leaves the moods, milestones and eggs" {

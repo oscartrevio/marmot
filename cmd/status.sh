@@ -2004,12 +2004,14 @@ _status_marmot() {
 
 # _status_marmot_paint — show the live view's blink or wave (ST_BLINK, ST_WAVE) without building
 # the frame again: the marmot's rows of the painted frame are redrawn as the last _status_marmot
-# drew them, and _status_paint rewrites the rows that changed (the eyes, or the paw).
+# drew them, and _status_paint rewrites the rows that changed (the eyes, or the paw; every row
+# below too when a wave hides the mug and its steam's sky row).
 _status_marmot_paint() {
   ((ST_MM_N)) || return 0
   MM_LOOK_BLINK=$ST_BLINK MM_LOOK_WAVE=$ST_WAVE
   mm_marmot_draw "${ST_MM_ARGS[@]}"
   ST_FRAME=("${ST_FRAME[@]:0:ST_MM_AT}" "${MM_ART[@]}" "${ST_FRAME[@]:ST_MM_AT+ST_MM_N}")
+  ST_MM_N=${#MM_ART[@]}
   _status_paint
 }
 

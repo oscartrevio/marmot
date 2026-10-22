@@ -129,9 +129,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   wears a hard hat (a dome with a ridge and a brim) while a marmot cleanup runs. In the live view
   it blinks like something alive: 2 to 8 s apart at random, closing and opening through a half
   lid in under 200 ms, now and then twice; a blink repaints only the eyes' row.
-- The marmot keeps a calendar (`lib/mascot.sh`): a party hat (a dotted cone with a pom-pom) and
-  fireworks at New Year, a floppy Santa hat with a fur brim at Christmas, snow on the rule all
-  winter, vampire fangs, a jack-o'-lantern and a spider's web in Halloween week, papel picado,
+- The marmot keeps a calendar (`lib/mascot.sh`): a party hat (a striped cone with a pom-pom) and
+  fireworks at New Year, a Santa hat flopping into its pom-pom over a fur brim at Christmas (both
+  on the hard hat's footprint), snow on the rule all winter, vampire fangs, a
+  jack-o'-lantern beside its head and a spider's web in Halloween week (`∆ ∆` eyes on the day), papel picado,
   marigolds and calavera eyes on Día de Muertos remembering the biggest item it ever freed, a
   lightsaber in its paw on May 4, a tree on Earth Day, Thanksgiving's total, last year's review in
   the first week of January, the anniversary of its first run here, and about twenty more (Pi Day,
@@ -139,14 +140,14 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   Lovelace Day, Friday the 13th, a round Unix time...). Tall decorations get a sky row above its
   head. Decorations never replace a face that reports a problem. They show in the `mm status`
   header, after `mm --version` on a terminal, on the line of a run with nothing to do, and in
-  `install.sh`'s closing art. Everything the marmot draws is printable ASCII: no emoji, no glyph
-  from a fallback font.
+  `install.sh`'s closing art. Everything the marmot draws is printable ASCII plus `∆` (one
+  column, not an emoji, in the common monospace fonts): no emoji, no glyph from a fallback font.
 - `festive = off` in `~/.config/marmot/config` turns the marmot's calendar off (seasons,
   holidays, anniversaries, the year in review); its moods, the milestones and the easter eggs
   stay. Default on.
 - A few easter eggs, in neither the help nor the completion: `--force` is refused with a wink
   (marmot has none; nothing runs), `mm 42`, `mm make me a sandwich` (xkcd 149: root gets one),
-  and the live `mm status` waves a paw on `w`.
+  and the live `mm status` raises a paw and waves on `w`.
 
 ### Changed
 
