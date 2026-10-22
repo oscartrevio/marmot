@@ -66,7 +66,7 @@ MM_PARTS=(
   'hat:hardhat|0|6|y|.-||-.'
   'hat:hardhat|1|4|y|_/__||__\_'
   # Marks: before the head, in the sky, over the title.
-  'mark:heart|1|2|r|<3'
+  'mark:heart|1|0|r|<3'
   'mark:pi|1|0|c|3.14'
   'mark:fireworks|0|0|y|\|/'
   'mark:fireworks|1|0|y|/|\'
