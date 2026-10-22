@@ -377,7 +377,7 @@ said() { grep -cF -- "$1" <<<"$output" || true; }
   run mm xyzzy
   [ "$status" -eq 0 ] && [ "${#lines[@]}" -eq 1 ]
   run mm moo
-  [ "$status" -eq 0 ] && [[ "$output" == *"mm whistle"* ]]
+  [ "$status" -eq 0 ] && [ "${#lines[@]}" -eq 1 ]
   run mm make me a sandwich
   [ "$status" -eq 1 ] && [ "${#lines[@]}" -eq 1 ]
   run mm make me a coffee
@@ -386,7 +386,7 @@ said() { grep -cF -- "$1" <<<"$output" || true; }
   [ ! -e "$XDG_STATE_HOME/marmot" ]                             # nothing logged, no state written
   # Hidden: neither the help nor the completion offers them.
   local egg
-  for egg in whistle xyzzy moo sandwich 42; do
+  for egg in xyzzy moo sandwich 42; do
     [[ "$(mm --help)" != *"$egg"* ]] || { echo "help shows $egg"; false; }
     ! grep -qw -- "$egg" "$MM_SRC/completion/mm.bash" "$MM_SRC/completion/_mm" || { echo "completion offers $egg"; false; }
   done
@@ -396,18 +396,4 @@ said() { grep -cF -- "$1" <<<"$output" || true; }
   unshare -r true 2>/dev/null || skip "no user namespaces here to stand for root"
   run unshare -r "$MM_SRC/marmot" make me a sandwich
   [ "$status" -eq 0 ] && [ "${#lines[@]}" -eq 1 ]
-}
-
-@test "easter eggs: mm whistle draws the marmot with a true marmot fact, a new one each day" {
-  local one two
-  mm_test_now '2026-06-10 12:00'
-  run mm whistle
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"--(mm)--UU--(mm)--"* ]]
-  one=${lines[-1]}
-  mm_test_now '2026-06-11 12:00'
-  run mm whistle
-  two=${lines[-1]}
-  [ -n "$one" ] && [ "$one" != "$two" ]
-  [ ! -e "$XDG_STATE_HOME/marmot" ]
 }

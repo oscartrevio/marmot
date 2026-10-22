@@ -122,26 +122,30 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   also celebrates marmot's first cleanup on a machine, its 10th, 100th and 1000th, a new record
   for one run (1GB or more), and, on their day, the anniversary of its first run and last year's
   review in the first week of January; each once.
-- `mm status`: the marmot has more moods, still health first: `- o` with a coffee `c[_]` on the
-  night shift (an agent busy between midnight and 6:00), `¬ ¬` tired (an agent session busy for
-  over 12 hours), `^ ^ ✦` proud the day after a cleanup that freed 1GB or more ("freed 4.2GB last
+- `mm status`: the marmot has more moods, still health first: `- o` with a steaming mug on the
+  night shift (an agent busy between midnight and 6:00), `= =` tired (an agent session busy for
+  over 12 hours), `^ ^ +*` proud the day after a cleanup that freed 1GB or more ("freed 4.2GB last
   night" beside the title), and stuffed cheeks when a full disk is why it is alert or dizzy. It
-  wears a hard hat while a marmot cleanup runs and blinks now and then in the live view.
-- The marmot keeps a calendar (`lib/mascot.sh`): a Santa hat for Christmas, snow on the rule all
-  winter, a spider's web and a pumpkin for Halloween week, Groundhog (and Alaska's Marmot) Day's
-  shadow when health is below 100, Día de Muertos remembering the biggest item it ever freed,
-  Thanksgiving's total, last year's review in the first week of January, the anniversary of its
-  first run here, and about twenty more (Pi Day, May 4th, Towel Day, Sysadmin Day, the 256th day,
-  Debian Day, Linux's birthday, World Backup Day, Ada Lovelace Day, Friday the 13th, a round Unix
-  time...). Decorations never replace a face that reports a problem. They show in the `mm status`
+  wears a hard hat (a dome with a ridge and a brim) while a marmot cleanup runs and blinks now and
+  then in the live view.
+- The marmot keeps a calendar (`lib/mascot.sh`): a party hat (a dotted cone with a pom-pom) and
+  fireworks at New Year, a floppy Santa hat with a fur brim at Christmas, snow on the rule all
+  winter, vampire fangs, a jack-o'-lantern and a spider's web in Halloween week, papel picado,
+  marigolds and calavera eyes on Día de Muertos remembering the biggest item it ever freed, a
+  lightsaber in its paw on May 4, a tree on Earth Day, Thanksgiving's total, last year's review in
+  the first week of January, the anniversary of its first run here, and about twenty more (Pi Day,
+  Towel Day, Sysadmin Day, the 256th day, Debian Day, Linux's birthday, World Backup Day, Ada
+  Lovelace Day, Friday the 13th, a round Unix time...). Tall decorations get a sky row above its
+  head. Decorations never replace a face that reports a problem. They show in the `mm status`
   header, after `mm --version` on a terminal, on the line of a run with nothing to do, and in
-  `install.sh`'s closing art.
+  `install.sh`'s closing art. Everything the marmot draws is printable ASCII: no emoji, no glyph
+  from a fallback font.
 - `festive = off` in `~/.config/marmot/config` turns the marmot's calendar off (seasons,
   holidays, anniversaries, the year in review); its moods, the milestones and the easter eggs
   stay. Default on.
 - A few easter eggs, in neither the help nor the completion: `--force` is refused with a wink
-  (marmot has none; nothing runs), `mm whistle` tells a true marmot fact a day, `mm 42`,
-  `mm make me a sandwich` (xkcd 149: root gets one), and the live `mm status` waves on `w`.
+  (marmot has none; nothing runs), `mm 42`, `mm make me a sandwich` (xkcd 149: root gets one),
+  and the live `mm status` waves a paw on `w`.
 
 ### Changed
 

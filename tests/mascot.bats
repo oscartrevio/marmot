@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # lib/mascot.sh: the calendar (which occasions a date falls on), how occasions dress the marmot
 # around its face (slots, priority, problem faces first), the greetings that come from the
-# operations log, and the drawing's fixed size.
+# operations log, and the drawing: its fixed geometry and nothing but printable ASCII.
 
 setup() {
   load helpers/common
@@ -18,11 +18,11 @@ occ() {
   echo "${o:--}"
 }
 
-# dress MOOD SCORE ATWORK ID... — "hat|mark|eyes|rule|greetings" for those occasions.
+# dress MOOD ATWORK ID... — "hat|mark|eyes|teeth|rule|greetings" for those occasions.
 dress() {
   mm_marmot_dress "$@"
   local IFS=/
-  echo "$MM_LOOK_HAT|$MM_LOOK_MARK|$MM_LOOK_EYES|$MM_LOOK_RULE|${MM_LOOK_GREETS[*]}"
+  echo "$MM_LOOK_HAT|$MM_LOOK_MARK|$MM_LOOK_EYES|$MM_LOOK_TEETH|$MM_LOOK_RULE|${MM_LOOK_GREETS[*]}"
 }
 
 @test "the calendar: seasons, fixed days and ranges, by the local date" {
@@ -39,7 +39,7 @@ dress() {
   [ "$(occ 2027-01-01)" = "newyear review winter" ]
   [ "$(occ 2027-01-07)" = "review winter" ]
   [ "$(occ 2027-01-08)" = winter ]
-  [ "$(occ 2027-02-02)" = "groundhog winter" ]
+  [ "$(occ 2027-02-02)" = winter ]
   [ "$(occ 2026-10-23)" = - ]
   [ "$(occ 2026-10-24)" = spooky ]
   [ "$(occ 2026-10-31)" = halloween ]
@@ -77,36 +77,36 @@ dress() {
   [ "$_MM_OCC_YEARS" -eq 2 ]
 }
 
-@test "dress: a problem face keeps its eyes and still wears the day's hat, mark and rule" {
-  [ "$(dress dizzy 40 0 christmas winter)" = "santa|||snow|Merry Christmas" ]
-  [ "$(dress happy 100 0 halloween)" = "|pumpkin|jack|web|Happy Halloween" ]
-  [ "$(dress sleepy 100 0 halloween | cut -d'|' -f3)" = jack ]
-  [ "$(dress proud 100 0 halloween | cut -d'|' -f3)" = jack ]
+@test "dress: a problem face keeps its eyes and still wears the day's hat, mark, teeth and rule" {
+  [ "$(dress dizzy 0 christmas winter)" = "santa||||snow|Merry Christmas" ]
+  [ "$(dress happy 0 halloween)" = "||jack|fangs|pumpkin web|Happy Halloween" ]
+  [ "$(dress happy 0 spooky)" = "|||fangs|pumpkin web|" ]
+  [ "$(dress sleepy 0 halloween | cut -d'|' -f3)" = jack ]
+  [ "$(dress proud 0 halloween | cut -d'|' -f3)" = jack ]
   local mood
   for mood in alert dizzy squint neutral night tired; do
-    [ "$(dress "$mood" 70 0 halloween)" = "|pumpkin||web|Happy Halloween" ] || { echo "$mood"; false; }
+    [ "$(dress "$mood" 0 halloween)" = "|||fangs|pumpkin web|Happy Halloween" ] || { echo "$mood"; false; }
   done
-  [ "$(dress dizzy 40 0 aprilfools | cut -d'|' -f3)" = "" ]
-  [ "$(dress happy 100 0 aprilfools | cut -d'|' -f3)" = groucho ]
+  [ "$(dress dizzy 0 aprilfools | cut -d'|' -f3)" = "" ]
+  [ "$(dress happy 0 aprilfools | cut -d'|' -f3)" = groucho ]
+  [ "$(dress dizzy 0 muertos | cut -d'|' -f1-5)" = "|picado|||marigolds" ]
+  [ "$(dress happy 0 muertos | cut -d'|' -f3)" = calavera ]
 }
 
 @test "dress: one occasion per slot by calendar order; a cleanup at work wears the hard hat" {
-  [ "$(dress happy 100 0 winter christmas)" = "$(dress happy 100 0 christmas winter)" ]
-  [ "$(dress happy 100 1 christmas winter | cut -d'|' -f1)" = hardhat ]
-  [ "$(dress happy 100 1 | cut -d'|' -f1)" = hardhat ]
+  [ "$(dress happy 0 winter christmas)" = "$(dress happy 0 christmas winter)" ]
+  [ "$(dress happy 1 christmas winter | cut -d'|' -f1)" = hardhat ]
+  [ "$(dress happy 1 | cut -d'|' -f1)" = hardhat ]
   _MM_OCC_YEARS=3
-  [ "$(dress happy 100 0 newyear anniversary)" = "party|confetti|||Happy New Year/3 years keeping this machine tidy" ]
-  [ "$(dress happy 100 0 valentine anniversary | cut -d'|' -f1,2)" = "party|heart" ]
-  # Two patterns for one end of the rule: the upper row's; one for each place combines.
-  [ "$(dress happy 100 0 friday13 spooky | cut -d'|' -f4)" = web ]
-  [ "$(dress happy 100 0 friday13 winter | cut -d'|' -f4)" = "cat snow" ]
-}
-
-@test "dress: on Groundhog Day the marmot sees its shadow unless health is 100" {
-  [ "$(dress neutral 90 0 groundhog winter | cut -d'|' -f4)" = "shadow snow" ]
-  [ "$(dress happy 100 0 groundhog winter | cut -d'|' -f4)" = snow ]
-  [ "$(dress happy "" 0 groundhog | cut -d'|' -f4)" = "" ]
-  [ "$(dress neutral 90 0 groundhog | cut -d'|' -f5)" != "$(dress happy 100 0 groundhog | cut -d'|' -f5)" ]
+  [ "$(dress happy 0 newyear anniversary)" = "party|fireworks||||Happy New Year/3 years keeping this machine tidy" ]
+  [ "$(dress happy 0 valentine anniversary | cut -d'|' -f1,2)" = "party|heart" ]
+  # The rule: one prop per place, the upper row's; one for each place combines.
+  [ "$(dress happy 0 friday13 spooky | cut -d'|' -f5)" = "pumpkin web" ]
+  [ "$(dress happy 0 friday13 winter | cut -d'|' -f5)" = "cat snow" ]
+  # The teeth: the upper row's too, the other row's other slots still show.
+  MM_CALENDAR=('first|01-01|||||fangs|' 'second|01-01||heart|||gap|')
+  [ "$(dress happy 0 second first | cut -d'|' -f2,4)" = "heart|fangs" ]
+  [ "$(dress happy 0 second | cut -d'|' -f4)" = gap ]
 }
 
 # log_rows ROW... — operations-log rows (TSV).
@@ -116,7 +116,7 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   # The review needs a run that freed something last year; without one there is nothing to say.
   log_rows $'2026-03-01T10:00:00+00:00\tclean\trefused\t/x\t0\tin use\tR0'
   mm_log_facts "$(date -d '2027-01-03 12:00' +%s)"
-  [ "$(dress happy 100 0 review)" = "||||" ]
+  [ "$(dress happy 0 review)" = "|||||" ]
   log_rows $'2026-03-01T10:00:00+00:00\tclean\tremove\t'"$HOME"$'/code/web/node_modules\t2254857830\t\tR1' \
     $'2026-03-01T10:00:01+00:00\tclean\trun\tnpm cache\t1048576\t\tR1' \
     $'2026-05-01T10:00:00+00:00\tpurge\ttrash\t/t/doc\t9999999999\t/t\tR2' \
@@ -127,40 +127,116 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   [ "$MM_FACT_PREV_BIG_AT" = "~/code/web/node_modules" ]
   [ "$MM_FACT_BIG_AT" = "~/code/web/node_modules" ]
   [ "$MM_FACT_SINCE" = "$(date -d '2026-03-01T10:00:00+00:00' +%s)" ]
-  [ "$(dress happy 100 0 review)" != "||||" ]
-  [[ "$(dress happy 100 0 muertos)" == *"~/code/web/node_modules"* ]]
-  [[ "$(dress happy 100 0 thanksgiving)" == *"$MM_FACT_YEAR_FREED"* ]]
+  [ "$(dress happy 0 review)" != "|||||" ]
+  [[ "$(dress happy 0 muertos)" == *"~/code/web/node_modules"* ]]
+  [[ "$(dress happy 0 thanksgiving)" == *"$MM_FACT_YEAR_FREED"* ]]
   [ "$MM_FACT_YEAR_FREED" = 1.0MB ]
   # Without a log: the plain greetings, no placeholders.
   rm "$XDG_STATE_HOME/marmot/operations.log"
   mm_log_facts
   [ -z "$MM_FACT_BIG_AT$MM_FACT_YEAR_FREED$MM_FACT_SINCE" ]
-  [[ "$(dress happy 100 0 muertos thanksgiving)" != *"("* ]]
+  [[ "$(dress happy 0 muertos thanksgiving)" != *"("* ]]
 }
 
-@test "draw: always five rows, 21 columns for the marmot and the rule to the width asked" {
-  local mood hat mark eyes rule row i=0
-  export LC_ALL=C.UTF-8
-  for mood in "${!MM_FACES[@]}"; do
-    for hat in "" "${!MM_HATS[@]}"; do
-      for mark in "" "${!MM_MARKS[@]}"; do
-        for eyes in "" jack groucho pirate; do
-          for rule in "" "snow shadow" "snow web" cat; do
-            i=$((i + 1))
-            MM_LOOK_HAT=$hat MM_LOOK_MARK=$mark MM_LOOK_EYES=$eyes MM_LOOK_RULE=$rule MM_LOOK_CHEEKS=$((i % 2)) MM_LOOK_BLINK=$((i / 2 % 2)) MM_LOOK_GREET=""
-            mm_marmot_draw "$mood" 60
-            [ "${#MM_ART[@]}" -eq 5 ]
-            for row in "${MM_ART[@]:0:4}"; do ((${#row} <= 21)) || { echo "$mood/$hat/$mark/$eyes: [$row]"; false; }; done
-            [ "${#MM_ART[4]}" -eq 60 ]
-          done
-        done
-      done
-    done
+# names SLOT — the names MM_PARTS draws for SLOT (hat, mark, rule, teeth), one per line.
+names() {
+  local p
+  for p in "${MM_PARTS[@]}"; do p=${p%%|*} && [[ "$p" == "$1":* ]] && echo "${p#*:}"; done | sort -u
+}
+
+# check MOOD LABEL — draw MOOD as the MM_LOOK_* say, 60 columns wide with every color on, and
+# print LABEL when the drawing breaks a rule: printable ASCII only once the color escapes are
+# stripped, five or six rows, the rule 60 columns and nothing longer, and the title, facts and
+# greeting from column 21 with a blank column before them.
+check() {
+  local r n bad=""
+  local -a rows=()
+  mm_marmot_draw "$1" 60 title facts "$C_GREEN"
+  for r in "${MM_ART[@]}"; do
+    r=${r//"$esc"[0-9]m/} && r=${r//"$esc"[0-9][0-9]m/}
+    [[ "$r" == *[!\ -~]* ]] && bad=" not ASCII"
+    rows+=("$r")
   done
-  # The text beside it starts at column 21 on every row that has one.
-  MM_LOOK_CHEEKS=1 MM_LOOK_GREET=hi
-  mm_marmot_draw alert 60 title facts
-  [ "${MM_ART[1]:21}" = title ] && [ "${MM_ART[2]:21}" = facts ] && [ "${MM_ART[3]:21}" = hi ]
+  n=${#rows[@]}
+  ((n == 5 || n == 6)) || bad+=" $n rows"
+  [[ ${#rows[n - 1]} -eq 60 && ${#rows[0]} -le 60 && ${#rows[1]} -le 60 && "${rows[n - 4]:20}" == " title" &&
+    "${rows[n - 3]:20}" == " facts" && "${rows[n - 2]:20}" == " hi" ]] || bad+=" out of place"
+  [[ -z "$bad" ]] || echo "$2:$bad"
+}
+
+# look HAT MARK EYES RULE TEETH OVERLAY — the MM_LOOK_* for a drawing; OVERLAY is "", CHEEKS=1,
+# BLINK=N or WAVE=N.
+look() {
+  MM_LOOK_HAT=$1 MM_LOOK_MARK=$2 MM_LOOK_EYES=$3 MM_LOOK_RULE=$4 MM_LOOK_TEETH=$5
+  MM_LOOK_CHEEKS=0 MM_LOOK_BLINK=0 MM_LOOK_WAVE=0 MM_LOOK_GREET=hi
+  [[ -z "$6" ]] || printf -v "MM_LOOK_${6%=*}" %s "${6#*=}"
+}
+
+# draw_all MOOD — check MOOD with every hat, mark, eyes, rule and teeth (the caller's arrays), each
+# combination with one overlay in turn so that every overlay meets every value of every slot; then
+# every overlay with every hat, rule and teeth, which share its cells.
+draw_all() {
+  local mood=$1 h m e r t o LC_ALL=C esc=$'\e['
+  local C_BOLD=$'\e[1m' C_DIM=$'\e[2m' C_RED=$'\e[31m' C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m'
+  local C_BLUE=$'\e[34m' C_MAGENTA=$'\e[35m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
+  for h in "${!hats[@]}"; do for m in "${!marks[@]}"; do for e in "${!eyes[@]}"; do
+    for r in "${!rules[@]}"; do for t in "${!teeth[@]}"; do
+      o=${overs[(h + m + e + r + t) % ${#overs[@]}]}
+      look "${hats[h]}" "${marks[m]}" "${eyes[e]}" "${rules[r]}" "${teeth[t]}" "$o"
+      check "$mood" "$mood/${hats[h]}/${marks[m]}/${eyes[e]}/${rules[r]}/${teeth[t]}/$o"
+    done; done
+  done; done; done
+  for o in "${overs[@]}"; do for h in "${hats[@]}"; do for r in "${rules[@]}"; do for t in "${teeth[@]}"; do
+    look "$h" "" "" "$r" "$t" "$o"
+    check "$mood" "$mood/$h///$r/$t/$o"
+  done; done; done; done
+}
+
+@test "draw: every mood, hat, mark, eyes, rule, teeth and overlay is printable ASCII in its place" {
+  local -a hats marks rules teeth eyes overs pids=()
+  local mood
+  mapfile -t hats < <(echo; names hat)
+  mapfile -t marks < <(echo; names mark)
+  mapfile -t rules < <(echo; names rule; echo "pumpkin web")
+  mapfile -t teeth < <(echo; names teeth)
+  eyes=("" "${!MM_EYES[@]}")
+  overs=("" CHEEKS=1 BLINK=1 BLINK=2 WAVE=1 WAVE=2)
+  [ "${#hats[@]}" -eq 4 ] && [ "${#marks[@]}" -eq 5 ] && [ "${#rules[@]}" -eq 9 ] && [ "${#teeth[@]}" -eq 2 ]
+  # One process per mood, 2232 drawings each, without bats' per-command trap (it would take the
+  # loop from seconds to an hour).
+  for mood in "${!MM_FACES[@]}"; do
+    (trap - DEBUG ERR && set +eET && draw_all "$mood") >"$BATS_TEST_TMPDIR/broken.$mood" &
+    pids+=("$!")
+  done
+  wait "${pids[@]}"
+  cat "$BATS_TEST_TMPDIR"/broken.*
+  [ -z "$(cat "$BATS_TEST_TMPDIR"/broken.*)" ]
+}
+
+@test "draw: a sky row only when something reaches above the head; the texts keep their rows" {
+  local MM_LOOK_GREET=hi MM_LOOK_HAT="" MM_LOOK_MARK="" MM_LOOK_EYES="" MM_LOOK_RULE="" MM_LOOK_TEETH=""
+  mm_marmot_draw happy 60 title facts
+  [ "${#MM_ART[@]}" -eq 5 ] && [ "${MM_ART[1]:21}" = title ] && [ "${MM_ART[3]:21}" = hi ]
+  MM_LOOK_HAT=party
+  mm_marmot_draw happy 60 title facts
+  [ "${#MM_ART[@]}" -eq 6 ] && [ "${MM_ART[2]:21}" = title ] && [ "${MM_ART[3]:21}" = facts ] && [ "${MM_ART[4]:21}" = hi ]
+  MM_LOOK_HAT=""
+  mm_marmot_draw night 60 title
+  [ "${#MM_ART[@]}" -eq 6 ]
+  # Fireworks over the title need the room: on a narrow rule the ones that do not fit are left out.
+  MM_LOOK_MARK=fireworks
+  mm_marmot_draw happy 30 title
+  [ "${#MM_ART[@]}" -eq 6 ] && [ "${#MM_ART[0]}" -le 30 ] && [ "${#MM_ART[1]}" -le 30 ]
+}
+
+@test "draw: open eyes blink through a half lid; closed ones and festive eyes stay as they are" {
+  local MM_LOOK_HAT="" MM_LOOK_MARK="" MM_LOOK_EYES="" MM_LOOK_RULE="" MM_LOOK_TEETH="" b
+  for b in 0 1 2; do MM_LOOK_BLINK=$b mm_marmot_draw happy 60 && echo "${MM_ART[2]}"; done >"$BATS_TEST_TMPDIR/happy"
+  [ "$(cat "$BATS_TEST_TMPDIR/happy")" = "$(printf '   |  %s    %s  |\n' ^ ^ - - _ _)" ]
+  MM_LOOK_BLINK=2 mm_marmot_draw sleepy 60
+  [ "${MM_ART[2]}" = "   |  -    -  |" ]
+  MM_LOOK_BLINK=2 MM_LOOK_EYES=jack mm_marmot_draw happy 60
+  [ "${MM_ART[2]}" = '   | /\    /\ |' ]
 }
 
 @test "festive = off takes the calendar off everything and leaves the moods, milestones and eggs" {
@@ -180,9 +256,8 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   ST_NOW=$(date -d '2026-12-25 12:00' +%s) ST_LAST=0 ST_DAY=""
   _status_facts
   [ "${#ST_OCC[@]}" -eq 0 ]
-  run mm whistle
+  run mm moo
   [ "$status" -eq 0 ]
-  [[ "$output" == *"     _..--.._  ♫~"* ]]
   # Off is also no, false and 0; anything else, and no config at all, is on.
   local v
   for v in no false 0 OFF; do

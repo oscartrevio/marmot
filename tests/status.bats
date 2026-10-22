@@ -765,6 +765,7 @@ exit 0'
   local i
   fake_agent codex
   for i in 1 2 3; do mkdir -p "$SB/w$i"; detached "$SB/w$i" "$SB/bin/codex" 30; done
+  mm_test_now '2026-06-10 12:00' # a plain day: the five-row marmot
   status_lib '_status_init; _status_first 0
     _status_frame_compact 80; printf "%s\n" "${ST_FRAME[@]}" >"$HOME/tall"
     _status_frame_compact 80 $((${#ST_FRAME[@]} - 1)); printf "%s\n" "${ST_FRAME[@]}" >"$HOME/short"

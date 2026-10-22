@@ -53,9 +53,9 @@ fi
 _mm_color_ok() { [[ -t "$1" && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; }
 if _mm_color_ok 1; then
   C_BOLD=$'\e[1m' C_DIM=$'\e[2m' C_RED=$'\e[31m' C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m'
-  C_BLUE=$'\e[34m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
+  C_BLUE=$'\e[34m' C_MAGENTA=$'\e[35m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
 else
-  C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
+  C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN="" C_RESET=""
 fi
 if _mm_color_ok 2; then
   CE_DIM=$'\e[2m' CE_RED=$'\e[31m' CE_YELLOW=$'\e[33m' CE_CYAN=$'\e[36m' CE_RESET=$'\e[0m'
@@ -1298,7 +1298,7 @@ mm_occasions_now() {
 mm_greeting() {
   mm_now
   mm_occasions_now "$REPLY"
-  mm_marmot_dress happy "" 0 "${MM_OCC[@]}"
+  mm_marmot_dress happy 0 "${MM_OCC[@]}"
   REPLY=${MM_LOOK_GREETS[0]:-}
 }
 
@@ -1357,7 +1357,7 @@ mm_milestone_line() {
     [[ "$id" == anniversary || "$id" == review ]] || continue
     printf -v key '%s %(%Y)T' "$id" "$now"
     grep -qxF -- "$key" "$MM_CELEBRATED" 2>/dev/null && continue
-    _mm_greeting "$id" ""
+    _mm_greeting "$id"
     [[ -n "$REPLY" ]] || continue
     [[ "$id" == anniversary ]] && REPLY="Happy anniversary: $REPLY"
     lines+=("$REPLY.")

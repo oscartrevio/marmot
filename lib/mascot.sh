@@ -1,95 +1,165 @@
 # shellcheck shell=bash
 # The marmot: how it is drawn (mm status's header, install.sh's closing art) and what day it is.
 # Two layers that never hide each other:
-#   face         how the machine is: the eyes, a mark after the head (z Z, !, c[_], ✦) and the
-#                cheeks. The caller picks the mood (mm status: _status_mood); it is drawn as is.
-#   decorations  what day it is: a hat, a mark before the head, patterns on the rule, eyes for a
-#                calm face, greeting lines. mm_occasions finds the day's rows in MM_CALENDAR,
+#   face         how the machine is: the eyes, a mark beside the head (z Z, !, a mug of coffee,
+#                +*) and the cheeks. The caller picks the mood (mm status: _status_mood); it is
+#                drawn as is.
+#   decorations  what day it is: a hat, a mark around the head, props on the rule, eyes for a calm
+#                face, the teeth, greeting lines. mm_occasions finds the day's rows in MM_CALENDAR,
 #                mm_marmot_dress turns them into MM_LOOK_* slots.
-# mm_marmot_draw draws both from MM_LOOK_*, so any combination can also be drawn on purpose.
+# mm_marmot_draw draws both from MM_LOOK_*, so any combination can also be drawn on purpose; all
+# of it is art in MM_PARTS and MM_EYES, none in code.
 # Sourcing this file defines names only; nothing here writes a file or runs a command but `date`
 # for a YYYY-MM-DD argument: install.sh sources it as it is.
-# Every glyph is one terminal column wide in every locale (Unicode East Asian Width N or Na) and
-# none is an emoji; the face's shape carries its meaning without color.
+# Every character drawn is printable ASCII (0x20-0x7E): one column in every terminal and font,
+# never an emoji or a glyph from a fallback font. The shapes carry the meaning without color.
 
-# Moods → "LEFT RIGHT OPEN": the eyes, and 1 when they are open (only open eyes blink). whistle
-# is mm whistle's own.
+# Moods → "LEFT RIGHT OPEN": the eyes, and 1 when they are open (only open eyes blink).
 declare -gA MM_FACES=(
   [happy]='^ ^ 1' [proud]='^ ^ 1' [neutral]='o o 1' [alert]='O O 1' [squint]='> < 0'
-  [dizzy]='x x 0' [sleepy]='- - 0' [night]='- o 0' [tired]='¬ ¬ 0' [whistle]='^ ^ 0'
+  [dizzy]='x x 0' [sleepy]='- - 0' [night]='- o 0' [tired]='= = 0'
 )
-# Moods → "COLOR TEXT": the mark after the head (COLOR names a C_* variable).
-declare -gA MM_FACE_MARKS=(
-  [alert]='C_YELLOW !' [sleepy]='C_DIM z Z' [night]='C_DIM c[_]' [proud]='C_YELLOW ✦'
-  [whistle]='C_CYAN ♫~'
+# Festive eyes → "INK|EYES": the ten columns inside the face on the eyes row. L and R are the
+# mood's own eyes (and blink); the rest is drawn in INK (see MM_PARTS).
+declare -gA MM_EYES=(
+  [groucho]='.| (L)--(R) ' [pirate]='.|  #    R  ' [jack]='y| /\    /\ ' [calavera]='y| (*)  (*) '
 )
-# True things about marmots, for mm whistle (one a day).
-MM_MARMOT_FACTS=(
-  "Marmots whistle a sharp alarm to warn their colony; that is why groundhogs are called whistle pigs."
-  "A groundhog is a marmot: Marmota monax, the most widespread of the 15 marmot species."
-  "Alpine marmots hibernate six to eight months a year, the whole family in one burrow."
-  "Hibernating Alpine marmots huddle together, and the adults keep the young ones warm."
-  "In hibernation a marmot's heart beats only a few times a minute."
-  "Marmots store no food for winter: they fatten up all summer and live off the fat."
-  "Marmots line their winter burrows with dry grass they cut and carry in at the end of summer."
-  "Alaska made February 2 Marmot Day in 2009: not only the groundhog gets a day."
-  "Marmots are the heaviest members of the squirrel family."
-  "Alpine marmots whistle once for an eagle overhead, and again and again for a fox on the ground."
-  "The Olympic marmot lives nowhere but the mountains of Washington's Olympic Peninsula."
-  "The Vancouver Island marmot is one of the rarest mammals in North America."
+# Everything else drawn, one part per line: "NAME|ROW|COL|INK|TEXT", in drawing order (a later
+# part covers an earlier one, spaces too). NAME is SLOT:NAME (the slots of mm_marmot_draw).
+#   ROW   0 the sky (a row above the head, drawn only when a part is there), 1 the top of the
+#         head, 2 the ears, 3 the eyes, 4 the cheeks, 5 the rule.
+#   COL   the first column. On rows 2 to 4 a part ends before column 20, a blank column ahead of
+#         the caller's text; on the others it ends inside the width. -N: N columns from the rule's
+#         right end; START+STEP: again every STEP columns to the end; +N: N after the head or hat
+#         on row 1 (the face's marks).
+#   INK   . plain, d dim, w bold, r g y b m c red green yellow blue magenta cyan.
+# A part that does not fit is left out.
+# shellcheck disable=SC1003 # art ends in a backslash inside single quotes, as meant
+MM_PARTS=(
+  'marmot:|1|5|.|_..--.._'
+  "marmot:|2|2|.|()'        '()"
+  'marmot:|3|3|.||          |'
+  'marmot:|4|2|.|.--.  \/  .--.'
+  'marmot:|5|2|.|(mm)--UU--(mm)'
+  'marmot:|5|6|d|--'
+  'marmot:|5|10|d|--'
+  # Hats: a cone with a pom-pom and dots; floppy, with a fur brim and a pom-pom; a dome with a
+  # ridge and a brim.
+  'hat:party|0|8|y|()'
+  'hat:party|1|5|c|  /**\  '
+  'hat:party|1|8|m|**'
+  'hat:party|2|5|c|_/o*o*\_'
+  'hat:party|2|7|y|o'
+  'hat:party|2|9|y|o'
+  'hat:party|2|8|m|*'
+  'hat:party|2|10|m|*'
+  'hat:santa|0|6|r|_.---._'
+  'hat:santa|1|5|r|/       `\.'
+  'hat:santa|2|5|w|{######}'
+  'hat:santa|2|17|w|@'
+  'hat:hardhat|0|6|y|.-||-.'
+  'hat:hardhat|1|4|y|_/__||__\_'
+  # Marks: before the head, in the sky, over the title.
+  'mark:heart|1|2|r|<3'
+  'mark:pi|1|0|c|3.14'
+  'mark:fireworks|0|0|y|.\|/.'
+  "mark:fireworks|1|0|y|'/|\\'"
+  'mark:fireworks|0|27|r|\|/'
+  'mark:fireworks|1|27|r|/|\'
+  'mark:fireworks|1|32|m|*'
+  'mark:fireworks|0|35|c|.\|/.'
+  "mark:fireworks|1|35|c|'/|\\'"
+  'mark:fireworks|0|42|y|*'
+  'mark:fireworks|0|45|m|\|/'
+  'mark:fireworks|1|45|m|/|\'
+  'mark:picado|0|0|d|~[#]~[#]~[#]~[#]~[#]~'
+  'mark:picado|0|1|m|[#]'
+  'mark:picado|0|5|y|[#]'
+  'mark:picado|0|9|c|[#]'
+  'mark:picado|0|13|r|[#]'
+  'mark:picado|0|17|g|[#]'
+  # On the rule, by place (MM_RULE_AT): all of it first, then its ends and beside the right paw.
+  'rule:snow|5|23+17|d|*'
+  'rule:snow|5|26+11|d|.'
+  'rule:marigolds|5|18+5|g|,@,'
+  'rule:marigolds|5|19+5|y|@'
+  'rule:web|5|-9|d|/\oo/\'
+  'rule:cat|5|-8|d|=^.^='
+  'rule:saber|5|16|w|[|||]'
+  'rule:saber|5|21|c|===================='
+  'rule:pumpkin|4|18|g|_)'
+  'rule:pumpkin|5|16|y|(^vvv^)'
+  'rule:tree|3|16|g|.@@.'
+  'rule:tree|4|16|g|@@@@'
+  'rule:tree|5|17|y|||'
+  # Teeth: vampire fangs beside the incisors.
+  'teeth:fangs|5|7|w|V'
+  'teeth:fangs|5|10|w|V'
+  # The face's marks, after the head or hat.
+  'face:sleepy|1|+0|d|z Z'
+  'face:alert|1|+0|y|!'
+  'face:proud|1|+0|y|+*'
+  'face:night|0|+1|d|) ) )'
+  'face:night|1|+0|.||___|)'
+  'face:cheeks|3|2|.|('
+  'face:cheeks|3|15|.|)'
+  # Waving (mm status's live view, key w): the right paw up beside the face, swinging between
+  # two poses, its place on the rule empty.
+  'wave:1|2|17|.|\\'
+  'wave:1|3|16|.|(mm)'
+  'wave:1|4|16|.|/'
+  'wave:1|5|12|d|----'
+  'wave:2|2|18|.|//'
+  'wave:2|3|16|.|(mm)'
+  'wave:2|4|16|.|/'
+  'wave:2|5|12|d|----'
 )
-# Hats → "COLOR TEXT": eight columns that replace the top of the head.
-declare -gA MM_HATS=([hardhat]='C_YELLOW _/====\_' [santa]='C_RED {~~~~~}o' [party]='C_CYAN _../\.._')
-# Marks → "COLOR TEXT": at most four columns before the head.
-declare -gA MM_MARKS=(
-  [heart]='C_RED <3' [confetti]="C_YELLOW *.'*" [pi]='C_CYAN 3.14' [leaf]='C_GREEN ❧'
-  [saber]='C_CYAN [|==' [pumpkin]='C_YELLOW (|)' [flower]='C_YELLOW ✿'
-)
-# Rule patterns → where they go on the rule: bg (the whole rule), left or right (its ends). One
-# pattern per place; see mm_marmot_draw for their shapes.
-declare -gA MM_RULE_AT=([snow]=bg [shadow]=left [web]=right [cat]=right)
+# Rule props → their place: bg (along the whole rule), right (its right end) or paw (beside the
+# right paw). One prop per place.
+declare -gA MM_RULE_AT=([snow]=bg [marigolds]=bg [web]=right [cat]=right [saber]=paw [pumpkin]=paw [tree]=paw)
 
-# The calendar: one occasion per row, "id|when|hat|mark|rule|eyes|greeting", in priority order:
-# when two occasions want the same slot (a hat, a mark, the eyes, one place on the rule) the upper
-# row's wins and the other's other slots still show; every greeting is kept, in this order.
+# The calendar: one occasion per row, "id|when|hat|mark|rule|eyes|teeth|greeting", in priority
+# order: when two occasions want the same slot (a hat, a mark, the eyes, the teeth, one place on
+# the rule) the upper row's wins and the other's other slots still show; every greeting is kept,
+# in this order.
 #   when      MM-DD; MM-DD~MM-DD, a range (it may wrap the new year); nth:MONTH:WEEKDAY:N, the
 #             Nth WEEKDAY (1 Monday ... 7 Sunday) of MONTH, N = -1 the last; yday:N, the Nth day
 #             of the year; dow:WEEKDAY:DAY, that weekday on that day of a month; epoch, the day
 #             Unix time passes a multiple of 100 million seconds; anniv, the day marmot first ran
 #             here (mm_occasions' SINCE), every year after.
-#   hat, mark, rule, eyes
-#             names in MM_HATS, MM_MARKS, MM_RULE_AT, and jack, groucho or pirate for the eyes,
-#             worn by a calm face only (happy, sleepy, proud); a problem face keeps its own.
+#   hat, mark, rule, teeth
+#             part names in MM_PARTS (hat:NAME, ...); rule may name several, one per place.
+#   eyes      a name in MM_EYES, worn by a calm face only (happy, sleepy, proud); a problem face
+#             keeps its own.
 #   greeting  a line beside the paws; "@" has _mm_greeting word it.
 MM_CALENDAR=(
-  'christmas|12-24~12-26|santa||||Merry Christmas'
-  "newyear|12-31~01-01|party|confetti|||Happy New Year"
-  'anniversary|anniv|party|heart|||@'
-  'review|01-01~01-07|||||@'
-  'groundhog|02-02|||shadow||@'
-  "valentine|02-14||heart|||Happy Valentine's Day"
-  'leapday|02-29|||||A bonus day: 24 more hours for your agents'
-  'piday|03-14||pi|||Happy Pi Day: 3.14159265...'
-  "stpatrick|03-17|||||Happy St. Patrick's Day"
-  'backup|03-31|||||World Backup Day: marmot frees space and keeps no copies, so back up today'
-  'aprilfools|04-01||||groucho|April Fools: the glasses are fake, the numbers are real'
-  'earthday|04-22||leaf|||Earth Day: every byte freed is a byte nobody stores'
-  'starwars|05-04||saber|||May the free space be with you.'
-  "towel|05-25|||||Towel Day: Don't panic."
-  "sysadmin|nth:7:5:-1|||||Happy Sysadmin Day (that's you)"
-  'debian|08-16|party||||@'
-  'linux|08-25|party||||@'
-  'programmers|yday:256|||||Happy 0x100th day, programmers'
-  'mexico|09-15~09-16|||||Viva Mexico!'
-  'pirate|09-19||||pirate|Arr, it be Talk Like a Pirate Day'
-  "ada|nth:10:2:2|||||Ada Lovelace Day: she programmed a machine nobody had built yet"
-  'halloween|10-31||pumpkin|web|jack|Happy Halloween'
-  'spooky|10-24~10-30||pumpkin|web||'
-  'muertos|11-01~11-02||flower|||@'
-  'thanksgiving|nth:11:4:4|||||@'
-  'friday13|dow:5:13|||cat||Friday the 13th: marmot checks twice, as always'
-  'unixtime|epoch|||||@'
-  'winter|12-01~02-29|||snow||'
+  'christmas|12-24~12-26|santa|||||Merry Christmas'
+  "newyear|12-31~01-01|party|fireworks||||Happy New Year"
+  'anniversary|anniv|party|heart||||@'
+  'review|01-01~01-07||||||@'
+  "valentine|02-14||heart||||Happy Valentine's Day"
+  'leapday|02-29||||||A bonus day: 24 more hours for your agents'
+  'piday|03-14||pi||||Happy Pi Day: 3.14159265...'
+  "stpatrick|03-17||||||Happy St. Patrick's Day"
+  'backup|03-31||||||World Backup Day: marmot frees space and keeps no copies, so back up today'
+  'aprilfools|04-01||||groucho||April Fools: the glasses are fake, the numbers are real'
+  'earthday|04-22|||tree|||Earth Day: every byte freed is a byte nobody stores'
+  'starwars|05-04|||saber|||May the free space be with you.'
+  "towel|05-25||||||Towel Day: Don't panic."
+  "sysadmin|nth:7:5:-1||||||Happy Sysadmin Day (that's you)"
+  'debian|08-16|party|||||@'
+  'linux|08-25|party|||||@'
+  'programmers|yday:256||||||Happy 0x100th day, programmers'
+  'mexico|09-15~09-16||||||Viva Mexico!'
+  'pirate|09-19||||pirate||Arr, it be Talk Like a Pirate Day'
+  "ada|nth:10:2:2||||||Ada Lovelace Day: she programmed a machine nobody had built yet"
+  'halloween|10-31|||pumpkin web|jack|fangs|Happy Halloween'
+  'spooky|10-24~10-30|||pumpkin web||fangs|'
+  'muertos|11-01~11-02||picado|marigolds|calavera||@'
+  'thanksgiving|nth:11:4:4||||||@'
+  'friday13|dow:5:13|||cat|||Friday the 13th: marmot checks twice, as always'
+  'unixtime|epoch||||||@'
+  'winter|12-01~02-29|||snow|||'
 )
 
 # mm_now — the time now (epoch seconds) in REPLY. The test suite points MM_TEST_NOW at a file
@@ -176,9 +246,9 @@ mm_occasions() {
   return 0
 }
 
-# _mm_greeting ID SCORE — the greeting of a "@" row in REPLY, from the date mm_occasions saw,
-# the health SCORE (empty: unknown) and the operations log's MM_FACT_* (lib/core.sh
-# mm_log_facts; empty when unknown); empty when there is nothing to say.
+# _mm_greeting ID — the greeting of a "@" row in REPLY, from the date mm_occasions saw and the
+# operations log's MM_FACT_* (lib/core.sh mm_log_facts; empty when unknown); empty when there is
+# nothing to say.
 _mm_greeting() {
   local s
   REPLY=""
@@ -195,11 +265,6 @@ _mm_greeting() {
       REPLY="Last year marmot freed $MM_FACT_PREV_FREED on this machine in $MM_FACT_PREV_RUNS run$s"
       REPLY+="; biggest win $MM_FACT_PREV_BIG_AT ($MM_FACT_PREV_BIG)"
       ;;
-    groundhog)
-      if [[ -z "$2" ]]; then REPLY="Groundhog Day, and Marmot Day in Alaska"
-      elif (($2 < 100)); then REPLY="Marmot Day: it saw its shadow, six more weeks of cleanup"
-      else REPLY="Marmot Day: no shadow, an early spring"; fi
-      ;;
     debian) REPLY="Happy Debian Day: $((_MM_OCC_YEAR - 1993)) years of Debian" ;;
     linux) REPLY="Happy birthday, Linux: $((_MM_OCC_YEAR - 1991)) today" ;;
     muertos)
@@ -215,30 +280,32 @@ _mm_greeting() {
   return 0
 }
 
-# mm_marmot_dress MOOD SCORE ATWORK ID... — the decorations of occasions ID... (mm_occasions'
-# MM_OCC) on a marmot with face MOOD into MM_LOOK_HAT, MM_LOOK_MARK, MM_LOOK_EYES, MM_LOOK_RULE
-# (pattern names) and MM_LOOK_GREETS (lines). Slots go by calendar order, whatever the order of
-# ID...; festive eyes only on a calm face (happy, sleepy, proud). ATWORK 1 (a marmot cleanup is
-# running) wears the hard hat over any other hat. SCORE (health; empty: unknown) decides whether
-# the marmot sees its shadow on Groundhog Day: below 100 it does.
+# mm_marmot_dress MOOD ATWORK ID... — the decorations of occasions ID... (mm_occasions' MM_OCC) on
+# a marmot with face MOOD into MM_LOOK_HAT, MM_LOOK_MARK, MM_LOOK_EYES, MM_LOOK_TEETH,
+# MM_LOOK_RULE (names, space-separated) and MM_LOOK_GREETS (lines). Slots go by calendar order,
+# whatever the order of ID...; festive eyes only on a calm face (happy, sleepy, proud). ATWORK 1
+# (a marmot cleanup is running) wears the hard hat over any other hat.
 mm_marmot_dress() {
-  local mood=$1 score=$2 work=$3 row id hat mark rule eyes greet
+  local mood=$1 work=$2 row id hat mark rules eyes teeth greet p
+  local -a pats
   local -A want=() at=()
-  shift 3
+  shift 2
   for id; do want[$id]=1; done
-  MM_LOOK_HAT="" MM_LOOK_MARK="" MM_LOOK_EYES="" MM_LOOK_RULE="" MM_LOOK_GREETS=()
+  MM_LOOK_HAT="" MM_LOOK_MARK="" MM_LOOK_EYES="" MM_LOOK_TEETH="" MM_LOOK_RULE="" MM_LOOK_GREETS=()
   for row in "${MM_CALENDAR[@]}"; do
-    IFS='|' read -r id _ hat mark rule eyes greet <<<"$row"
+    IFS='|' read -r id _ hat mark rules eyes teeth greet <<<"$row"
     [[ -n "${want[$id]:-}" ]] || continue
-    [[ "$id" == groundhog ]] && { [[ -n "$score" ]] && ((score < 100)) || rule=""; }
     [[ -z "$MM_LOOK_HAT" ]] && MM_LOOK_HAT=$hat
     [[ -z "$MM_LOOK_MARK" ]] && MM_LOOK_MARK=$mark
     [[ -z "$MM_LOOK_EYES" ]] && MM_LOOK_EYES=$eyes
-    if [[ -n "$rule" && -z "${at[${MM_RULE_AT[$rule]}]:-}" ]]; then
-      at[${MM_RULE_AT[$rule]}]=1
-      MM_LOOK_RULE+="${MM_LOOK_RULE:+ }$rule"
-    fi
-    if [[ "$greet" == @ ]]; then _mm_greeting "$id" "$score"; greet=$REPLY; fi
+    [[ -z "$MM_LOOK_TEETH" ]] && MM_LOOK_TEETH=$teeth
+    read -r -a pats <<<"$rules"
+    for p in "${pats[@]}"; do
+      [[ -z "${at[${MM_RULE_AT[$p]}]:-}" ]] || continue
+      at[${MM_RULE_AT[$p]}]=1
+      MM_LOOK_RULE+="${MM_LOOK_RULE:+ }$p"
+    done
+    if [[ "$greet" == @ ]]; then _mm_greeting "$id"; greet=$REPLY; fi
     [[ -n "$greet" ]] && MM_LOOK_GREETS+=("$greet")
   done
   [[ "$mood" == happy || "$mood" == sleepy || "$mood" == proud ]] || MM_LOOK_EYES=""
@@ -246,72 +313,101 @@ mm_marmot_dress() {
   return 0
 }
 
-# mm_marmot_draw MOOD WIDTH [TITLE] [FACTS] [COLOR] — the marmot as five rows in MM_ART: TITLE
-# beside its ears, FACTS (dimmed) beside its eyes, MM_LOOK_GREET (dimmed) beside its paws, and
-# its paws and teeth on a rule WIDTH columns wide. The marmot takes the first 21 columns; the
-# caller fits the texts into the rest. MOOD is one of MM_FACES, its eyes in COLOR (an escape
-# sequence). The rest is MM_LOOK_*: CHEEKS=1 stuffs its cheeks and BLINK=1 closes open eyes (the
-# face); HAT, MARK, EYES and RULE as mm_marmot_dress sets them (the decorations); WAVE=1 raises
-# its right paw beside its face (mm status's live view, key w).
+# _mm_put ROW COL INK TEXT — TEXT in INK from column COL of row ROW of mm_marmot_draw's canvas
+# (its arrays R, the characters, and K, one ink letter per character).
+_mm_put() {
+  local inks
+  printf -v inks '%*s' "${#4}" ''
+  R[$1]=${R[$1]:0:$2}$4${R[$1]:$2+${#4}}
+  K[$1]=${K[$1]:0:$2}${inks// /$3}${K[$1]:$2+${#4}}
+}
+
+# mm_marmot_draw MOOD WIDTH [TITLE] [FACTS] [COLOR] — the marmot into MM_ART: five rows, six when
+# something reaches the sky above its head. TITLE beside its ears, FACTS (dimmed) beside its eyes,
+# MM_LOOK_GREET (dimmed) beside its cheeks, its paws and teeth on a rule WIDTH columns wide. On
+# the rows with text the marmot keeps to its first 20 columns and the text starts at column 21
+# (the caller fits it into the rest); the sky, the top of the head and the rule may reach WIDTH.
+# MOOD is one of MM_FACES, its eyes in COLOR (an escape sequence). The rest is MM_LOOK_*:
+# CHEEKS=1 stuffs its cheeks, BLINK=1 half-closes open eyes and BLINK=2 shuts them (the face);
+# HAT, MARK, EYES, RULE and TEETH as mm_marmot_dress sets them (the decorations); WAVE=1 or 2
+# raises its right paw beside its face in one of two poses (mm status's live view, key w).
 mm_marmot_draw() {
-  local LC_ALL=C.UTF-8
-  local mood=$1 w=$2 title=${3:-} facts=${4:-} col=${5:-} l r open c t left="     " mark="" head row3 vis
-  local paw='(mm)'
-  local rule n i p
-  local -a pats
-  read -r -a pats <<<"${MM_LOOK_RULE:-}"
-  read -r l r open <<<"${MM_FACES[$mood]:-o o 1}"
-  case ${MM_LOOK_EYES:-} in
-    jack) l=∆ r=∆ ;;
-    pirate) l='#' ;;
-  esac
-  ((${MM_LOOK_BLINK:-0} && open)) && l=- r=-
-  # Row 1: the decoration's mark, the head or a hat, the face's mark.
-  if [[ -n "${MM_LOOK_MARK:-}" && -n "${MM_MARKS[$MM_LOOK_MARK]:-}" ]]; then
-    read -r c t <<<"${MM_MARKS[$MM_LOOK_MARK]}"
-    printf -v left '%*s%s%s%s ' $((4 - ${#t})) '' "${!c}" "$t" "$C_RESET"
-  fi
-  head=_..--.._
-  if [[ -n "${MM_LOOK_HAT:-}" && -n "${MM_HATS[$MM_LOOK_HAT]:-}" ]]; then
-    read -r c t <<<"${MM_HATS[$MM_LOOK_HAT]}"
-    head=${!c}$t$C_RESET
-  fi
-  if [[ -n "${MM_FACE_MARKS[$mood]:-}" ]]; then
-    read -r c t <<<"${MM_FACE_MARKS[$mood]}"
-    mark="  ${!c}$t$C_RESET"
-  fi
-  # Row 3: the eyes (in glasses on April Fools), the cheeks, then FACTS from column 21.
-  if [[ "${MM_LOOK_EYES:-}" == groucho ]]; then row3="| ($col$l$C_RESET)--($col$r$C_RESET) |"
-  else row3="|  $col$l$C_RESET    $col$r$C_RESET  |"; fi
-  vis=12
-  if ((${MM_LOOK_CHEEKS:-0})); then row3="  ($row3)" vis=$((vis + 4)); else row3="   $row3" vis=$((vis + 3)); fi
-  if ((${MM_LOOK_WAVE:-0})); then printf -v row3 '%s%*s(mm)' "$row3" $((16 - vis)) '' && vis=20 paw=$C_DIM----; fi
-  [[ -n "$facts" ]] && printf -v row3 '%s%*s%s%s%s' "$row3" $((21 - vis)) '' "$C_DIM" "$facts" "$C_RESET"
-  # Row 5: the rule, light snow over all of it, a shadow at its left end, a spider's web or a
-  # black cat at its right end.
-  n=$((w > 18 ? w - 18 : 0))
-  printf -v rule '%*s' "$n" ''
-  rule=${rule// /-}
-  for p in "${pats[@]}"; do
-    case $p in
-      snow)
-        for ((i = 3; i < n; i++)); do
-          ((i % 17 == 5)) && rule=${rule:0:i}'*'${rule:i+1}
-          ((i % 11 == 8)) && rule=${rule:0:i}'.'${rule:i+1}
-        done
+  local mood=$1 w=$2 title=${3:-} facts=${4:-} col=${5:-} l r open ink eyes t i c n row at text
+  local step lim line out e run blank right=0 sky=0
+  local -a R K
+  local -A want=()
+  # Here-strings cost a pipe each: the tables are split with expansions instead.
+  t=${MM_FACES[$mood]:-o o 1} && l=${t%% *} && t=${t#* } && r=${t%% *} && open=${t#* }
+  for t in marmot: "hat:${MM_LOOK_HAT:-}" "mark:${MM_LOOK_MARK:-}" "teeth:${MM_LOOK_TEETH:-}" \
+    "face:$mood" "wave:${MM_LOOK_WAVE:-0}"; do
+    want[$t]=1
+  done
+  t=${MM_LOOK_RULE:-}
+  while [[ -n "$t" ]]; do
+    want[rule:${t%% *}]=1
+    if [[ "$t" == *" "* ]]; then t=${t#* }; else t=""; fi
+  done
+  ((${MM_LOOK_CHEEKS:-0})) && want[face:cheeks]=1
+  printf -v blank '%*s' $((w > 21 ? w : 21)) ''
+  for ((i = 0; i < 5; i++)); do R[i]=$blank K[i]=${blank// /.}; done
+  R[5]=${blank// /-} K[5]=${blank// /d}
+  for line in "${MM_PARTS[@]}"; do
+    [[ -n "${want[${line%%|*}]:-}" ]] || continue
+    t=${line#*|} && row=${t%%|*} && t=${t#*|} && at=${t%%|*} && t=${t#*|} && ink=${t%%|*} && text=${t#*|}
+    lim=$w step=0
+    ((row >= 2 && row <= 4)) && lim=20
+    case $at in
+      -*) c=$((w + at)); ((c >= 18)) || continue ;;
+      +*)
+        # The face's marks: two columns after whatever the head wears.
+        if ((!right)); then t=${R[1]:0:17} && t=${t%"${t##*[! ]}"} && right=$((${#t} + 2)); fi
+        c=$((right + ${at#+}))
         ;;
+      *+*) c=${at%+*} step=${at#*+} ;;
+      *) c=$at ;;
     esac
+    while ((c + ${#text} <= lim)); do
+      _mm_put "$row" "$c" "$ink" "$text"
+      ((row)) || sky=1
+      ((step)) || break
+      c=$((c + step))
+    done
   done
-  for p in "${pats[@]}"; do
-    case $p in
-      shadow) ((n >= 12)) && rule='.::::::.'${rule:8} ;;
-      web) ((n >= 12)) && rule=${rule:0:n-9}"/\\oo/\\"${rule:n-3} ;;
-      cat) ((n >= 12)) && rule=${rule:0:n-8}'=^.^='${rule:n-3} ;;
+  # The eyes: the mood's, or festive ones around them; open eyes blink.
+  eyes='  L    R  ' ink=.
+  if [[ -n "${MM_LOOK_EYES:-}" && -n "${MM_EYES[$MM_LOOK_EYES]:-}" ]]; then
+    t=${MM_EYES[$MM_LOOK_EYES]} && ink=${t%%|*} && eyes=${t#*|}
+  fi
+  if ((open)); then
+    case ${MM_LOOK_BLINK:-0} in 1) l=- r=- ;; 2) l=_ r=_ ;; esac
+  fi
+  t=${eyes//L/$l} c=${eyes//[!LR]/$ink}
+  R[3]=${R[3]:0:4}${t//R/$r}${R[3]:14} K[3]=${K[3]:0:4}${c//[LR]/e}${K[3]:14}
+  # Rows into text: a run of one ink at a time, then the caller's text from column 21.
+  MM_ART=()
+  for ((row = 1 - sky; row <= 5; row++)); do
+    line=${R[row]} text=""
+    case $row in
+      2) text=$title ;;
+      3) text=${facts:+$C_DIM$facts$C_RESET} ;;
+      4) text=${MM_LOOK_GREET:+$C_DIM$MM_LOOK_GREET$C_RESET} ;;
+      5) line=${line:0:w} ;;
     esac
+    if [[ -n "$text" ]]; then line=${line:0:21}
+    elif ((row < 5)); then line=${line%"${line##*[! ]}"}; fi
+    out="" i=0
+    while ((i < ${#line})); do
+      e=${K[row]:i:1}
+      run=${K[row]:i:${#line}-i}
+      run=${run%%[!"$e"]*}
+      n=${#run}
+      case $e in
+        d) e=$C_DIM ;; w) e=$C_BOLD ;; e) e=$col ;; r) e=$C_RED ;; g) e=$C_GREEN ;;
+        y) e=$C_YELLOW ;; b) e=$C_BLUE ;; m) e=$C_MAGENTA ;; c) e=$C_CYAN ;; *) e="" ;;
+      esac
+      if [[ -n "$e" ]]; then out+=$e${line:i:n}$C_RESET; else out+=${line:i:n}; fi
+      i=$((i + n))
+    done
+    MM_ART+=("$out$text")
   done
-  MM_ART=("$left$head$mark"
-    "  ()'        '()${title:+     $title}"
-    "$row3"
-    "  .--.  \\/  .--.${MM_LOOK_GREET:+     $C_DIM$MM_LOOK_GREET$C_RESET}"
-    "$C_DIM--$C_RESET(mm)$C_DIM--${C_RESET}UU$C_DIM--$C_RESET$paw$C_DIM--$rule$C_RESET")
 }
