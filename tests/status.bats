@@ -868,19 +868,48 @@ at() { date -d "$1" +%s; }
   [ "${lines[*]}" = "1 hardhat" ]
 }
 
-@test "blink: the live view closes open eyes for a moment every 8-10 s; a snapshot never does" {
+@test "blink: the live view blinks through a half lid now and then; a snapshot never does" {
   # A disk at 85% is a health reason: the face is neutral (o o, open) whatever the agents do;
-  # never sleepy (- -), so closed eyes can only be a blink.
+  # never sleepy (- -), so half-closed (- -) or shut (_ _) eyes can only be a blink.
   mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 850 150 1000 0\n"'
   fake_ss "$LISTEN_SSH" ""
+  mm_test_now '2026-06-10 12:00'
   run env COLUMNS=100 mm status --once
   [ "$status" -eq 0 ]
   grep -qE '^   \|  [o<]    [o>]  \|' <<<"$output"
-  [[ "$output" != *"|  -    -  |"* ]]
-  live 'sleep 21; printf q'
+  [[ "$output" != *"|  -    -  |"* && "$output" != *"|  _    _  |"* ]]
+  live 'sleep 14; printf q'
   [ "$LIVE_STATUS" -eq 0 ]
   grep -qF '   |  o    o  |' <<<"$LIVE_TEXT"
   grep -qF '   |  -    -  |' <<<"$LIVE_TEXT"
+  grep -qF '   |  _    _  |' <<<"$LIVE_TEXT"
+}
+
+@test "blink: 2 to 8 s apart, open → half → shut → half → open, one in about six double" {
+  status_lib '
+    RANDOM=42
+    for ((i = 0; i < 600; i++)); do _status_blink_plan 1; echo "$REPLY ${ST_BLINK_SEQ[*]}"; done
+    _status_blink_plan 0; echo "$REPLY ${ST_BLINK_SEQ[*]}"'
+  [ "$status" -eq 0 ]
+  local line gap seq one="1:0:40000 2:0:100000 1:0:40000" min=9000000 max=0 double=0 single=0 s ms
+  for line in "${lines[@]:0:600}"; do
+    gap=${line%% *} seq=${line#* }
+    ((gap >= 2000000 && gap <= 8000000)) || { echo "gap $gap"; false; }
+    ((gap < min)) && min=$gap
+    ((gap > max)) && max=$gap
+    if [[ "$seq" == "$one 0:0:0" ]]; then single=$((single + 1))
+    elif [[ "$seq" == "$one 0:0:"* && "$seq" == *" $one 0:0:0" ]]; then double=$((double + 1))
+    else echo "frames: $seq"; false; fi
+  done
+  # Random, not a metronome; doubles about one in six (100 of 600 expected).
+  ((min < 3000000 && max > 7000000))
+  ((double >= 60 && double <= 150 && single + double == 600))
+  # One blink is 120 to 250 ms, closing and opening through the half lid.
+  ms=0
+  for s in $one; do ms=$((ms + ${s##*:})); done
+  ((ms >= 120000 && ms <= 250000))
+  # Too slow to draw 40 ms frames: shut and open, no half lid.
+  [ "${lines[600]#* }" = "2:0:150000 0:0:0" ]
 }
 
 @test "the day's occasions dress the header; an ordinary day has none" {
@@ -982,12 +1011,14 @@ fake_cgroup() {
   [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" != *container* ]]
 }
 
-@test "live mode: w makes the marmot wave for a moment (a snapshot never shows it)" {
+@test "live mode: w makes the marmot wave, two poses, for a moment (a snapshot never shows it)" {
   fake_ss "$LISTEN_SSH" ""
+  mm_test_now '2026-06-10 12:00'
   run env COLUMNS=100 mm status --once
   [[ "$output" != *"(mm)--UU------"* ]]
-  live 'sleep 4; printf w; sleep 1; printf q'
+  live 'sleep 4; printf w; sleep 2.5; printf q'
   [ "$LIVE_STATUS" -eq 0 ]
   grep -qF -- '--(mm)--UU------' <<<"$LIVE_TEXT"
   grep -qE '^   \|  .    .  \| +\(mm\)' <<<"$LIVE_TEXT"
+  grep -qF "'()  //" <<<"$LIVE_TEXT" && grep -qF "'() \\\\" <<<"$LIVE_TEXT"
 }

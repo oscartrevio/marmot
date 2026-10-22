@@ -102,7 +102,8 @@ below 60, `O O !` below 80 (cheeks stuffed when a full disk is why), `> <` CPU a
 while, `o o` any other health reason, `- o` with a steaming mug on the night shift (an agent
 busy between midnight and 6:00), `= =` tired (an agent session busy for over 12 hours), `^ ^ +*`
 proud the day after a cleanup that freed 1GB or more, `^ ^` agents at work on a healthy machine,
-`- - z Z` nobody busy. It wears a hard hat while a marmot cleanup runs and blinks now and then.
+`- - z Z` nobody busy. It wears a hard hat while a marmot cleanup runs and, in the live view,
+blinks every few seconds.
 
 It also knows what day it is: a party hat and fireworks at New Year, a Santa hat, snow on the
 rule all winter, vampire fangs and a jack-o'-lantern in Halloween week, papel picado, marigolds

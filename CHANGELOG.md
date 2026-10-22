@@ -126,8 +126,9 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   night shift (an agent busy between midnight and 6:00), `= =` tired (an agent session busy for
   over 12 hours), `^ ^ +*` proud the day after a cleanup that freed 1GB or more ("freed 4.2GB last
   night" beside the title), and stuffed cheeks when a full disk is why it is alert or dizzy. It
-  wears a hard hat (a dome with a ridge and a brim) while a marmot cleanup runs and blinks now and
-  then in the live view.
+  wears a hard hat (a dome with a ridge and a brim) while a marmot cleanup runs. In the live view
+  it blinks like something alive: 2 to 8 s apart at random, closing and opening through a half
+  lid in under 200 ms, now and then twice; a blink repaints only the eyes' row.
 - The marmot keeps a calendar (`lib/mascot.sh`): a party hat (a dotted cone with a pom-pom) and
   fireworks at New Year, a floppy Santa hat with a fur brim at Christmas, snow on the rule all
   winter, vampire fangs, a jack-o'-lantern and a spider's web in Halloween week, papel picado,

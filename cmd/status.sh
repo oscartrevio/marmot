@@ -263,8 +263,10 @@ _status_init() {
   ST_CL_ADDR="" ST_CL_NAME="" ST_CL_PATH="" ST_CL_RTT="" ST_CL_VAR="" ST_CL_MIN="" ST_CL_RETR=0 ST_CL_LAGGY=0
   ST_CL_VIA="" ST_CL_TRANSPORT=none ST_CL_TTY="" ST_CL_IDLE="" ST_TERM_NAME="" ST_TERM_SSH="" ST_TERM_INO=() ST_TERM_LOCAL=0
   ST_RTTH=() ST_TS_FOR="" ST_TS_AT=0
-  # The marmot (see _status_marmot): the clock, whether a cleanup is at work, a blink.
+  # The marmot (see _status_marmot): the clock, whether a cleanup is at work, the live view's
+  # blink and wave, and where its rows are in the frame (ST_MM_N 0: not drawn).
   ST_NOW=0 ST_DAY="" ST_ATWORK=0 ST_BLINK=0 ST_WAVE=0 ST_CHEEKS=0 ST_PROUD_AT=0 ST_PROUD_FREED=0 ST_PROUD_NOTE="" ST_OCC=()
+  ST_MM_AT=0 ST_MM_N=0 ST_MM_ARGS=() ST_BLINK_SEQ=()
   _status_sched
   _status_term_find
 }
@@ -1979,9 +1981,10 @@ _status_panel_sys() {
 # five rows or six) peeking over the dashboard, TITLE and FACTS (dimmed) beside its ears and eyes,
 # the day's greetings beside its cheeks, its paws and teeth on a rule WIDTH wide. The face is
 # _status_mood's, the eyes in the health COLOR; a proud face adds its note to TITLE when it fits.
-# The day's occasions (ST_OCC) dress it, a cleanup at work puts on the hard hat, and ST_BLINK=1
-# (the live view, for a moment) half-closes open eyes. The caller checks that TITLE fits: 21 columns
-# go to the marmot.
+# The day's occasions (ST_OCC) dress it, a cleanup at work puts on the hard hat; ST_BLINK and
+# ST_WAVE are the live view's blink and wave (see _status_live). The caller checks that TITLE
+# fits: 21 columns go to the marmot. Where its rows are and how they were drawn is kept for
+# _status_marmot_paint.
 _status_marmot() {
   local w=$1 title=$2 len mood
   _status_mood
@@ -1993,8 +1996,34 @@ _status_marmot() {
     _status_vlen len "$title"
     ((len + 2 + ${#ST_PROUD_NOTE} <= w - 21)) && title+="  $C_DIM$ST_PROUD_NOTE$C_RESET"
   fi
-  mm_marmot_draw "$mood" "$w" "$title" "$3" "$4"
+  ST_MM_ARGS=("$mood" "$w" "$title" "$3" "$4")
+  mm_marmot_draw "${ST_MM_ARGS[@]}"
+  ST_MM_AT=${#ST_FRAME[@]} ST_MM_N=${#MM_ART[@]}
   ST_FRAME+=("${MM_ART[@]}")
+}
+
+# _status_marmot_paint — show the live view's blink or wave (ST_BLINK, ST_WAVE) without building
+# the frame again: the marmot's rows of the painted frame are redrawn as the last _status_marmot
+# drew them, and _status_paint rewrites the rows that changed (the eyes, or the paw).
+_status_marmot_paint() {
+  ((ST_MM_N)) || return 0
+  MM_LOOK_BLINK=$ST_BLINK MM_LOOK_WAVE=$ST_WAVE
+  mm_marmot_draw "${ST_MM_ARGS[@]}"
+  ST_FRAME=("${ST_FRAME[@]:0:ST_MM_AT}" "${MM_ART[@]}" "${ST_FRAME[@]:ST_MM_AT+ST_MM_N}")
+  _status_paint
+}
+
+# _status_blink_plan SMOOTH — the marmot's next blink, from RANDOM: the wait before it into REPLY
+# (µs; 2 to 8 s, most often about 5: two uniform draws added) and its frames into ST_BLINK_SEQ as
+# "BLINK:WAVE:US" (ST_BLINK, ST_WAVE, how long they hold; the last, open, holds 0). Eyes close and
+# open through a half lid, 180 ms in all, and one blink in six is double. SMOOTH=0 (a repaint took
+# too long for 40 ms frames) shuts them for 150 ms, no half lid.
+_status_blink_plan() {
+  local one="1:0:40000 2:0:100000 1:0:40000"
+  (($1)) || one="2:0:150000"
+  REPLY=$((2000000 + (RANDOM % 3001 + RANDOM % 3001) * 1000))
+  if ((RANDOM % 6 == 0)); then read -r -a ST_BLINK_SEQ <<<"$one 0:0:180000 $one 0:0:0"
+  else read -r -a ST_BLINK_SEQ <<<"$one 0:0:0"; fi
 }
 
 # _status_greet ROOM — MM_LOOK_GREETS joined by " / " into MM_LOOK_GREET, as many as fit ROOM
@@ -2027,7 +2056,7 @@ _status_frame_full() {
   [[ -n "$ST_CG_MEM_TXT" ]] && info="$ST_HOST$ST_TAG · $ST_MODEL · $ST_RAM_TXT · $ST_OS"
   _status_vlen len "$head"
   ilen=${#info}
-  ST_FRAME=()
+  ST_FRAME=() ST_MM_N=0
   if ((ST_MASCOT && len + 21 <= span)); then
     # Beside the marmot, as wide as the panels under it.
     _status_trunc info "$info" $((span - 21))
@@ -2131,7 +2160,7 @@ _status_compact() {
   local mascot room
   local -a more=()
   ((w < 60)) && w=60
-  ST_FRAME=()
+  ST_FRAME=() ST_MM_N=0
   if ((ST_SCORE >= 80)); then col=$C_GREEN; elif ((ST_SCORE >= 60)); then col=$C_YELLOW; else col=$C_RED; fi
   left="${C_BOLD}mm status$C_RESET  $col● $ST_SCORE$C_RESET"
   ((${#ST_REASONS[@]})) && left+="  $col${ST_REASONS[0]}${ST_REASONS[1]:+ · ${ST_REASONS[1]}}$C_RESET"
@@ -2651,11 +2680,14 @@ _status_paint() {
   [[ -z "$buf" ]] || printf '%s' "$buf"
 }
 
-# _status_live — the live view: a frame every ST_INTERVAL seconds and on a key or a resize. Every
-# 8 to 10 seconds the marmot blinks: ST_BLINK=1 for one frame of 0.15 s (fx_end), between refreshes.
-# Key w (not in the help) makes it wave for 1.5 s (ST_WAVE).
+# _status_live — the live view: a frame every ST_INTERVAL seconds and on a key or a resize. In
+# between, the marmot blinks (_status_blink_plan: 2 to 8 s apart, through a half lid, sometimes
+# twice) and key w (not in the help) makes it wave, two poses for 1.5 s. Their frames (fx, each
+# "BLINK:WAVE:US") repaint only the marmot (_status_marmot_paint); the loop sleeps in a read
+# until the next refresh, frame or key.
 _status_live() {
-  local interval_us=$((ST_INTERVAL * 1000000)) next now rem t key wake blink_at fx_end=0
+  local interval_us=$((ST_INTERVAL * 1000000)) next now rem t key wake blink_at gap fx_at=0 smooth=1 t0 hold
+  local -a fx=()
   ST_STTY=$(stty -g </dev/tty 2>/dev/null)
   ST_LIVE=1
   trap '_status_cleanup' EXIT
@@ -2671,7 +2703,8 @@ _status_live() {
   _status_first $((${EPOCHREALTIME/[.,]/} + 1500000))
   _status_draw
   next=$((${EPOCHREALTIME/[.,]/} + interval_us))
-  blink_at=$((next - interval_us + 8000000 + RANDOM % 2001 * 1000))
+  _status_blink_plan 1
+  gap=$REPLY blink_at=$((next - interval_us + REPLY))
   while :; do
     now=${EPOCHREALTIME/[.,]/}
     if ((now >= next)); then
@@ -2685,15 +2718,26 @@ _status_live() {
       continue
     fi
     if [[ "${ST_RESIZED:-0}" == 1 ]]; then ST_RESIZED=0 ST_REPAINT=1; _status_draw; continue; fi
-    if ((fx_end && now >= fx_end)); then ST_BLINK=0 ST_WAVE=0 fx_end=0; _status_draw; continue; fi
-    if ((!fx_end && now >= blink_at)); then
-      ST_BLINK=1 fx_end=$((now + 150000)) blink_at=$((now + 8000000 + RANDOM % 2001 * 1000))
-      _status_draw
+    if ((!${#fx[@]} && now >= blink_at)); then
+      if ((ST_MM_N)); then fx=("${ST_BLINK_SEQ[@]}") fx_at=$now; fi
+      _status_blink_plan "$smooth"
+      gap=$REPLY blink_at=$((now + REPLY))
+    fi
+    if ((${#fx[@]} && now >= fx_at)); then
+      IFS=: read -r ST_BLINK ST_WAVE hold <<<"${fx[0]}"
+      fx=("${fx[@]:1}")
+      t0=${EPOCHREALTIME/[.,]/}
+      _status_marmot_paint
+      now=${EPOCHREALTIME/[.,]/}
+      smooth=$((now - t0 < 30000))
+      fx_at=$((now + hold))
+      # The next blink waits from the end of this one (or of a wave).
+      ((${#fx[@]})) || blink_at=$((now + gap))
       continue
     fi
     wake=$next
-    ((fx_end && fx_end < wake)) && wake=$fx_end
-    ((!fx_end && blink_at < wake)) && wake=$blink_at
+    if ((${#fx[@]})); then ((fx_at < wake)) && wake=$fx_at
+    elif ((blink_at < wake)); then wake=$blink_at; fi
     rem=$((wake - now))
     printf -v t '%d.%06d' $((rem / 1000000)) $((rem % 1000000))
     key=""
@@ -2708,8 +2752,7 @@ _status_live() {
             _status_draw
             ;;
           [wW])
-            ST_WAVE=1 ST_BLINK=0 fx_end=$((${EPOCHREALTIME/[.,]/} + 1500000))
-            _status_draw
+            fx=(0:1:250000 0:2:250000 0:1:250000 0:2:250000 0:1:250000 0:2:250000 0:0:0) fx_at=0
             ;;
         esac
         ;;
