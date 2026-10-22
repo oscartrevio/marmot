@@ -48,19 +48,17 @@ MM_PARTS=(
   'marmot:|5|2|.|(mm)--UU--(mm)'
   'marmot:|5|6|d|--'
   'marmot:|5|10|d|--'
-  # Hats, all on the hard hat's footprint (the sky row and the top of the head): a striped cone
-  # with a pom-pom; a cap flopping to one side into its pom-pom over a fur brim; a dome with a
-  # ridge and a brim.
-  'hat:party|0|7|c|/()\'
-  'hat:party|0|8|y|()'
-  'hat:party|1|4|c|_/======\_'
-  'hat:party|1|6|m|='
-  'hat:party|1|8|m|='
-  'hat:party|1|10|m|='
-  'hat:party|1|7|y|='
-  'hat:party|1|9|y|='
-  'hat:party|1|11|y|='
-  'hat:santa|0|6|r|.----._'
+  # Hats, all on the hard hat's footprint (the sky row and the top of the head): a pointed cone
+  # with dots on a small brim; a rounded cap flopping to one side into its pom-pom over a fur
+  # brim; a dome with a ridge and a brim.
+  'hat:party|0|8|y|/\'
+  'hat:party|1|5|c|_/o*o*\_'
+  'hat:party|1|7|y|o'
+  'hat:party|1|9|y|o'
+  'hat:party|1|8|m|*'
+  'hat:party|1|10|m|*'
+  'hat:santa|0|5|r|.-"""-.'
+  'hat:santa|0|12|r|\'
   'hat:santa|0|13|w|o'
   'hat:santa|1|4|w|(########)'
   'hat:hardhat|0|6|y|.-||-.'
@@ -98,9 +96,9 @@ MM_PARTS=(
   'rule:cat|5|-8|d|=^.^='
   'rule:saber|5|16|w|[|||]'
   'rule:saber|5|21|c|===================='
-  'rule:tree|2|17|g|.@.'
-  'rule:tree|3|17|g|@@@'
-  'rule:tree|4|18|y||'
+  'rule:tree|2|18|g|^'
+  'rule:tree|3|17|g|/ \'
+  'rule:tree|4|17|g|/_\'
   'rule:tree|5|18|y||'
   # Teeth: vampire fangs beside the incisors.
   'teeth:fangs|5|7|w|V'
@@ -109,22 +107,19 @@ MM_PARTS=(
   'face:sleepy|1|+0|d|z Z'
   'face:alert|1|+0|y|!'
   'face:proud|1|+0|y|+*'
-  'face:night|0|+1|d|) )'
-  'face:night|1|+0|.|[__]D'
+  'face:night|4|17|d|) )'
+  'face:night|5|17|.|[__]D'
   'face:cheeks|3|2|.|('
   'face:cheeks|3|15|.|)'
-  # Waving (mm status's live view, key w): the right arm up from the shoulder, the paw level with
-  # the top of the head and swinging between two poses, motion marks behind it, its place on the
-  # rule empty. Nothing within a column of the title.
-  'wave:1|1|17|.|(mm)'
-  'wave:1|1|22|.|) )'
-  'wave:1|2|17|.|/'
-  'wave:1|3|16|.|/'
+  # Waving (mm status's live view, key w): the right paw up beside the face, motion marks
+  # swinging between two poses (a blank column before the title), its place on the rule empty.
+  'wave:1|2|17|.|\\'
+  'wave:1|3|16|.|(mm)'
+  'wave:1|4|16|.|/'
   'wave:1|5|12|d|----'
-  'wave:2|1|16|.|(mm)'
-  'wave:2|1|21|.|)'
-  'wave:2|2|17|.||'
-  'wave:2|3|16|.|/'
+  'wave:2|2|18|.|//'
+  'wave:2|3|16|.|(mm)'
+  'wave:2|4|16|.|/'
   'wave:2|5|12|d|----'
 )
 # Rule props → their place: bg (along the whole rule), right (its right end) or paw (beside the
@@ -343,7 +338,7 @@ _mm_put() {
 # MOOD is one of MM_FACES, its eyes in COLOR (an escape sequence). The rest is MM_LOOK_*:
 # CHEEKS=1 stuffs its cheeks, BLINK=1 half-closes open eyes and BLINK=2 shuts them (the face);
 # HAT, MARK, EYES, RULE and TEETH as mm_marmot_dress sets them (the decorations); WAVE=1 or 2
-# raises its right paw in one of two poses instead of the face's marks (live view, key w).
+# raises its right paw beside its face in one of two poses (mm status's live view, key w).
 mm_marmot_draw() {
   # Characters, not bytes: MM_GLYPHS are multibyte.
   local LC_ALL=C.UTF-8
@@ -354,11 +349,9 @@ mm_marmot_draw() {
   # Here-strings cost a pipe each: the tables are split with expansions instead.
   t=${MM_FACES[$mood]:-o o 1} && l=${t%% *} && t=${t#* } && r=${t%% *} && open=${t#* }
   for t in marmot: "hat:${MM_LOOK_HAT:-}" "mark:${MM_LOOK_MARK:-}" "teeth:${MM_LOOK_TEETH:-}" \
-    "wave:${MM_LOOK_WAVE:-0}"; do
+    "face:$mood" "wave:${MM_LOOK_WAVE:-0}"; do
     want[$t]=1
   done
-  # A waving marmot is awake: its paw takes the place of the face's marks.
-  ((${MM_LOOK_WAVE:-0})) || want[face:$mood]=1
   t=${MM_LOOK_RULE:-}
   while [[ -n "$t" ]]; do
     want[rule:${t%% *}]=1

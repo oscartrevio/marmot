@@ -248,8 +248,9 @@ emoji() {
   mm_marmot_draw happy 60 title facts
   [ "${#MM_ART[@]}" -eq 6 ] && [ "${MM_ART[2]:21}" = title ] && [ "${MM_ART[3]:21}" = facts ] && [ "${MM_ART[4]:21}" = hi ]
   MM_LOOK_HAT=""
+  # The night shift's mug stands on the rule beside the paw: no sky row for it.
   mm_marmot_draw night 60 title
-  [ "${#MM_ART[@]}" -eq 6 ]
+  [ "${#MM_ART[@]}" -eq 5 ] && [[ "${MM_ART[4]}" == "--(mm)--UU--(mm)-[__]D"* ]]
   # Fireworks over the title need the room: on a narrow rule the ones that do not fit are left out.
   MM_LOOK_MARK=fireworks
   mm_marmot_draw happy 30 title
