@@ -533,7 +533,8 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   done
   fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:435.2/30 lastrcv:5 minrtt:21')"
   run env "${NO_SSH[@]}" mm status --once
-  [[ "$(head -3 <<<"$output")" == *"link to you is laggy"* ]]
+  # On the title's line, wherever the marmot puts it (a hat adds a row above its head).
+  [[ "$(grep -m1 -F 'mm status' <<<"$output")" == *"link to you is laggy"* ]]
 }
 
 @test "client: SSH_CONNECTION's address wins over more recent peers, even without TCP stats" {
@@ -869,18 +870,19 @@ at() { date -d "$1" +%s; }
 }
 
 @test "blink: the live view blinks through a half lid now and then; a snapshot never does" {
-  # A disk at 85% is a health reason: the face is neutral (o o, open) whatever the agents do;
-  # never sleepy (- -), so half-closed (- -) or shut (_ _) eyes can only be a blink.
+  # A disk at 85% is a health reason: the face has open eyes (o o, or O O should the runner add a
+  # reason of its own) whatever the agents do; never sleepy (- -), so half-closed (- -) or shut
+  # (_ _) eyes can only be a blink.
   mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 850 150 1000 0\n"'
   fake_ss "$LISTEN_SSH" ""
   mm_test_now '2026-06-10 12:00'
   run env COLUMNS=100 mm status --once
   [ "$status" -eq 0 ]
-  grep -qE '^   \|  [o<]    [o>]  \|' <<<"$output"
+  grep -qE '^   \|  [oO]    [oO]  \|' <<<"$output" || { echo "$output"; false; }
   [[ "$output" != *"|  -    -  |"* && "$output" != *"|  _    _  |"* ]]
   live 'sleep 14; printf q'
   [ "$LIVE_STATUS" -eq 0 ]
-  grep -qF '   |  o    o  |' <<<"$LIVE_TEXT"
+  grep -qE '^   \|  [oO]    [oO]  \|' <<<"$LIVE_TEXT" || { echo "$LIVE_TEXT"; false; }
   grep -qF '   |  -    -  |' <<<"$LIVE_TEXT"
   grep -qF '   |  _    _  |' <<<"$LIVE_TEXT"
 }
