@@ -870,9 +870,12 @@ at() { date -d "$1" +%s; }
 }
 
 @test "blink: the live view blinks through a half lid now and then; a snapshot never does" {
-  # A disk at 85% is a health reason: the face has open eyes (o o, or O O should the runner add a
-  # reason of its own) whatever the agents do; never sleepy (- -), so half-closed (- -) or shut
-  # (_ _) eyes can only be a blink.
+  # The face must have open eyes whatever the runner is doing: as a container with an idle cgroup
+  # (CPU 0%, so never the squint of a busy CI host, whose load does not count either) and a disk at
+  # 85% (a health reason), it is o o (O O should the runner add a reason of its own). Never sleepy
+  # (- -), so half-closed (- -) or shut (_ _) eyes can only be a blink.
+  fake_cgroup
+  export MM_CONTAINER=1
   mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 850 150 1000 0\n"'
   fake_ss "$LISTEN_SSH" ""
   mm_test_now '2026-06-10 12:00'
