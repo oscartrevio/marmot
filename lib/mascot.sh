@@ -48,19 +48,20 @@ MM_PARTS=(
   'marmot:|5|2|.|(mm)--UU--(mm)'
   'marmot:|5|6|d|--'
   'marmot:|5|10|d|--'
-  # Hats, all on the hard hat's footprint (the sky row and the top of the head): a pointed cone
-  # with dots on a small brim; a rounded cap flopping to one side into its pom-pom over a fur
-  # brim; a dome with a ridge and a brim.
-  'hat:party|0|8|y|/\'
+  # Hats: a narrow cone to a star, dotted and starred on a small brim; a rounded cap flopping
+  # into its pom-pom beside the ear, over a fur brim between the ears; a dome with a ridge and a
+  # brim.
+  'hat:party|0|7|c|/*\'
+  'hat:party|0|8|y|*'
   'hat:party|1|5|c|_/o*o*\_'
   'hat:party|1|7|y|o'
   'hat:party|1|9|y|o'
   'hat:party|1|8|m|*'
   'hat:party|1|10|m|*'
-  'hat:santa|0|5|r|.-"""-.'
-  'hat:santa|0|12|r|\'
-  'hat:santa|0|13|w|o'
-  'hat:santa|1|4|w|(########)'
+  'hat:santa|0|6|r|.-"""-.'
+  'hat:santa|1|5|r|/       `\.'
+  'hat:santa|2|5|w|{######}'
+  'hat:santa|2|17|w|@'
   'hat:hardhat|0|6|y|.-||-.'
   'hat:hardhat|1|4|y|_/__||__\_'
   # Marks: before the head, in the sky, over the title.
@@ -107,7 +108,6 @@ MM_PARTS=(
   'face:sleepy|1|+0|d|z Z'
   'face:alert|1|+0|y|!'
   'face:proud|1|+0|y|+*'
-  'face:night|4|17|d|) )'
   'face:night|5|17|.|[__]D'
   'face:cheeks|3|2|.|('
   'face:cheeks|3|15|.|)'
@@ -162,7 +162,7 @@ MM_CALENDAR=(
   'pirate|09-19||||pirate||Arr, it be Talk Like a Pirate Day'
   "ada|nth:10:2:2||||||Ada Lovelace Day: she programmed a machine nobody had built yet"
   'halloween|10-31||pumpkin|web|jack|fangs|Happy Halloween'
-  'spooky|10-24~10-30||pumpkin|web||fangs|'
+  'spooky|10-24~10-30|||web||fangs|'
   'muertos|11-01~11-02||picado|marigolds|calavera||@'
   'thanksgiving|nth:11:4:4||||||@'
   'friday13|dow:5:13|||cat|||Friday the 13th: marmot checks twice, as always'

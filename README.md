@@ -99,21 +99,21 @@ rest of the run skips those steps instead of asking again.
 
 A marmot peeks over `mm status`. Its face is the health score at a glance, health first: `x x`
 below 60, `O O !` below 80 (cheeks stuffed when a full disk is why), `> <` CPU above 85% for a
-while, `o o` any other health reason, `- o` with a steaming mug on the night shift (an agent
-busy between midnight and 6:00), `= =` tired (an agent session busy for over 12 hours), `^ ^ +*`
-proud the day after a cleanup that freed 1GB or more, `^ ^` agents at work on a healthy machine,
-`- - z Z` nobody busy. It wears a hard hat while a marmot cleanup runs and, in the live view,
-blinks every few seconds.
+while, `o o` any other health reason, `- o` with a mug of coffee beside its paw on the night shift
+(an agent busy between midnight and 6:00), `= =` tired (an agent session busy for over 12 hours),
+`^ ^ +*` proud the day after a cleanup that freed 1GB or more, `^ ^` agents at work on a healthy
+machine, `- - z Z` nobody busy. It wears a hard hat while a marmot cleanup runs and, in the live
+view, blinks every few seconds.
 
-It also knows what day it is: a party hat and fireworks at New Year, a Santa hat, snow on the
-rule all winter, vampire fangs and a jack-o'-lantern beside its head in Halloween week (and
-`∆ ∆` eyes on the day), papel picado, marigolds and calavera eyes on Día de Muertos, a lightsaber on May 4,
-a tree on Earth Day, its anniversary on this machine, and some twenty more (the table is
+It also knows what day it is: a party hat and fireworks at New Year, a Santa hat, snow on the rule
+all winter, vampire fangs and a web in Halloween week (and on the day a jack-o'-lantern beside its
+head and `∆ ∆` eyes), papel picado, marigolds and calavera eyes on Día de Muertos, a lightsaber on
+May 4, a tree on Earth Day, its anniversary on this machine, and some twenty more (the table is
 `MM_CALENDAR` in `lib/mascot.sh`, the art `MM_PARTS`; all of it printable ASCII but the `∆` eyes,
-one column everywhere, so no terminal shows an emoji). The day never changes the face
-that reports a problem, and `festive = off` in the config turns the calendar off. `mm --version`
-and a run with nothing to do say the day's greeting too, and the closing banner of a real run
-celebrates firsts, round run counts, records and anniversaries, each once.
+one column everywhere, so no terminal shows an emoji). The day never changes the face that reports
+a problem, and `festive = off` in the config turns the calendar off. `mm --version` and a run with
+nothing to do say the day's greeting too, and the closing banner of a real run celebrates firsts,
+round run counts, records and anniversaries, each once.
 
 ## Safety
 

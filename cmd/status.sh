@@ -87,14 +87,14 @@ container), low available memory, swap >50%, root disk >=80%, root inodes >=90%,
 failed units, and orphaned agent or dev processes.
 The marmot over the dashboard shows it at a glance, first match wins: x x health below 60,
 O O ! below 80 (cheeks stuffed when the root disk is full), > < CPU above 85% over the last
-three samples, o o any other health reason, - o and a steaming mug on the night shift (an agent
+three samples, o o any other health reason, - o and a mug of coffee on the night shift (an agent
 busy between midnight and 6:00), = = tired (an agent session busy for over 12 hours), ^ ^ +*
 proud (a cleanup freed 1GB or more in the last 24 hours), ^ ^ agents at work on a healthy
 machine, - - z Z no agent session busy. It wears a hard hat while a marmot cleanup runs, and
 blinks now and then in the live view. On a holiday, in a season or on its anniversary it
 dresses for the day (a party hat and fireworks at New Year, a Santa hat, snow all winter, fangs
-and a jack-o'-lantern in Halloween week, papel picado and marigolds on Dia de Muertos, a
-lightsaber on May 4, a tree on Earth Day, and more) and greets you; the face always says what
+in Halloween week and a jack-o'-lantern on the 31st, papel picado and marigolds on Dia de
+Muertos, a lightsaber on May 4, a tree on Earth Day, and more) and greets you; the face always says what
 the machine is. \`festive = off\` in $MM_CONFIG_FILE turns the calendar off. Short terminals
 drop the marmot first.
 EOF

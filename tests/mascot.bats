@@ -80,7 +80,9 @@ dress() {
 @test "dress: a problem face keeps its eyes and still wears the day's hat, mark, teeth and rule" {
   [ "$(dress dizzy 0 christmas winter)" = "santa||||snow|Merry Christmas" ]
   [ "$(dress happy 0 halloween)" = "|pumpkin|jack|fangs|web|Happy Halloween" ]
-  [ "$(dress happy 0 spooky)" = "|pumpkin||fangs|web|" ]
+  # Spooky week: fangs and the web, no jack-o'-lantern; that is Halloween's own.
+  [ "$(dress happy 0 spooky)" = "|||fangs|web|" ]
+  [ "$(dress happy 0 halloween | cut -d'|' -f2)" = pumpkin ]
   [ "$(dress sleepy 0 halloween | cut -d'|' -f3)" = jack ]
   [ "$(dress proud 0 halloween | cut -d'|' -f3)" = jack ]
   local mood
