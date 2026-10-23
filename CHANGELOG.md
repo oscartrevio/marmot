@@ -226,6 +226,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   more and skips each root step with "needs sudo". It used to prompt again
   for every system step, up to `sudo: 3 incorrect password attempts` and beyond. Without a
   terminal, as root and with passwordless sudo nothing changes.
+- The in-use check works on a full disk. With no room left in the temp folder, a snapshot over
+  64 KiB (a machine with many processes) stopped `mm clean` and `mm purge` with "could not list
+  in-use paths", and a lookup in one already taken answered "not in use": bash kept those long
+  strings in temp files. They now go through pipes.
 
 ## 0.2.0
 

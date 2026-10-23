@@ -971,18 +971,29 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
 }
 
 @test "a Trash record that cannot be written is taken back, and the refusal names the space" {
-  mkdir -p "$SB/root/item" "$MM_TRASH_DIR/files" "$MM_TRASH_DIR/info"
+  mkdir -p "$SB/root/item" "$MM_TRASH_DIR/files" "$MM_TRASH_DIR/info" "$SB/held"
   echo important >"$SB/root/item/doc.txt"
   mm_whitelist_init
+  # The snapshot must be over 64 KiB, as on a busy machine (on CI, with another test's in-use scan
+  # alongside): bash put a here-string that long in a temp file, which a full disk refuses. A
+  # process holding 300 long-named files open makes it that big on any machine.
+  local i name held=()
+  for ((i = 0; i < 300; i++)); do
+    printf -v name 'held-%03d-%0240d' "$i" 0 && held+=("$SB/held/$name")
+  done
+  touch "${held[@]}"
+  mm_test_bg "$SB" tail -qn0 -f -- "${held[@]}"
   # A disk with no room left: the exclusive create of the .trashinfo still works, the write into
   # it does not (ulimit -f 0 stands in for a full filesystem; XFSZ ignored, so writes just fail).
   run bash -c 'ulimit -f 0; trap "" XFSZ
     . "$1/lib/core.sh"; mm_inuse_refresh >/dev/null 2>&1
     rc=0; mm_rm --trash "$2/root/item" "$2/root" >/dev/null 2>&1 || rc=$?
     echo "$rc $MM_SKIP_REASON"
-    echo "records $(find "$MM_TRASH_DIR/info" -type f | wc -l)"' _ "$MM_SRC" "$SB"
+    echo "records $(find "$MM_TRASH_DIR/info" -type f | wc -l)"
+    echo "${#MM_INUSE}"' _ "$MM_SRC" "$SB"
   [[ "${lines[0]}" == "1 "*"no space"* ]]
   [ "${lines[1]}" = "records 0" ]
+  ((lines[2] > 65536))
   [ "$(cat "$SB/root/item/doc.txt")" = important ]
   # with room again the same name is free: nothing of the failed call is left to block it
   mm_inuse_refresh
