@@ -129,12 +129,12 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   dizzy. It wears a hard hat (a dome with a ridge and a brim) while a marmot cleanup runs. In the
   live view it blinks like something alive: 2 to 8 s apart at random, closing and opening through a
   half lid in under 200 ms, now and then twice; a blink repaints only the eyes' row.
-- The marmot keeps a calendar (`lib/mascot.sh`): a party hat (a narrow cone up to a star, dotted and
-  starred) and fireworks at New Year, a Santa hat with a rounded crown flopping into its pom-pom
-  over a fur brim at Christmas, snow on the rule all winter, vampire fangs and a spider's web in
-  Halloween week (on the 31st a jack-o'-lantern beside its head and `∆ ∆` eyes), papel picado,
-  marigolds and calavera eyes on Día de Muertos remembering the biggest item it ever freed, a
-  lightsaber in its paw on May 4, a tree on Earth Day, Thanksgiving's total, last year's review in
+- The marmot keeps a calendar (`lib/mascot.sh`): a party hat (a pointed, starred cone on the top of
+  its head) and fireworks at New Year, a Santa hat with a rounded crown flopping into its pom-pom
+  over a fur brim at Christmas, snow on the rule all winter, vampire fangs and a spider's
+  web in Halloween week (on the 31st a jack-o'-lantern beside its head and `∆ ∆` eyes), papel
+  picado, marigolds and calavera eyes on Día de Muertos remembering the biggest item it ever freed,
+  a lightsaber in its paw on May 4, a tree on Earth Day, Thanksgiving's total, last year's review in
   the first week of January, the anniversary of its first run here, and about twenty more (Pi Day,
   Towel Day, Sysadmin Day, the 256th day, Debian Day, Linux's birthday, World Backup Day, Ada
   Lovelace Day, Friday the 13th, a round Unix time...). Tall decorations get a sky row above its

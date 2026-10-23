@@ -48,16 +48,14 @@ MM_PARTS=(
   'marmot:|5|2|.|(mm)--UU--(mm)'
   'marmot:|5|6|d|--'
   'marmot:|5|10|d|--'
-  # Hats: a narrow cone to a star, dotted and starred on a small brim; a rounded cap flopping
-  # into its pom-pom beside the ear, over a fur brim between the ears; a dome with a ridge and a
-  # brim.
-  'hat:party|0|7|c|/*\'
-  'hat:party|0|8|y|*'
-  'hat:party|1|5|c|_/o*o*\_'
-  'hat:party|1|7|y|o'
-  'hat:party|1|9|y|o'
-  'hat:party|1|8|m|*'
-  'hat:party|1|10|m|*'
+  # Hats: a pointed cone, starred, on the flat top of the head between its own shoulders; a rounded
+  # cap flopping into its pom-pom beside the ear, over a fur brim between the ears; a dome with a
+  # ridge and a brim.
+  'hat:party|0|8|c|/\'
+  'hat:party|1|5|.|_./**\._'
+  'hat:party|1|7|c|/'
+  'hat:party|1|8|y|**'
+  'hat:party|1|10|c|\'
   'hat:santa|0|6|r|.-"""-.'
   'hat:santa|1|5|r|/       `\.'
   'hat:santa|2|5|w|{######}'
