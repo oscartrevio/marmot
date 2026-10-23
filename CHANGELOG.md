@@ -147,7 +147,7 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   stay. Default on.
 - A few easter eggs, in neither the help nor the completion: `--force` is refused with a wink
   (marmot has none; nothing runs), `mm 42`, `mm make me a sandwich` (xkcd 149: root gets one),
-  and the live `mm status` raises a paw and waves on `w`.
+  and the live `mm status` raises a paw beside its face on `w`.
 
 ### Changed
 

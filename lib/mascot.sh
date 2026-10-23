@@ -109,16 +109,10 @@ MM_PARTS=(
   'face:night|5|17|.|[__]D'
   'face:cheeks|3|2|.|('
   'face:cheeks|3|15|.|)'
-  # Waving (mm status's live view, key w): the right paw up beside the face, motion marks
-  # swinging between two poses (a blank column before the title), its place on the rule empty.
-  'wave:1|2|17|.|\\'
+  # Waving (mm status's live view, key w): the right paw raised beside the face at eye level, its
+  # place on the rule empty.
   'wave:1|3|16|.|(mm)'
-  'wave:1|4|16|.|/'
   'wave:1|5|12|d|----'
-  'wave:2|2|18|.|//'
-  'wave:2|3|16|.|(mm)'
-  'wave:2|4|16|.|/'
-  'wave:2|5|12|d|----'
 )
 # Rule props → their place: bg (along the whole rule), right (its right end) or paw (beside the
 # right paw). One prop per place.
@@ -335,8 +329,8 @@ _mm_put() {
 # (the caller fits it into the rest); the sky, the top of the head and the rule may reach WIDTH.
 # MOOD is one of MM_FACES, its eyes in COLOR (an escape sequence). The rest is MM_LOOK_*:
 # CHEEKS=1 stuffs its cheeks, BLINK=1 half-closes open eyes and BLINK=2 shuts them (the face);
-# HAT, MARK, EYES, RULE and TEETH as mm_marmot_dress sets them (the decorations); WAVE=1 or 2
-# raises its right paw beside its face in one of two poses (mm status's live view, key w).
+# HAT, MARK, EYES, RULE and TEETH as mm_marmot_dress sets them (the decorations); WAVE=1
+# raises its right paw beside its face (mm status's live view, key w).
 mm_marmot_draw() {
   # Characters, not bytes: MM_GLYPHS are multibyte.
   local LC_ALL=C.UTF-8

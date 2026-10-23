@@ -203,7 +203,7 @@ draw_all() {
   mapfile -t rules < <(echo; names rule; echo "snow cat")
   mapfile -t teeth < <(echo; names teeth)
   eyes=("" "${!MM_EYES[@]}")
-  overs=("" CHEEKS=1 BLINK=1 BLINK=2 WAVE=1 WAVE=2)
+  overs=("" CHEEKS=1 BLINK=1 BLINK=2 WAVE=1)
   [ "${#hats[@]}" -eq 4 ] && [ "${#marks[@]}" -eq 6 ] && [ "${#rules[@]}" -eq 8 ] && [ "${#teeth[@]}" -eq 2 ]
   # One process per mood, 2304 drawings each, without bats' per-command trap (it would take the
   # loop from seconds to an hour).

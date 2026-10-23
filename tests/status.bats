@@ -1016,7 +1016,7 @@ fake_cgroup() {
   [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" != *container* ]]
 }
 
-@test "live mode: w makes the marmot wave, two poses, for a moment (a snapshot never shows it)" {
+@test "live mode: w makes the marmot wave for a moment (a snapshot never shows it)" {
   fake_ss "$LISTEN_SSH" ""
   mm_test_now '2026-06-10 12:00'
   run env COLUMNS=100 mm status --once
@@ -1024,8 +1024,6 @@ fake_cgroup() {
   live 'sleep 4; printf w; sleep 2.5; printf q'
   [ "$LIVE_STATUS" -eq 0 ]
   grep -qF -- '--(mm)--UU------' <<<"$LIVE_TEXT"
-  # The paw beside the face at eye level, motion marks swinging, a blank column before the title.
+  # The paw beside the face at eye level.
   grep -qE '^   \|  .    .  \| \(mm\)' <<<"$LIVE_TEXT"
-  grep -qF "'() \\\\  mm status" <<<"$LIVE_TEXT"
-  grep -qF "'()  // mm status" <<<"$LIVE_TEXT"
 }

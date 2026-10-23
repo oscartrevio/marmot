@@ -2682,7 +2682,7 @@ _status_paint() {
 
 # _status_live — the live view: a frame every ST_INTERVAL seconds and on a key or a resize. In
 # between, the marmot blinks (_status_blink_plan: 2 to 8 s apart, through a half lid, sometimes
-# twice) and key w (not in the help) makes it wave, two poses for 1.5 s. Their frames (fx, each
+# twice) and key w (not in the help) raises its paw for 1.5 s. Their frames (fx, each
 # "BLINK:WAVE:US") repaint only the marmot (_status_marmot_paint); the loop sleeps in a read
 # until the next refresh, frame or key.
 _status_live() {
@@ -2752,7 +2752,7 @@ _status_live() {
             _status_draw
             ;;
           [wW])
-            fx=(0:1:250000 0:2:250000 0:1:250000 0:2:250000 0:1:250000 0:2:250000 0:0:0) fx_at=0
+            fx=(0:1:1500000 0:0:0) fx_at=0
             ;;
         esac
         ;;
