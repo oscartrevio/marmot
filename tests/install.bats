@@ -311,7 +311,7 @@ listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
 
 @test "the closing art is the README's marmot, dressed for the day on an occasion" {
   local readme
-  readme=$(sed -n '2,6p' "$MM_SRC/README.md")
+  readme=$(grep -m1 -A4 -F -e '_..--.._' "$MM_SRC/README.md")
   mm_test_now '2026-06-10 12:00'
   run "$MM_SRC/install.sh"
   [ "$status" -eq 0 ]

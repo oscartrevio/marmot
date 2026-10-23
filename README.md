@@ -1,20 +1,53 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/header-dark.svg">
+  <img src=".github/assets/header.svg" alt="marmot" width="100%">
+</picture>
+
+**Keep the machines your coding agents run on clean, fast and healthy.**
+
+marmot (`mm`) cleans up after coding agents on Debian and Ubuntu, shows what they are running,
+and never deletes what an agent or tool still uses.
+
+[Install](#install) · [Commands](#commands) · [Safety](#safety) · [Configuration](#configuration) ·
+[Security](SECURITY.md) · [Changelog](CHANGELOG.md)
+
+## Install
+
+marmot runs on Debian 12+ and Ubuntu 22.04+ with bash 5: cloud VMs, devcontainers, Codespaces,
+WSL2, your laptop. See [Requirements](#requirements).
+
+```sh
+git clone https://github.com/oscartrevio/marmot.git && cd marmot && ./install.sh
+```
+
+No root needed. The installer copies marmot to `~/.local/share/marmot`, links `mm` and `marmot`
+into `~/.local/bin`, and a first install ends like this:
+
 ```text
      _..--.._
   ()'        '()     marmot
    |  ^    ^  |      Keep the machines your coding agents
   .--.  \/  .--.     run on clean, fast and healthy.
 --(mm)--UU--(mm)--------------------------------------------
+
+marmot is installed. Three next steps:
+  1. mm clean --dry-run    preview: lists what mm clean would remove, deletes nothing
+  2. mm status             see what the machine is doing
+  3. mm schedule enable    clean up on a schedule
 ```
 
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Debian 12+ · Ubuntu 22.04+](https://img.shields.io/badge/Debian%2012%2B%20%C2%B7%20Ubuntu%2022.04%2B-informational)
-![bash 5](https://img.shields.io/badge/bash-5-informational)
+It then prints the line that loads completion in your shell, unless your rc file already does.
+
+- **Update** with `mm update`. It fetches the checkout you installed from, shows the CHANGELOG
+  entries it brings, and reinstalls after you confirm.
+- **Uninstall** with `./install.sh --uninstall`. It turns off the schedule and removes only what
+  the installer put in place. Your config, history and Trash stay.
+
+## Free up space
 
 Coding agents leave a lot behind: `node_modules` in every worktree, browser builds, package
-caches, logs, old CLI versions, sessions, dev servers nobody stopped. marmot (`mm`) is a terminal
-tool that cleans up after them on the Debian and Ubuntu machines they run on: cloud VMs,
-devcontainers, Codespaces, WSL2, your laptop. It shows what is running, and it never deletes
-anything an agent or tool still needs.
+caches, logs, old CLI versions, dev servers nobody stopped. Start with a preview of what
+`mm purge` would remove from your projects:
 
 ```text
 $ mm purge --dry-run --yes ~/code
@@ -52,30 +85,19 @@ Run without --dry-run to apply.
 ======================================================================
 ```
 
-The MCP server that Cursor starts keeps its `node_modules`. The Solana program's `target/` holds
-its deploy keypair, so it stays too.
+- **In use**: Cursor's MCP config names `~/code/mcp-server`, so its `node_modules` stays.
+- **Kept**: the Solana program's `target/` holds its deploy keypair, so it stays too.
+- **Artifacts**: build output next to the file that rebuilds it. `FREES` is what deleting
+  releases; files hard-linked elsewhere, like pnpm's store, stay on disk. `●` marks stale ones,
+  from projects idle longer than `--days` (14).
+- **Would remove**: the stale artifacts, which `--yes` removes without asking. Without `--yes`, a
+  terminal asks: stale only, all, pick, or none.
 
-## Install
+`mm clean --dry-run` previews the caches, old builds and logs `mm clean` would remove; a real run
+asks before anything that can't be regenerated. Every command takes `--dry-run` (`-n`), which
+changes nothing and reports what a real run would.
 
-```sh
-git clone https://github.com/oscartrevio/marmot.git && cd marmot && ./install.sh
-```
-
-No root needed. The installer copies marmot to `~/.local/share/marmot`, links `mm` into
-`~/.local/bin`, and ends with three first steps (a preview, the dashboard, the schedule) and the
-completion line for your shell. Update with `mm update`, which shows the CHANGELOG entries it
-brings. `./install.sh --uninstall` turns off the schedule and removes only what the installer
-put in place. Your config, history and Trash stay.
-
-## Quick start
-
-```sh
-mm clean --dry-run    # preview: every command takes --dry-run (-n)
-mm clean              # caches, old builds, logs; asks before anything that can't be regenerated
-mm status             # live dashboard, agent sessions first
-mm purge              # finished git worktrees and build artifacts of idle projects
-mm schedule enable    # a safe part of clean and purge, daily, no prompts, no sudo
-```
+## Commands
 
 | Command | What it does |
 |---|---|
@@ -92,28 +114,46 @@ mm schedule enable    # a safe part of clean and purge, daily, no prompts, no su
 `mm help <command>` (or `mm <command> --help`) explains each command and its options. `mm` alone
 opens a command picker that previews each command's help.
 
-Steps that need root ask for your password once, up front, and say what for. Decline, and the
-rest of the run skips those steps instead of asking again.
+With no folder and no `purge_paths` file, `mm purge` scans your home, your folders in
+`/workspaces` and `/workspace`, and every worktree of the repositories it finds there or in an
+agent's worktree folder. `mm purge --paths` sets your own roots.
+
+`mm status --agent` prints one plain-text snapshot for a coding agent to read, problems first,
+each with the command that addresses it. It is the default when stdout is not a terminal.
+
+Steps that need root ask for your password once and say what for. Decline, and the rest of the
+run skips those steps instead of asking again.
 
 ### The marmot
 
-A marmot peeks over `mm status`. Its face is the health score at a glance, health first: `x x`
-below 60, `O O !` below 80 (cheeks stuffed when a full disk is why), `> <` CPU above 85% for a
-while, `o o` any other health reason, `- o` with a mug of coffee beside its paw on the night shift
-(an agent busy between midnight and 6:00), `= =` tired (an agent session busy for over 12 hours),
-`^ ^ +*` proud the day after a cleanup that freed 1GB or more, `^ ^` agents at work on a healthy
-machine, `- - z Z` nobody busy. It wears a hard hat while a marmot cleanup runs and, in the live
-view, blinks every few seconds.
+A marmot peeks over `mm status`. Its face shows the machine's health at a glance; the first match
+wins:
 
-It also knows what day it is: a party hat and fireworks at New Year, a Santa hat, snow on the rule
-all winter, vampire fangs and a web in Halloween week (and on the day a jack-o'-lantern beside its
-head and `∆ ∆` eyes), papel picado, marigolds and calavera eyes on Día de Muertos, a lightsaber on
-May 4, a tree on Earth Day, its anniversary on this machine, and some twenty more (the table is
-`MM_CALENDAR` in `lib/mascot.sh`, the art `MM_PARTS`; all of it printable ASCII but the `∆` eyes,
-one column everywhere, so no terminal shows an emoji). The day never changes the face that reports
-a problem, and `festive = off` in the config turns the calendar off. `mm --version` and a run with
-nothing to do say the day's greeting too, and the closing banner of a real run celebrates firsts,
-round run counts, records and anniversaries, each once.
+| Face | When |
+|---|---|
+| `x x` | health below 60 |
+| `O O !` | health below 80 |
+| `> <` | CPU above 85% over the last three samples |
+| `o o` | any other health reason |
+| `- o` and a mug of coffee | the night shift: an agent busy between midnight and 6:00 |
+| `= =` | tired: an agent session busy for over 12 hours |
+| `^ ^ +*` | proud: a cleanup freed 1GB or more in the last 24 hours |
+| `^ ^` | agents at work on a healthy machine |
+| `- - z Z` | no agent busy |
+
+Its cheeks are stuffed when an `x x` or `O O` face comes with a root disk 90% full or more. It
+wears a hard hat while a marmot cleanup runs and, in the live view, blinks now and then.
+
+It also knows what day it is: a party hat and fireworks at New Year, a Santa hat at Christmas,
+snow on the rule all winter, fangs and a web in Halloween week, a jack-o'-lantern and `∆ ∆` eyes
+on Halloween itself, papel picado, marigolds and calavera eyes on Día de Muertos, a lightsaber on
+May 4, a tree on Earth Day, its anniversary on this machine, and more (`MM_CALENDAR` in
+`lib/mascot.sh`). It is all printable ASCII but the `∆` eyes, one column wide, so no terminal
+shows an emoji. The day never changes a face that reports a problem, and `festive = off` in the
+config turns the calendar off.
+
+On those days `mm --version` and a run with nothing to do greet you too. The closing banner of a
+real run celebrates firsts, round run counts, records and anniversaries, each once.
 
 ## Safety
 
@@ -121,10 +161,10 @@ marmot deletes files, so it refuses rather than guesses.
 
 - **Without asking.** Developer caches, old browser builds, old agent CLI and editor server
   versions, logs older than 7 days, browser leftovers in `/tmp`, and Docker build cache older
-  than 7 days. With sudo, also the apt cache, the journal above 500 MB, and old snap revisions.
+  than 7 days. With sudo, also the apt cache, the journal above 500MB, and old snap revisions.
 - **Build artifacts of idle projects.** Only next to the file that rebuilds them: `node_modules`
-  next to a `package.json`, `target` next to a `Cargo.toml`, and so on. `mm purge` asks first.
-  `mm purge --yes` and scheduled runs remove them without asking.
+  next to a `package.json`, `target` next to a `Cargo.toml`, and so on. `mm purge` asks first;
+  `mm purge --yes` and scheduled runs don't.
 - **After you confirm.** Old Trash items, crash reports, rotated system logs, unused packages,
   old kernels, stopped containers, unused images, and finished git worktrees.
 - **Only if you opt in.** Agent sessions, the app data of programs you uninstall, and old Trash
@@ -144,22 +184,28 @@ marmot keeps a file, and every folder that contains it, when:
 - it is in your whitelist, or its name looks like a credential.
 - it was used recently, or marmot can't read its size, its activity, or its git state.
 
-Personal files, such as virtualenvs and agent sessions, go to the Trash, and `trash-restore`
-brings them back. Without a terminal (cron, pipes, agents), marmot skips every step that asks.
-Every refusal names its reason, and `mm history` lists every change. `tests/personal.bats` fills
-a test home with personal files that look like caches and build output, and fails if any
-unattended run deletes one. [SECURITY.md](SECURITY.md) has the full rules.
+Personal files, such as virtualenvs and agent sessions, go to the Trash; `trash-restore` brings
+them back. Without a terminal (cron, pipes, agents), marmot skips every step that asks. Every
+refusal names its reason, and `mm history` lists every change.
+
+`tests/personal.bats` fills a test home with personal files that look like caches and build
+output, and fails if any unattended run deletes one. [SECURITY.md](SECURITY.md) has the full
+rules.
 
 ## Scheduled runs
 
-`mm schedule enable` runs `mm schedule run` daily, or weekly with `--weekly`, through a systemd
-user timer, or through a crontab line when `systemctl --user` doesn't work. A run removes caches,
-old browser and agent CLI builds, logs older than 7 days, `/tmp` browser leftovers, old editor
-server builds, and build artifacts of projects idle 14+ days. It empties old Trash items only
-with `trash_keep_days` set, and it moves old agent sessions to the Trash only with
-`sessions_keep_days` set. It never asks, never uses sudo, and never touches Docker, worktrees,
-packages, or processes. It reads the same config folder as the shell that enabled it, so your
-whitelist applies.
+`mm schedule enable` runs `mm schedule run` daily around 03:00, or on Sundays with `--weekly`. It
+uses a systemd user timer, which catches up on missed runs at boot, or a crontab line when
+`systemctl --user` doesn't work. `mm schedule disable` removes only what `enable` created.
+
+A run removes caches, old browser and agent CLI builds, logs older than 7 days, `/tmp` browser
+leftovers, old editor server builds, and build artifacts of projects idle 14+ days. Two settings
+widen it: `trash_keep_days` empties old Trash items, and `sessions_keep_days` moves old agent
+sessions to the Trash.
+
+A run never asks, never uses sudo, and never touches Docker, worktrees, packages, or processes.
+It reads the same config folder as the shell that enabled it, so your whitelist applies.
+`mm status` shows the last run, and `mm history` its changes.
 
 ## Configuration
 
@@ -192,8 +238,11 @@ another with one row in `agents`:
 My Tool|mytool|~/.mytool ~/.config/mytool|~/.mytool/sessions||||~/.mytool/logs
 ```
 
-marmot then protects its state, shows its sessions in `mm status`, and cleans its old logs. A
-cache folder goes in `catalog` as `cache|My tool cache|~/.cache/mytool|mytool`: a label, the
+marmot then protects its state, shows its sessions in `mm status`, and cleans its old logs. Paths
+must be inside your home. Two more optional fields, helper processes and session file globs, are
+described at the top of `lib/agents.sh`.
+
+A cache folder goes in `catalog` as `cache|My tool cache|~/.cache/mytool|mytool`: a label, the
 folder, and the process names that mean it is in use.
 
 <details>
@@ -215,12 +264,13 @@ folder, and the process names that mean it is in use.
 
 ## Network access
 
-marmot sends no telemetry. It uses the network only in these cases:
+marmot sends no telemetry. It uses the network only here:
 
 - `mm update` runs `git fetch` on the checkout marmot was installed from.
 - `mm purge` asks `gh` about the pull requests of worktree branches, when `gh` is installed and
   logged in. This sends branch names to GitHub.
-- `mm optimize` runs `snap refresh --list`, and `apt-get update` after you confirm.
+- `mm optimize` runs `snap refresh --list`. On a terminal with sudo, and not in a dry run, it
+  also runs `apt-get update` and downloads the upgrades you confirm.
 - `mm clean` runs tools' own clean commands, such as npm, yarn through Corepack, and Homebrew,
   which may contact their registries.
 
@@ -244,8 +294,8 @@ and marmot says so when it is missing.
 
 In a container, `mm status` follows the cgroup CPU and memory limits, and `mm clean` and
 `mm optimize` leave kernels, swap, and TRIM to the host. marmot cleans Docker only when the
-daemon belongs to the container, and `mm purge` also scans your folders in `/workspaces` and
-`/workspace`. Safety checks read `/proc` directly and need neither procps nor psmisc.
+daemon belongs to the container. Safety checks read `/proc` directly and need neither procps nor
+psmisc.
 
 ## Contributing
 
