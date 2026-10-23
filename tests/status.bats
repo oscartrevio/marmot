@@ -282,7 +282,7 @@ EOF
     and (.system.listening_ports.min_age_seconds == 0)
     and (.system.lingering.processes | any(.pid == $p))' <<<"$JSON"
   run env MM_STATUS_LINGER_AGE=0 mm status --once --view full
-  [[ "$output" == *"listening >0m · oldest"* ]]
+  [[ "$output" == *"listening >0s · oldest"* ]]
   status_json
   jq -e --argjson p "$pid" '
     (.system.listening_ports.ports | all(.pid != $p))
@@ -356,13 +356,13 @@ fake_omp_helpers() {
   [ "$status" -eq 0 ]
   grep -E "^  omp $SESSION " <<<"$output"
   [ "$(grep -cE "^  omp ($MUX|$DAEMON|$INNER) " <<<"$output")" -eq 0 ]
-  grep -E '^agent helpers: omp [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+  grep -E '^agent helpers: omp [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
   [[ "$output" != *"(pid $TSC)"* ]]
   run env MM_STATUS_LINGER_AGE=0 mm status --once
-  grep -E '^  omp helpers · [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+  grep -E '^  omp helpers · [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
   [[ "$output" != *"tsc $TSC"* ]]
   run env MM_STATUS_LINGER_AGE=0 COLUMNS=120 mm status --once --view full
-  grep -E '^omp helpers · [0-9]+ · [0-9.]+ [MG]B$' <<<"$output"
+  grep -E '^omp helpers · [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
 }
 
 @test "a helper that retitled itself (omp daemon brok) is known by argv[0] and heads its tree" {
@@ -412,6 +412,25 @@ EOF
   jq -e '.health_reasons | all(test("inodes") | not)' <<<"$JSON"
 }
 
+@test "a full disk names its fix in the compact, full and --agent views" {
+  mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 910 90 1000 0\n"'
+  run env COLUMNS=80 mm status --once
+  [ "$status" -eq 0 ]
+  grep -qF "→ mm clean --dry-run, then mm purge --dry-run" <<<"$output"
+  run env COLUMNS=120 mm status --once --view full
+  grep -qF "→ mm clean --dry-run, then mm purge --dry-run" <<<"$output"
+  run env -u NO_COLOR mm status --agent
+  grep -qxF -- "- disk / 91% full: mm clean --dry-run, then mm purge --dry-run" <<<"$output"
+}
+
+@test "no fix is named while the disk has room" {
+  mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 100 900 1000 0\n"'
+  run env COLUMNS=80 mm status --once
+  [[ "$output" != *"→ mm clean"* ]]
+  run env -u NO_COLOR mm status --agent
+  [[ "$output" != *"disk / "* ]]
+}
+
 @test "marmot's own processes never make the top CPU or memory lists" {
   needs_jq
   # The apt probe runs under mm status: make it the busiest process on the machine while sampled.
@@ -443,16 +462,24 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
 }
 
 @test "live mode: refreshes rewrite only changed rows, the footer ends its line, q quits" {
-  # Room for every panel and no client link coming and going: rows only change by their values.
+  # Room for every panel of the full view, the CPU trend included; no client link to look up.
   fake_ss "$LISTEN_SSH" ""
   LIVE_ROWS=70 live 'sleep 5; printf q' --view full
   # 124 would mean q did not quit before the timeout.
   [ "$LIVE_STATUS" -eq 0 ]
   # The CPU trend grows every refresh, so it is rewritten each time: several frames were drawn.
   [ "$(grep -c '^Trend ' <<<"$LIVE_TEXT")" -ge 2 ]
-  # A panel title never changes: written by the first frame, again only if the layout shifts
-  # (the header gains a health reason under load), never on every refresh.
-  [ "$(grep -c '⚙ CPU' <<<"$LIVE_TEXT")" -lt "$(grep -c '^Trend ' <<<"$LIVE_TEXT")" ]
+  # Replayed as a screen (each row written as "ROW<TAB>text"), no refresh clears it and none
+  # writes a row with the text it already shows. Counting a panel title's writes instead counts
+  # what else runs: a cleanup in a test alongside puts the hard hat on the marmot, a row above
+  # every panel, and each panel row that moves is rightly written again.
+  local painted
+  painted=$(sed -e 's/\x1b\[2J/\nclear\n/g' -e 's/\x1b\[\([0-9]*\);1H/\n\1\t/g' \
+    -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$LIVE_OUT" | tr -d '\r' | LC_ALL=C awk -F'\t' '
+    $0 == "clear" { if (rows) cleared++; delete shown; next }
+    $1 ~ /^[0-9]+$/ { rows++; if ($2 != "" && shown[$1] == $2) same++; shown[$1] = $2 }
+    END { print rows + 0, cleared + 0, same + 0 }')
+  [[ "$painted" =~ ^[1-9][0-9]*\ 0\ 0$ ]] || { echo "rows written, clears, rows written unchanged: $painted"; false; }
   [ "$(grep -c 'q quit' <<<"$LIVE_TEXT")" -ge 1 ]
   # Stripped of escapes, a footer glued to whatever is written next reads "...5mmm status".
   [ "$(grep -cE 'q quit.*(mm status|Trend|Total)' <<<"$LIVE_TEXT")" -eq 0 ]
@@ -514,7 +541,8 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   done
   fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:435.2/30 lastrcv:5 minrtt:21')"
   run env "${NO_SSH[@]}" mm status --once
-  [[ "$(head -3 <<<"$output")" == *"link to you is laggy"* ]]
+  # On the title's line, wherever the marmot puts it (a hat adds a row above its head).
+  [[ "$(grep -m1 -F 'mm status' <<<"$output")" == *"link to you is laggy"* ]]
 }
 
 @test "client: SSH_CONNECTION's address wins over more recent peers, even without TCP stats" {
@@ -746,6 +774,7 @@ exit 0'
   local i
   fake_agent codex
   for i in 1 2 3; do mkdir -p "$SB/w$i"; detached "$SB/w$i" "$SB/bin/codex" 30; done
+  mm_test_now '2026-06-10 12:00' # a plain day: the five-row marmot
   status_lib '_status_init; _status_first 0
     _status_frame_compact 80; printf "%s\n" "${ST_FRAME[@]}" >"$HOME/tall"
     _status_frame_compact 80 $((${#ST_FRAME[@]} - 1)); printf "%s\n" "${ST_FRAME[@]}" >"$HOME/short"
@@ -760,8 +789,12 @@ exit 0'
   [ "$(grep -cE '^  codex ' "$HOME/short")" -eq "$n" ]
 }
 
+# at DATE — epoch of DATE (local time), for ST_NOW.
+at() { date -d "$1" +%s; }
+
 @test "the marmot's face: health first, then a busy CPU, any health reason, then agents at work" {
   status_lib '
+    ST_NOW='"$(at '2026-06-10 12:00')"'
     work=$(printf "1\tclaude\tclaude\t60\t9\t0\t300\t1\t/w") wait=$(printf "2\tcodex\tcodex\t60\t9\t0\t0\t0\t/w")
     face() { ST_SCORE=$1 ST_CPUH=($2) ST_REASONS=(${3:+"$3"}) ST_AGENTS=("${@:4}"); _status_mood; echo "$REPLY"; }
     face 59 100 "disk 95% full" "$work"
@@ -775,6 +808,134 @@ exit 0'
     face 100 100 ""'
   [ "$status" -eq 0 ]
   [ "${lines[*]}" = "dizzy alert alert squint happy neutral happy sleepy sleepy" ]
+}
+
+@test "the marmot's face: night shift, a long session, a recent big cleanup; cheeks when the disk is why" {
+  status_lib '
+    noon='"$(at '2026-06-10 12:00')"' night='"$(at '2026-06-10 03:30')"' dawn='"$(at '2026-06-10 06:00')"'
+    busy=$(printf "1\tclaude\tclaude\t600\t9\t0\t300\t1\t/w") long=$(printf "1\tclaude\tclaude\t50000\t9\t0\t300\t1\t/w")
+    idle=$(printf "2\tcodex\tcodex\t50000\t9\t0\t0\t0\t/w")
+    face() { ST_NOW=$1 ST_SCORE=$2 ST_CPUH=(100) ST_REASONS=(${3:+"$3"}) ST_AGENTS=("${@:4}"); _status_mood; echo "$REPLY$ST_CHEEKS"; }
+    face "$night" 100 "" "$busy"
+    face "$night" 100 "" "$idle"
+    face "$night" 95 "1 orphaned process" "$busy"
+    face "$dawn" 100 "" "$busy"
+    face "$noon" 100 "" "$long"
+    face "$noon" 100 "" "$idle"
+    ST_PROUD_AT=$((noon - 3600)) ST_PROUD_FREED=2147483648
+    face "$noon" 100 "" "$busy"
+    face "$noon" 100 ""
+    face "$noon" 100 "" "$long"
+    face "$noon" 95 "1 orphaned process"
+    ST_PROUD_FREED=1000000000
+    face "$noon" 100 "" "$busy"
+    ST_PROUD_FREED=2147483648 ST_PROUD_AT=$((noon - 90000))
+    face "$noon" 100 "" "$busy"
+    ST_ROOT_PCT=950
+    face "$noon" 75 "disk 95% full" "$busy"
+    face "$noon" 50 "disk 95% full" "$busy"
+    ST_ROOT_PCT=850
+    face "$noon" 75 "memory 5% available" "$busy"'
+  [ "$status" -eq 0 ]
+  [ "${lines[*]}" = "night0 sleepy0 neutral0 happy0 tired0 sleepy0 proud0 proud0 tired0 neutral0 happy0 happy0 alert1 dizzy1 alert0" ]
+}
+
+@test "proud: the newer of the last scheduled run and the log's newest run, said by when it was" {
+  mkdir -p "$XDG_STATE_HOME/marmot"
+  local log="$XDG_STATE_HOME/marmot/operations.log"
+  printf '%s\tclean\tremove\t/x/a\t1073741824\t\tR1\n' "$(date -Iseconds -d '2026-06-09 10:00')" >"$log"
+  printf '%s\tschedule\tremove\t/x/b\t2147483648\t\tR2\n%s\tschedule\trefused\t/x/c\t0\tin use\tR2\n' \
+    "$(date -Iseconds -d '2026-06-10 03:10')" "$(date -Iseconds -d '2026-06-10 03:11')" >>"$log"
+  status_lib '
+    proud() { ST_LAST=0; mm_schedule_last && ST_LAST=1; ST_NOW=$(date -d "$1" +%s) ST_DAY=${1% *}; _status_facts
+      echo "$ST_PROUD_AT $ST_PROUD_FREED $ST_PROUD_NOTE"; }
+    proud "2026-06-10 12:00"
+    proud "2026-06-11 09:00"
+    printf "{\n  \"finished_at\": \"x\",\n  \"finished_epoch\": %s,\n  \"duration_seconds\": 5,\n  \"trigger\": \"manual\",\n  \"freed_bytes\": 3221225472,\n  \"trashed_bytes\": 0,\n  \"items\": 2,\n  \"skipped\": [],\n  \"errors\": []\n}\n" \
+      "$(date -d "2026-06-10 15:00" +%s)" >"$XDG_STATE_HOME/marmot/last-run.json"
+    proud "2026-06-10 20:00"'
+  [ "$status" -eq 0 ]
+  [ "${lines[0]}" = "$(at '2026-06-10 03:11') 2147483648 freed 2.0GB last night" ]
+  [ "${lines[1]}" = "$(at '2026-06-10 03:11') 2147483648 freed 2.0GB yesterday" ]
+  [ "${lines[2]}" = "$(at '2026-06-10 15:00') 3221225472 freed 3.0GB this afternoon" ]
+}
+
+@test "the hard hat: a marmot cleanup at work; not a dry run, --help or another command" {
+  status_lib '
+    for a in "bash /x/mm clean" "/bin/bash /x/marmot purge --yes /w" "/x/mm schedule run" "bash /x/mm --debug optimize" \
+      "bash /x/mm uninstall foo" "bash /x/mm clean --dry-run" "bash /x/mm -n purge" "bash /x/mm clean --help" \
+      "bash /x/mm status" "bash /x/mm schedule status" "grep mm clean" "vim /x/mm" "bash /x/mm"; do
+      read -r -a v <<<"$a"
+      if _status_cleanup_argv "${v[@]}"; then echo yes; else echo no; fi
+    done'
+  [ "${lines[*]}" = "yes yes yes yes yes no no no no no no no no" ]
+  # Other tests' cleanups may run alongside this one: only the positive case is checked here.
+  mkdir -p "$SB/fake"
+  printf '#!/bin/bash\nsleep 30\n' >"$SB/fake/mm"
+  mm_test_bg "$SB" bash "$SB/fake/mm" clean
+  status_lib '_status_init; _status_first 0; echo "$ST_ATWORK"; _status_frame_compact 200; _status_cleanup; echo "$MM_LOOK_HAT"'
+  [ "${lines[*]}" = "1 hardhat" ]
+}
+
+@test "blink: the live view blinks through a half lid now and then; a snapshot never does" {
+  # The face must have open eyes whatever the runner is doing: as a container with an idle cgroup
+  # (CPU 0%, so never the squint of a busy CI host, whose load does not count either) and a disk at
+  # 85% (a health reason), it is o o (O O should the runner add a reason of its own). Never sleepy
+  # (- -), so half-closed (- -) or shut (_ _) eyes can only be a blink.
+  fake_cgroup
+  export MM_CONTAINER=1
+  mm_test_fake df 'printf "Mounted on 1B-blocks Used Avail Inodes IUsed\n/ 1000 850 150 1000 0\n"'
+  fake_ss "$LISTEN_SSH" ""
+  mm_test_now '2026-06-10 12:00'
+  run env COLUMNS=100 mm status --once
+  [ "$status" -eq 0 ]
+  grep -qE '^   \|  [oO]    [oO]  \|' <<<"$output" || { echo "$output"; false; }
+  [[ "$output" != *"|  -    -  |"* && "$output" != *"|  _    _  |"* ]]
+  live 'sleep 14; printf q'
+  [ "$LIVE_STATUS" -eq 0 ]
+  grep -qE '^   \|  [oO]    [oO]  \|' <<<"$LIVE_TEXT" || { echo "$LIVE_TEXT"; false; }
+  grep -qF '   |  -    -  |' <<<"$LIVE_TEXT"
+  grep -qF '   |  _    _  |' <<<"$LIVE_TEXT"
+}
+
+@test "blink: 2 to 8 s apart, open → half → shut → half → open, one in about six double" {
+  status_lib '
+    RANDOM=42
+    for ((i = 0; i < 600; i++)); do _status_blink_plan 1; echo "$REPLY ${ST_BLINK_SEQ[*]}"; done
+    _status_blink_plan 0; echo "$REPLY ${ST_BLINK_SEQ[*]}"'
+  [ "$status" -eq 0 ]
+  local line gap seq one="1:0:40000 2:0:100000 1:0:40000" min=9000000 max=0 double=0 single=0 s ms
+  for line in "${lines[@]:0:600}"; do
+    gap=${line%% *} seq=${line#* }
+    ((gap >= 2000000 && gap <= 8000000)) || { echo "gap $gap"; false; }
+    ((gap < min)) && min=$gap
+    ((gap > max)) && max=$gap
+    if [[ "$seq" == "$one 0:0:0" ]]; then single=$((single + 1))
+    elif [[ "$seq" == "$one 0:0:"* && "$seq" == *" $one 0:0:0" ]]; then double=$((double + 1))
+    else echo "frames: $seq"; false; fi
+  done
+  # Random, not a metronome; doubles about one in six (100 of 600 expected).
+  ((min < 3000000 && max > 7000000))
+  ((double >= 60 && double <= 150 && single + double == 600))
+  # One blink is 120 to 250 ms, closing and opening through the half lid.
+  ms=0
+  for s in $one; do ms=$((ms + ${s##*:})); done
+  ((ms >= 120000 && ms <= 250000))
+  # Too slow to draw 40 ms frames: shut and open, no half lid.
+  [ "${lines[600]#* }" = "2:0:150000 0:0:0" ]
+}
+
+@test "the day's occasions dress the header; an ordinary day has none" {
+  mm_test_now '2026-12-25 12:00'
+  status_lib '_status_init; _status_first 0; _status_frame_compact 200; _status_cleanup
+    echo "${ST_OCC[*]}|$MM_LOOK_HAT|${MM_LOOK_GREET:+greeting}"'
+  [ "$status" -eq 0 ]
+  # Another test's cleanup may be at work alongside: then the hard hat is the right hat.
+  [[ "$output" == "christmas winter|santa|greeting" || "$output" == "christmas winter|hardhat|greeting" ]]
+  mm_test_now '2026-06-10 12:00'
+  status_lib '_status_init; _status_first 0; _status_frame_compact 200; _status_cleanup
+    echo "${ST_OCC[*]}|${MM_LOOK_GREET:+greeting}"'
+  [ "$output" = "|" ]
 }
 
 @test "views: v switches live between compact and full, repainting the screen" {
@@ -845,13 +1006,13 @@ fake_cgroup() {
   # details out of the header.
   run env MM_CONTAINER=1 COLUMNS=400 mm status --once --view full
   [ "$status" -eq 0 ]
-  [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" == *" · container · "*"512 MB limit"* ]]
+  [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" == *" · container · "*"512.0MB limit"* ]]
   [[ "$output" == *"of 1.5-core limit"* && "$output" == *"(host, "* ]]
   [[ "$output" != *"✓ kernel"* && "$output" != *"! kernel"* && "$output" != *"✓ reboot"* ]]
   run env MM_CONTAINER=1 mm status --agent
-  grep -E "^machine: [^ ]+ · container · .* · 1\.5 of [0-9]+ cores · 512 MB RAM limit · " <<<"$output"
+  grep -E "^machine: [^ ]+ · container · .* · 1\.5 of [0-9]+ cores · 512\.0MB RAM limit · " <<<"$output"
   grep -E '^cpu: [0-9.]+% of a 1\.5-core limit · host load ' <<<"$output"
-  grep -E '^memory: 39% used of a 512 MB limit · ' <<<"$output"
+  grep -E '^memory: 39% used of a 512\.0MB limit · ' <<<"$output"
 }
 
 @test "outside a container the cgroup limits change nothing" {
@@ -861,4 +1022,16 @@ fake_cgroup() {
   jq -e '.container == null and .memory.total != 536870912 and (.system.reboot_required | type == "boolean")' <<<"$JSON"
   run mm status --once
   [[ "$(grep -m1 -A1 -F 'mm status' <<<"$output")" != *container* ]]
+}
+
+@test "live mode: w makes the marmot wave for a moment (a snapshot never shows it)" {
+  fake_ss "$LISTEN_SSH" ""
+  mm_test_now '2026-06-10 12:00'
+  run env COLUMNS=100 mm status --once
+  [[ "$output" != *"(mm)--UU------"* ]]
+  live 'sleep 4; printf w; sleep 2.5; printf q'
+  [ "$LIVE_STATUS" -eq 0 ]
+  grep -qF -- '--(mm)--UU------' <<<"$LIVE_TEXT"
+  # The paw beside the face at eye level.
+  grep -qE '^   \|  .    .  \| \(mm\)' <<<"$LIVE_TEXT"
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# marmot: keep this Linux box clean, fast, and up to date.
+# marmot: keep the machines your coding agents run on clean, fast and healthy.
 set -uo pipefail
 
 MM_HOME="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -24,7 +24,7 @@ declare -A MM_DESC=(
 
 mm_usage() {
   cat <<EOF
-${C_BOLD}marmot${C_RESET} (mm) $MM_VERSION: keep this machine clean, fast, and up to date
+${C_BOLD}marmot${C_RESET} (mm) $MM_VERSION: keeps the machines your coding agents run on clean, fast and healthy
 
 Usage: mm [command] [options]
 Start with: mm clean --dry-run
@@ -37,7 +37,7 @@ EOF
 Global options:
   -n, --dry-run   Preview; change nothing
       --debug     Verbose logs
-  -h, --help      Help (also: mm <command> --help)
+  -h, --help      Help (also: mm help <command>, or mm <command> --help)
   -v, --version   Version
 
 Confirmations need a terminal: run without one (cron, pipes) and every step that asks is
@@ -51,11 +51,16 @@ Files:
 EOF
 }
 
+# mm_menu — bare `mm` on a terminal: pick a command (its --help in a preview below the list) and
+# run it; without a terminal or fzf, the usage. --preview and the colon form of --preview-window
+# both work on fzf 0.29 (Ubuntu 22.04).
 mm_menu() {
-  local choice
+  local choice self
   if command -v fzf >/dev/null && [[ "$MM_TTY" == 1 ]]; then
+    printf -v self '%q' "$0"
     choice=$(for c in "${MM_COMMANDS[@]}"; do printf '%-11s %s\n' "$c" "${MM_DESC[$c]}"; done |
-      fzf --reverse --height=~40% --header='marmot: pick a command' --no-multi) || exit 0
+      fzf --reverse --height="$(mm_fzf_height 80)" --header='marmot: pick a command' --no-multi \
+        --preview "$self {1} --help" --preview-window='down:60%:wrap') || exit 0
     choice=${choice%% *}
   else
     mm_usage; exit 0
@@ -63,18 +68,53 @@ mm_menu() {
   exec "$0" "$choice"
 }
 
-# Global flags may appear anywhere; everything else is passed to the command.
-args=()
+# mm_distance A B — the edit distance (insertions, deletions, substitutions) between A and B.
+mm_distance() {
+  local s=$1 t=$2 i j cost
+  local -a prev cur
+  for ((j = 0; j <= ${#t}; j++)); do prev[j]=$j; done
+  for ((i = 1; i <= ${#s}; i++)); do
+    cur=("$i")
+    for ((j = 1; j <= ${#t}; j++)); do
+      cost=1; [[ "${s:i-1:1}" == "${t:j-1:1}" ]] && cost=0
+      cur[j]=$(( prev[j] + 1 < cur[j-1] + 1 ? prev[j] + 1 : cur[j-1] + 1 ))
+      (( prev[j-1] + cost < cur[j] )) && cur[j]=$(( prev[j-1] + cost ))
+    done
+    prev=("${cur[@]}")
+  done
+  printf '%d' "${prev[${#t}]}"
+}
+
+# mm_unknown_command NAME — die naming NAME and, when one is close (at most 2 edits, fewer than
+# NAME has letters), the command that was probably meant.
+mm_unknown_command() {
+  local c d best="" bd=3
+  for c in "${MM_COMMANDS[@]}" analyse; do
+    d=$(mm_distance "$1" "$c")
+    (( d < bd && d < ${#1} )) && { bd=$d best=$c; }
+  done
+  [[ "$best" == analyse ]] && best=analyze
+  mm_die "unknown command: $1.${best:+ Did you mean $best?} (see mm --help)"
+}
+
+# Global flags may appear anywhere; everything else is passed to the command. -y/--yes belongs to
+# mm purge alone, wherever it is written: decided once the command is known. marmot has no
+# --force (AGENTS.md: nothing switches a check off), and says so before anything runs.
+args=() yes=()
 for a in "$@"; do
   case "$a" in
     -n|--dry-run) export MM_DRY_RUN=1 ;;
-    -y|--yes)
-      if [[ "${args[0]:-}" == purge ]]; then args+=("$a")
-      else mm_die "$a: only 'mm purge --yes' runs unattended; other commands ask on the terminal"; fi ;;
+    -y|--yes) yes+=("$a") ;;
     --debug) export MM_DEBUG=1 ;;
+    --force) mm_die "marmot has no --force. May the force be with you, though." ;;
     *) args+=("$a") ;;
   esac
 done
+if (( ${#yes[@]} )); then
+  [[ "${args[0]:-}" == purge ]] ||
+    mm_die "${yes[0]}: only 'mm purge --yes' runs unattended; other commands ask on the terminal"
+  args=(purge "${yes[@]}" "${args[@]:1}")
+fi
 set -- "${args[@]+"${args[@]}"}"
 # One id per invocation, on every operations-log row (mm history groups by it). Exported, so
 # child marmot and bash processes log under the same run.
@@ -83,15 +123,29 @@ export MM_RUN_ID
 
 case "${1:-}" in
   "") mm_menu ;;
-  -h|--help|help) mm_usage ;;
+  -h|--help) mm_usage ;;
+  help)
+    # mm help COMMAND: that command's own --help
+    [[ -n "${2:-}" ]] || { mm_usage; exit 0; }
+    c=$2; [[ "$c" == analyse ]] && c=analyze
+    [[ " ${MM_COMMANDS[*]} " == *" $c "* ]] || mm_unknown_command "$c"
+    exec "$0" "$c" --help ;;
   -v|--version)
     # shellcheck source=cmd/update.sh
     . "$MM_HOME/cmd/update.sh"
     _update_version ;;
+  # Easter eggs: in neither the help nor the completion; each prints and exits, nothing runs.
+  42) echo "Don't panic." ;;
+  xyzzy) echo "Nothing happens." ;;
+  moo) echo "Marmots don't moo. They whistle." ;;
+  make)
+    [[ "${*:2}" == "me a sandwich" ]] || mm_unknown_command make
+    # xkcd 149: only root gets a sandwich.
+    if (( EUID == 0 )); then echo "Okay."; else echo "What? Make it yourself."; exit 1; fi ;;
   *)
     MM_CMD="$1"; shift
     [[ "$MM_CMD" == analyse ]] && MM_CMD=analyze
-    [[ " ${MM_COMMANDS[*]} " == *" $MM_CMD "* ]] || mm_die "unknown command: $MM_CMD (see mm --help)"
+    [[ " ${MM_COMMANDS[*]} " == *" $MM_CMD "* ]] || mm_unknown_command "$MM_CMD"
     # shellcheck source=/dev/null
     . "$MM_HOME/cmd/$MM_CMD.sh"
     mm_cmd_main "$@"

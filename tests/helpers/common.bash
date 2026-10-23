@@ -9,8 +9,9 @@
 #     "<cmd> <args>" to $MM_TEST_HOST_CALLS and exits 86. Teardown fails the test when that file is
 #     not empty, so code that reaches the real machine turns a test red instead of passing on one
 #     host and failing on another. A test that needs the command installs a double: mm_test_fake.
-#   - `sudo -n true` answers "no" quietly, so marmot runs its unprivileged paths; so does
-#     `gh auth token` (logged out), so no test asks GitHub anything.
+#   - `sudo -n true` answers "no" quietly and `sudo -v` (the one password prompt) is refused, so
+#     marmot runs its unprivileged paths; so does `gh auth token` (logged out), so no test asks
+#     GitHub anything.
 
 MM_SRC="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
 MM_TEST_GUARDED=(sudo apt apt-get apt-mark snap docker systemctl journalctl swapon swapoff mount umount
@@ -33,7 +34,7 @@ mm_test_setup() {
   export GIT_CONFIG_GLOBAL="$sandbox/gitconfig" GIT_CONFIG_NOSYSTEM=1
   printf '[maintenance]\n\tauto = false\n[gc]\n\tauto = 0\n' >"$GIT_CONFIG_GLOBAL"
   unset MM_CONFIG_DIR MM_CONFIG_FILE MM_STATE_DIR MM_WHITELIST_FILE MM_PURGE_PATHS_FILE MM_LOG_FILE MM_DRY_RUN MM_DEBUG \
-    MM_NO_SUDO
+    MM_NO_SUDO MM_TEST_SUDO_INTERVAL MM_SUDO_KEEPALIVE_PID
   # Tool caches and the host's gcloud/Azure config folders located through the environment would
   # point outside the sandbox (lib/core.sh carve-outs).
   unset UV_CACHE_DIR GOPATH GOMODCACHE GOFLAGS GOPROXY GOTOOLCHAIN CLOUDSDK_CONFIG AZURE_CONFIG_DIR \
@@ -43,7 +44,7 @@ mm_test_setup() {
   # Tests run on hosts and inside CI containers alike: container awareness is off unless a test
   # turns it on (MM_CONTAINER=1), and no outside Docker daemon setting leaks in.
   export MM_CONTAINER=0
-  unset DOCKER_HOST DOCKER_CONTEXT MM_DOCKER_PRUNE MM_TEST_CGROUP_FS
+  unset DOCKER_HOST DOCKER_CONTEXT MM_DOCKER_PRUNE MM_TEST_CGROUP_FS MM_TEST_NOW
   # Purge discovery looks in /workspaces and /workspace under this stand-in for / instead
   # (cmd/purge.sh honors it only inside $BATS_TEST_TMPDIR); it does not exist unless a test makes it.
   export MM_TEST_WORKSPACE_PREFIX="$SB/fakeroot"
@@ -65,7 +66,7 @@ mm_test_guard_host() {
 #!/usr/bin/env bash
 cmd=${0##*/}
 case "$cmd $*" in
-  "sudo -n true" | "sudo -k" | "gh auth token") exit 1 ;;   # no sudo, logged out of GitHub
+  "sudo -n true" | "sudo -v" | "sudo -k" | "gh auth token") exit 1 ;;   # no sudo, logged out of GitHub
 esac
 echo "$cmd $*" >>"$MM_TEST_HOST_CALLS"
 echo "test reached the real machine: $cmd $*" >&2
@@ -140,6 +141,13 @@ mm_test_clock() {
     else command date "$@"; fi
   }
   export -f date
+}
+
+# mm_test_now DATE — marmot's calendar and clock (lib/mascot.sh mm_now) read DATE (local time,
+# as `date -d` takes it) as now, for the rest of this test.
+mm_test_now() {
+  date -d "$1" +%s >"$BATS_TEST_TMPDIR/now"
+  export MM_TEST_NOW="$BATS_TEST_TMPDIR/now"
 }
 
 # mm_test_pids [--parent PID] [--comm NAME] [--cmdline TEXT] [--cmdline-has TEXT] — PIDs matching

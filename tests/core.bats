@@ -299,6 +299,44 @@ try_rm() { local rc=0; mm_rm "$@" >/dev/null 2>&1 || rc=$?; printf '%s %s\n' "$r
   [ "$(mm_size_frees "$SB/root")" = "3000000001024 3000000001024" ]
 }
 
+@test "sizes never print as 0 of a unit, and KB rounds instead of truncating" {
+  local b want
+  while read -r b want; do
+    [ "$(mm_human "$b")" = "$want" ] || { echo "$b: $(mm_human "$b"), want $want"; return 1; }
+  done <<'EOF'
+0 0B
+999 999B
+1000 1KB
+1023 1KB
+1946 2KB
+12288 12KB
+356515840 340.0MB
+1288490189 1.2GB
+EOF
+}
+
+@test "ages and durations: never 0m, two units for durations, 'in 9h (03:27)' ahead" {
+  [ "$(mm_ago 5)" = "just now" ]
+  [ "$(mm_ago 960)" = "16m ago" ]
+  [ "$(mm_dur 754)" = "12m 34s" ]
+  [ "$(mm_dur 45)" = "45s" ]
+  [ "$(mm_dur 7200)" = "2h" ]
+  [ "$(mm_dur 302400)" = "3d 12h" ]
+  local t=$(( $(date +%s) + 9 * 3600 + 30 ))
+  [ "$(mm_when "$t")" = "in 9h ($(date -d "@$t" +%H:%M))" ]
+  [ "$(mm_when 1)" = now ]
+}
+
+@test "a banner says when a run brought root disk use back under a threshold, and only then" {
+  mm_test_fake df 'echo Use%; echo " 84%"'
+  [ "$(mm_banner_disk 91)" = "Disk 91% → 84%: back under 90%" ]
+  [ -z "$(mm_banner_disk 83)" ]     # use went up: nothing to celebrate
+  [ -z "$(mm_banner_disk 85)" ]     # already under 90 before, still over 80 after
+  [ -z "$(MM_DRY_RUN=1 mm_banner_disk 91)" ]
+  mm_test_fake df 'echo Use%; echo " 79%"'
+  [ "$(mm_banner_disk 85)" = "Disk 85% → 79%: back under 80%" ]
+}
+
 @test "frees counts only files whose every hard link is inside; mm_rm frees exactly that" {
   mkdir -p "$SB/root/a" "$SB/store"
   head -c 40960 /dev/urandom >"$SB/store/shared"; ln "$SB/store/shared" "$SB/root/a/shared"
@@ -410,19 +448,62 @@ $HOME/.cache/pip removable" ]
   [ "$output" = "apt is running" ]
 }
 
-@test "apt locks that cannot be read count as busy only when an apt step could run" {
+@test "apt locks that cannot be read count as busy only when sudo can run an apt step" {
+  (( EUID != 0 )) || skip "root reads every lock holder"
   # The host's own apt can start at any moment (apt-daily on a freshly booted CI runner): this test
   # is about lock files nobody can read, so no apt process is running here.
   mm_proc_match() { return 1; }
-  # sudo is installed but needs a password, and the password is refused
-  mm_test_fake sudo '[[ "$1" == -n ]] && exit 1; echo "sudo $*" >>"$BATS_TEST_TMPDIR/sudo"; exit 1'
-  MM_TTY=1 run mm_apt_busy
+  # sudo runs without asking, but reading the lock holders as root fails
+  mm_test_fake sudo '[[ "$*" == "-n true" ]] && exit 0; exit 1'
+  run mm_apt_busy
   [ "$status" -eq 0 ]
   [ "$output" = "apt locks not visible without sudo" ]
-  MM_TTY=1 MM_DRY_RUN=1 run mm_apt_busy
+  # sudo needs a password: no step can run apt as root, and nothing asks for the password
+  mm_test_fake sudo 'echo "sudo $*" >>"$BATS_TEST_TMPDIR/sudo"; exit 1'
+  MM_TTY=1 run mm_apt_busy
   [ "$status" -eq 1 ]
-  MM_TTY=0 run mm_apt_busy
+  [ "$(cat "$BATS_TEST_TMPDIR/sudo")" = "sudo -n true" ]
+}
+
+@test "sudo is asked for once, up front; refused, nothing asks again and sudo is not run" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'; exit 1"   # needs a password; every one is refused
+  MM_TTY=1 mm_sudo_ask "a test" >/dev/null
+  [ "$MM_NO_SUDO" = 1 ]
+  MM_TTY=1 run mm_can_sudo
   [ "$status" -eq 1 ]
+  run mm_sudo true
+  [ "$status" -ne 0 ]
+  MM_TTY=1 mm_sudo_ask "a second step" >/dev/null
+  mm_inuse_refresh >/dev/null
+  [ "$(cat "$SB/sudo.calls")" = $'-n true\n-v' ]
+}
+
+@test "a password given once serves the rest of the run through sudo -n, the in-use check included" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  # needs a password until sudo -v succeeds; after that sudo -n runs the command (as this user)
+  mm_test_fake sudo "echo \"\$1 \$2\" >>'$SB/sudo.calls'
+[[ \$1 == -v ]] && { touch '$SB/sudo.ok'; exit 0; }
+[[ \$1 == -n && -e '$SB/sudo.ok' ]] || exit 1
+shift; exec \"\$@\""
+  MM_TTY=1 mm_sudo_ask "a test" >/dev/null
+  [ "$MM_NO_SUDO" = 0 ]
+  run mm_can_sudo
+  [ "$status" -eq 0 ]
+  mm_inuse_refresh >/dev/null 2>&1
+  grep -qx -- '-n bash' "$SB/sudo.calls"                       # the root in-use scan ran
+  [ "$(grep -c -- '^-v' "$SB/sudo.calls")" -eq 1 ]
+  [ -z "$(grep -v -e '^-n ' -e '^-v' "$SB/sudo.calls")" ]       # every other call was sudo -n
+}
+
+@test "with passwordless sudo, or without a terminal, nothing asks for a password" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'; [[ \$* == '-n true' ]]"   # passwordless
+  MM_TTY=1 mm_sudo_ask "a test" >/dev/null
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'; exit 1"                   # needs a password
+  MM_TTY=0 mm_sudo_ask "a test" >/dev/null
+  [ "$MM_NO_SUDO" = 0 ]
+  [ "$(cat "$SB/sudo.calls")" = "-n true" ]
 }
 
 @test "without a sudo binary only root counts as able to sudo" {
@@ -443,6 +524,73 @@ $HOME/.cache/pip removable" ]
   mm_inuse_refresh >/dev/null
   [ "$MM_INUSE_PARTIAL" = 1 ]
   [ ! -e "$SB/sudo.calls" ]
+}
+
+@test "a granted sudo session is refreshed with sudo -n -v for the whole run, and only ever sudo -n" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  # needs a password until sudo -v succeeds; the refresh (-n -v) then succeeds, like a live cache
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'
+case \"\$*\" in
+  -v) touch '$SB/sudo.ok' ;;
+  '-n true') [[ -e '$SB/sudo.ok' ]] ;;
+  '-n -v') ;;
+  *) exit 1 ;;
+esac"
+  export MM_TEST_SUDO_INTERVAL=1
+  MM_TTY=1 mm_sudo_ask "a test" >/dev/null
+  local pid=$MM_SUDO_KEEPALIVE_PID i n
+  [ -n "$pid" ]
+  for ((i = 0; i < 100; i++)); do
+    n=$(grep -c -- '^-n -v$' "$SB/sudo.calls" 2>/dev/null || true)
+    (( ${n:-0} >= 2 )) && break
+    sleep 0.1
+  done
+  (( ${n:-0} >= 2 ))                                                  # refreshed again and again
+  [ "$(grep -c -- '^-v$' "$SB/sudo.calls")" -eq 1 ]                   # the one password prompt
+  [ -z "$(grep -v -e '^-n ' -e '^-v$' "$SB/sudo.calls")" ]           # every other call was sudo -n
+  mm_sudo_keepalive_start
+  [ "$MM_SUDO_KEEPALIVE_PID" = "$pid" ]                               # a second start keeps one loop
+  mm_sudo_keepalive_stop
+  [ -z "$MM_SUDO_KEEPALIVE_PID" ]
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+@test "the sudo keepalive ends with the marmot process that started it" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  mm_test_fake sudo "exit 0"                                          # passwordless: nothing to ask
+  run env MM_SRC="$MM_SRC" MM_TTY=1 MM_TEST_SUDO_INTERVAL=1 bash -c \
+    '. "$MM_SRC/lib/core.sh"; mm_sudo_ask "a test" >/dev/null; echo "$MM_SUDO_KEEPALIVE_PID"'
+  [ "$status" -eq 0 ]
+  local pid=$output gone s i
+  [[ "$pid" =~ ^[0-9]+$ ]]
+  for ((i = 0; i < 50; i++)); do
+    s=$(cat "/proc/$pid/stat" 2>/dev/null) || break
+    [[ "${s##*) }" == Z* ]] && break                                  # exited, not yet reaped
+    sleep 0.1
+  done
+  s=$(cat "/proc/$pid/stat" 2>/dev/null) || s=""
+  [[ -z "$s" || "${s##*) }" == Z* ]]
+}
+
+@test "nothing starts the sudo keepalive without a terminal, with MM_NO_SUDO=1, or as root" {
+  mm_test_fake sudo "echo \"\$*\" >>'$SB/sudo.calls'; exit 0"
+  MM_TTY=0 mm_sudo_keepalive_start
+  [ -z "${MM_SUDO_KEEPALIVE_PID:-}" ]
+  MM_TTY=1 MM_NO_SUDO=1 mm_sudo_keepalive_start
+  [ -z "${MM_SUDO_KEEPALIVE_PID:-}" ]
+  (( EUID == 0 )) && MM_TTY=1 mm_sudo_keepalive_start
+  [ -z "${MM_SUDO_KEEPALIVE_PID:-}" ]
+  [ ! -e "$SB/sudo.calls" ]
+}
+
+@test "a failed mm_run is logged as failed with its reason; a dry run logs nothing" {
+  run mm_run "tool step" bash -c 'echo "E: could not get lock" >&2; exit 100'
+  [ "$status" -eq 100 ]
+  [ "$(mm_log_rows failed)" = $'tool step\texit 100: E: could not get lock' ]
+  [ -z "$(mm_log_rows run)" ]
+  MM_DRY_RUN=1 run mm_run "dry step" false
+  [ "$status" -eq 0 ]
+  [ "$(mm_log_rows failed | wc -l)" -eq 1 ]
 }
 
 @test "skips and errors of a run are collected for its summary, failed deletes included" {
@@ -823,18 +971,29 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
 }
 
 @test "a Trash record that cannot be written is taken back, and the refusal names the space" {
-  mkdir -p "$SB/root/item" "$MM_TRASH_DIR/files" "$MM_TRASH_DIR/info"
+  mkdir -p "$SB/root/item" "$MM_TRASH_DIR/files" "$MM_TRASH_DIR/info" "$SB/held"
   echo important >"$SB/root/item/doc.txt"
   mm_whitelist_init
+  # The snapshot must be over 64 KiB, as on a busy machine (on CI, with another test's in-use scan
+  # alongside): bash put a here-string that long in a temp file, which a full disk refuses. A
+  # process holding 300 long-named files open makes it that big on any machine.
+  local i name held=()
+  for ((i = 0; i < 300; i++)); do
+    printf -v name 'held-%03d-%0240d' "$i" 0 && held+=("$SB/held/$name")
+  done
+  touch "${held[@]}"
+  mm_test_bg "$SB" tail -qn0 -f -- "${held[@]}"
   # A disk with no room left: the exclusive create of the .trashinfo still works, the write into
   # it does not (ulimit -f 0 stands in for a full filesystem; XFSZ ignored, so writes just fail).
   run bash -c 'ulimit -f 0; trap "" XFSZ
     . "$1/lib/core.sh"; mm_inuse_refresh >/dev/null 2>&1
     rc=0; mm_rm --trash "$2/root/item" "$2/root" >/dev/null 2>&1 || rc=$?
     echo "$rc $MM_SKIP_REASON"
-    echo "records $(find "$MM_TRASH_DIR/info" -type f | wc -l)"' _ "$MM_SRC" "$SB"
+    echo "records $(find "$MM_TRASH_DIR/info" -type f | wc -l)"
+    echo "${#MM_INUSE}"' _ "$MM_SRC" "$SB"
   [[ "${lines[0]}" == "1 "*"no space"* ]]
   [ "${lines[1]}" = "records 0" ]
+  ((lines[2] > 65536))
   [ "$(cat "$SB/root/item/doc.txt")" = important ]
   # with room again the same name is free: nothing of the failed call is left to block it
   mm_inuse_refresh

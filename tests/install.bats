@@ -254,7 +254,7 @@ listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
   mkdir -p "$MARMOT_BIN"; ln -s /bin/true "$MARMOT_BIN/marmot"
   run "$MM_SRC/install.sh"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"kept $MARMOT_BIN/marmot"* ]]
+  [[ "$output" == *"$MARMOT_BIN/marmot"* ]]
   [ "$(readlink "$MARMOT_BIN/marmot")" = /bin/true ]
   [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
   run "$MM_SRC/install.sh" --uninstall
@@ -290,8 +290,64 @@ listing() { (cd "$1" && find . | LC_ALL=C sort | tr '\n' ' '); }
   [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
   [[ "$output" == *"~/.zshrc"* || "$output" == *"$HOME/.zshrc"* ]]
   [[ "$output" == *"export PATH=\"$MARMOT_BIN:\$PATH\""* || "$output" == *'export PATH="$HOME/'* ]]
+  [[ "$output" == *"sudo apt-get install fzf ncdu jq trash-cli"* ]]
   mkdir -p "$SB/proj/.git"
   MARMOT_PREFIX="$SB/proj/tools/marmot" PATH="$tools" run "$MM_SRC/install.sh"
   [ "$status" -ne 0 ]
   [ ! -e "$SB/proj/tools" ]
+}
+
+@test "a fresh install ends with the first-run steps; a reinstall does not repeat them" {
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"marmot is installed"* ]]
+  [[ "$output" == *"mm clean --dry-run"* ]]
+  [[ "$output" == *"mm status"* ]]
+  [[ "$output" == *"mm schedule enable"* ]]
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"marmot is installed"* ]]
+}
+
+@test "the closing art is the README's marmot, dressed for the day on an occasion" {
+  local readme
+  readme=$(grep -m1 -A4 -F -e '_..--.._' "$MM_SRC/README.md")
+  mm_test_now '2026-06-10 12:00'
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$readme"* ]]
+  "$MM_SRC/install.sh" --uninstall >/dev/null
+  mm_test_now '2026-12-25 12:00'
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"$readme"* && "$output" == *"--(mm)--UU--(mm)--"* ]]
+  "$MM_SRC/install.sh" --uninstall >/dev/null
+  mkdir -p "$HOME/.config/marmot" && printf 'festive = off\n' >"$HOME/.config/marmot/config"
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"$readme"* ]]
+}
+
+@test "the first-run steps are printed, never run" {
+  local calls="$SB/mm-calls"
+  mm_test_fake mm "echo \"\$*\" >>'$calls'"
+  PATH="$BATS_TEST_TMPDIR/stubs:$MARMOT_BIN:$PATH" run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"mm clean --dry-run"* ]]
+  [ ! -e "$calls" ]
+  [ "$(readlink -f "$MARMOT_BIN/mm")" = "$MARMOT_PREFIX/marmot" ]
+}
+
+@test "the completion hint is shown only for a shell whose rc file does not load it yet" {
+  printf 'source %s/completion/mm.bash\n' "$MARMOT_PREFIX" >~/.bashrc
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"completion/mm.bash"* ]]
+  [[ "$output" == *"fpath=($MARMOT_PREFIX/completion"* ]]
+  "$MM_SRC/install.sh" --uninstall >/dev/null
+  rm ~/.bashrc
+  run "$MM_SRC/install.sh"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"source $MARMOT_PREFIX/completion/mm.bash"* ]]
+  [ ! -e ~/.bashrc ]
 }

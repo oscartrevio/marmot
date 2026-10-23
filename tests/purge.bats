@@ -1308,3 +1308,16 @@ manifest() { local d="$1"; shift; mkdir -p "$d"; for f; do echo '{}' >"$d/$f"; d
   [ -d "$SB/b/node_modules/dep/.git" ]
   [ ! -e "$SB/c/node_modules" ]
 }
+
+@test "nothing stale is a success line, not a banner of zeros" {
+  node_project "$SB/fresh"                       # just written: not idle
+  run mm purge "$SB"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"======"* ]]
+  [ -d "$SB/fresh/node_modules" ]
+  grep -qE '^  ✓ ' <<<"$(tail -2 <<<"$output")"
+  mkdir -p "$SB/empty"
+  run mm purge "$SB/empty"
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"======"* ]]
+}

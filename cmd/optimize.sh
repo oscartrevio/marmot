@@ -187,6 +187,7 @@ _optimize_apt_upgrade() {
     _optimize_skipped "Packages" "needs a terminal to confirm"
     return
   fi
+  if ! mm_can_sudo; then _optimize_skipped "Packages" "needs sudo"; return; fi
   local excluded=()
   if (( ${#safe[@]} )); then
     if mm_confirm "Install ${#safe[@]} upgrades?"; then chosen+=("${safe[@]}"); else excluded+=("${safe[@]}"); fi
@@ -258,6 +259,8 @@ _optimize_updates() {
       mm_info "${C_DIM}Using current package lists (apt-get update not run in dry run)${C_RESET}"
     elif [[ "$MM_TTY" != 1 ]]; then
       mm_info "${C_DIM}Using current package lists (no terminal: nothing will be installed)${C_RESET}"
+    elif ! mm_can_sudo; then
+      mm_info "${C_DIM}Using current package lists (no sudo: nothing will be installed)${C_RESET}"
     elif mm_run "apt-get update" mm_sudo apt-get -q -o DPkg::Lock::Timeout=60 update; then
       mm_act "Package lists refreshed"
     else
@@ -460,7 +463,7 @@ _optimize_orphan_line() {
   local pid start age bytes comm cwd args agent
   IFS=$'\t' read -r pid start age bytes comm cwd args <<<"$1"
   agent=$(_optimize_agent_of "$pid" "$comm") && comm+=" [$agent]"
-  printf '%-7s %-16s %-8s %9s  %s  %s\n' "$pid" "$comm" "$(mm_ago "$age")" \
+  printf '%-7s %-16s %-8s %9s  %s  %s\n' "$pid" "$comm" "$(mm_dur "$age")" \
     "$(mm_human "$bytes")" "$cwd" "$args"
 }
 
@@ -683,7 +686,7 @@ _optimize_browser_line() {
   [[ -n "$tree" ]] && n=$(( $(wc -w <<<"$tree") + 1 ))
   [[ "$profile" == - ]] && profile="(no profile dir)"
   printf '%-7s %-14s %-6s %9s  %s · %s processes · parent %s\n' "$pid" "$name" \
-    "$(mm_ago "$age")" "$(mm_human "$bytes")" "$profile" "$n" "$parent"
+    "$(mm_dur "$age")" "$(mm_human "$bytes")" "$profile" "$n" "$parent"
 }
 
 _optimize_browser_task() {
@@ -783,7 +786,7 @@ _optimize_disk() {
   elif ! command -v fstrim >/dev/null; then
     _optimize_skipped "SSD TRIM" "fstrim not installed"
   elif last=$(_optimize_last_trim) && since=$(( $(date +%s) - last )) && (( since < 86400 )); then
-    _optimize_unchanged "SSD TRIM" "fstrim.timer ran $(mm_ago "$since") ago"
+    _optimize_unchanged "SSD TRIM" "fstrim.timer ran $(mm_ago "$since")"
   elif [[ "$MM_DRY_RUN" != 1 ]] && ! mm_can_sudo; then
     _optimize_skipped "SSD TRIM" "needs sudo"
   elif mm_run "fstrim /" mm_sudo fstrim -v /; then
@@ -884,6 +887,7 @@ mm_cmd_main() {
   done
 
   mm_header "Optimize"
+  [[ "$MM_DRY_RUN" == 1 ]] || mm_sudo_ask "package upgrades, the swap reset, TRIM and the DNS cache flush"
   _optimize_diagnose
   _optimize_updates
   _optimize_swap
@@ -897,9 +901,9 @@ mm_cmd_main() {
   local tail="$_OPTIMIZE_UNCHANGED unchanged | $_OPTIMIZE_SKIPPED skipped"
   (( _OPTIMIZE_ATTENTION )) && tail+=" | $_OPTIMIZE_ATTENTION need attention"
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    mm_banner "Dry Run Complete" "Would apply $_OPTIMIZE_APPLIED optimizations" "$tail" \
+    mm_banner "Dry run complete" "Would apply $_OPTIMIZE_APPLIED optimizations" "$tail" \
       "Run without --dry-run to apply."
   else
-    mm_banner "Optimization Complete" "Applied $_OPTIMIZE_APPLIED optimizations" "$tail"
+    mm_banner "Optimization complete" "Applied $_OPTIMIZE_APPLIED optimizations" "$tail"
   fi
 }

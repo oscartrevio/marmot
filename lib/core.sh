@@ -21,6 +21,10 @@ MM_LOG_FILE="${MM_LOG_FILE:-$MM_STATE_DIR/operations.log}"
 # XDG Trash (freedesktop.org spec): items moved here keep a .trashinfo, so `trash-restore`
 # (trash-cli) or any desktop file manager can put them back.
 MM_TRASH_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/Trash"
+# shellcheck source=schedule.sh
+. "$MM_HOME/lib/schedule.sh"
+# shellcheck source=mascot.sh
+. "$MM_HOME/lib/mascot.sh"
 
 : "${MM_DRY_RUN:=0}" "${MM_DEBUG:=0}" "${MM_NO_SUDO:=0}"
 MM_CMD="${MM_CMD:-marmot}"
@@ -44,41 +48,117 @@ fi
 
 # ---------------------------------------------------------------- UI
 
-if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+# Colors: C_* for stdout, CE_* for stderr, each only when that stream is a terminal, and neither
+# with NO_COLOR set (no-color.org) or TERM=dumb.
+_mm_color_ok() { [[ -t "$1" && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; }
+if _mm_color_ok 1; then
   C_BOLD=$'\e[1m' C_DIM=$'\e[2m' C_RED=$'\e[31m' C_GREEN=$'\e[32m' C_YELLOW=$'\e[33m'
-  C_BLUE=$'\e[34m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
+  C_BLUE=$'\e[34m' C_MAGENTA=$'\e[35m' C_CYAN=$'\e[36m' C_RESET=$'\e[0m'
 else
-  C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_CYAN="" C_RESET=""
+  C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN="" C_RESET=""
+fi
+if _mm_color_ok 2; then
+  CE_DIM=$'\e[2m' CE_RED=$'\e[31m' CE_YELLOW=$'\e[33m' CE_CYAN=$'\e[36m' CE_RESET=$'\e[0m'
+else
+  CE_DIM="" CE_RED="" CE_YELLOW="" CE_CYAN="" CE_RESET=""
 fi
 MM_RULE="======================================================================"
 
-# mm_header TITLE — command title plus a one-line system summary.
+# mm_header TITLE — command title plus a one-line system summary, and on the first terminal run
+# after scheduled cleanups what they did (mm_away_line).
 mm_header() {
+  local away
   printf '\n%s%s%s' "$C_BOLD" "$1" "$C_RESET"
   [[ "$MM_DRY_RUN" == 1 ]] && printf '  %s(dry run: nothing will change)%s' "$C_YELLOW" "$C_RESET"
   printf '\n\n%s⚙%s %s\n' "$C_CYAN" "$C_RESET" "$(mm_sysline)"
+  away=$(mm_away_line)
+  [[ -n "$away" ]] && printf '%s%s%s\n' "$C_DIM" "$away" "$C_RESET"
+  return 0
 }
-mm_section() { printf '\n%s➤ %s%s\n' "$C_BOLD$C_BLUE" "$1" "$C_RESET"; }
+mm_section() { _MM_PENDING=""; printf '\n%s➤ %s%s\n' "$C_BOLD$C_BLUE" "$1" "$C_RESET"; }
+# mm_section_lazy TITLE — a heading printed only once a line goes under it (mm_ok, mm_skip,
+# mm_act, mm_warn, mm_info, mm_err): a section with nothing to say prints nothing. An empty TITLE
+# (the section is over) or the next mm_section drops a heading still waiting.
+_MM_PENDING=""
+mm_section_lazy() { _MM_PENDING=$1; }
+_mm_flush() { [[ -n "$_MM_PENDING" ]] && mm_section "$_MM_PENDING"; return 0; }
 # mm_ok LABEL [DETAIL]
-mm_ok()   { printf '  %s✓%s %s%s\n' "$C_GREEN" "$C_RESET" "$1" "${2:+ · $2}"; }
+mm_ok()   { _mm_flush; printf '  %s✓%s %s%s\n' "$C_GREEN" "$C_RESET" "$1" "${2:+ · $2}"; }
 # mm_skip LABEL REASON — also recorded in MM_SKIPS.
 mm_skip() {
+  _mm_flush
   MM_SKIPS+=("$1"$'\t'"$2")
   printf '  %s◎%s %s · %sskipped (%s)%s\n' "$C_DIM" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"
 }
-mm_act()  { printf '  %s→%s %s\n' "$C_CYAN" "$C_RESET" "$1"; }
-mm_warn() { printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1"; }
-mm_err()  { MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$C_RED" "$C_RESET" "$1" >&2; }
-mm_info() { printf '  %s\n' "$1"; }
-mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$C_DIM" "$1" "$C_RESET" >&2; return 0; }
+mm_act()  { _mm_flush; printf '  %s→%s %s\n' "$C_CYAN" "$C_RESET" "$1"; }
+mm_warn() { _mm_flush; printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1"; }
+mm_err()  { _mm_flush; MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$CE_RED" "$CE_RESET" "$1" >&2; }
+mm_info() { _mm_flush; printf '  %s\n' "$1"; }
+
+# mm_done_empty MESSAGE — close a run that had nothing to do as the success it is: "✓ MESSAGE",
+# on a terminal with the day's greeting (mm_greeting), then when the next scheduled cleanup is
+# due, or how to schedule one.
+mm_done_empty() {
+  local g=""
+  _MM_PENDING=""
+  if [[ "$MM_TTY" == 1 ]]; then mm_greeting; g=$REPLY; fi
+  printf '\n  %s✓%s %s%s\n  %s%s%s\n' "$C_GREEN" "$C_RESET" "$1" "${g:+  $C_DIM$g$C_RESET}" \
+    "$C_DIM" "$(mm_schedule_hint)" "$C_RESET"
+}
+mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$CE_DIM" "$1" "$CE_RESET" >&2; return 0; }
 mm_die()  { mm_err "$1"; exit "${2:-1}"; }
 
-# mm_banner TITLE LINE... — closing summary block.
+# mm_banner TITLE LINE... — closing summary block; empty LINEs are left out, so callers can pass
+# optional lines as they are.
 mm_banner() {
   local title="$1"; shift
   printf '\n%s\n%s%s%s\n' "$MM_RULE" "$C_BOLD" "$title" "$C_RESET"
-  local line; for line in "$@"; do printf '%s\n' "$line"; done
+  local line; for line in "$@"; do [[ -n "$line" ]] && printf '%s\n' "$line"; done
   printf '%s\n' "$MM_RULE"
+}
+
+# Every banner is built the same way: what was freed (or would be) first, then " | Moved to
+# Trash: ..." when something went there, then the command's own counts; then the free space.
+
+# mm_banner_trash BYTES — " | Moved to Trash: 1.2GB (restore: trash-restore)" ("Would move to
+# Trash" in a dry run), or nothing when BYTES is 0.
+mm_banner_trash() {
+  (( $1 > 0 )) || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then printf ' | Would move to Trash: %s' "$(mm_human "$1")"
+  else printf ' | Moved to Trash: %s (restore: trash-restore)' "$(mm_human "$1")"; fi
+}
+
+# mm_banner_free BEFORE [WOULD] — the free-space line: after a real run "Free space: 37.0GB
+# (+1.2GB)", signed against BEFORE (bytes free when the run started); in a dry run "Free space:
+# 35.8GB now, ~37.0GB after" with WOULD the bytes it would free.
+mm_banner_free() {
+  local now d sign=+
+  now=$(mm_free_bytes /)
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    printf 'Free space: %s now, ~%s after' "$(mm_human "$now")" "$(mm_human $((now + ${2:-0})))"
+    return
+  fi
+  d=$((now - $1)); (( d < 0 )) && { sign=-; d=$((-d)); }
+  printf 'Free space: %s (%s%s)' "$(mm_human "$now")" "$sign" "$(mm_human "$d")"
+}
+
+# Root disk use, in percent, at which mm status flags the disk (MM_DISK_WARN_PCT) and calls it
+# full (MM_DISK_FULL_PCT); banners say when a run brought it back under one of them.
+MM_DISK_WARN_PCT=80 MM_DISK_FULL_PCT=90
+
+# mm_disk_pct — percent of the root filesystem in use, as df reports it.
+mm_disk_pct() { df --output=pcent / 2>/dev/null | awk 'NR == 2 { gsub(/[ %]/, ""); print }'; }
+
+# mm_banner_disk BEFORE_PCT — "Disk 91% → 84%: back under 90%" when this real run brought root
+# disk use from at or above a threshold to below it; nothing otherwise.
+mm_banner_disk() {
+  [[ "$MM_DRY_RUN" == 1 ]] && return 0
+  local now t
+  now=$(mm_disk_pct)
+  [[ "$1" =~ ^[0-9]+$ && "$now" =~ ^[0-9]+$ ]] || return 0
+  for t in "$MM_DISK_FULL_PCT" "$MM_DISK_WARN_PCT"; do
+    if (( $1 >= t && now < t )); then printf 'Disk %s%% → %s%%: back under %s%%' "$1" "$now" "$t"; return 0; fi
+  done
 }
 
 # mm_confirm QUESTION — y/N prompt on the terminal. There is no auto-accept: without a terminal
@@ -91,22 +171,93 @@ mm_confirm() {
   [[ "$reply" =~ ^[Yy]([Ee][Ss])?$ ]]
 }
 
-# ---------------------------------------------------------------- formatting
+# ---------------------------------------------------------------- progress
+# A spinner on stderr for silent phases, only on a terminal run whose stderr is the terminal, and
+# never with machine output (MM_NO_SPIN=1: --json, --agent). Never on stdout.
 
-# mm_human BYTES — 1.2GB / 340.0MB / 12KB.
-mm_human() {
-  awk -v b="${1:-0}" 'BEGIN {
-    split("B KB MB GB TB", u, " "); i = 1
-    while (b >= 1000 && i < 5) { b /= 1024; i++ }
-    if (i == 1) printf "%dB", b; else if (i == 2) printf "%dKB", b; else printf "%.1f%s", b, u[i]
-  }'
+# An array, not a string: a substring of a string counts bytes in the C locale and would cut a
+# frame in half.
+MM_SPIN_FRAMES=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+# mm_spin_ok — 0 when a spinner may be drawn.
+mm_spin_ok() { [[ "$MM_TTY" == 1 && -t 2 && "${MM_NO_SPIN:-0}" != 1 ]]; }
+# mm_spin_frame N TEXT — draw frame N with TEXT over the current stderr line.
+mm_spin_frame() { printf '\r\e[K  %s%s%s %s' "$CE_CYAN" "${MM_SPIN_FRAMES[$1 % 10]}" "$CE_RESET" "$2" >&2; }
+# mm_spin_clear — erase the spinner line.
+mm_spin_clear() { printf '\r\e[K' >&2; }
+# mm_spin_start TEXT — keep a spinner turning in the background until mm_spin_stop, for a step
+# that cannot draw one itself. It also stops when this marmot exits, however it exits. The child
+# sits in / with nothing open but the terminal: the in-use scan it decorates must not see it
+# holding the user's folder or a file.
+mm_spin_start() {
+  mm_spin_ok || return 0
+  local parent=$BASHPID
+  ( cd / || exit; exec 0</dev/null 1>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+    i=0; while kill -0 "$parent" 2>/dev/null; do mm_spin_frame $((i++)) "$1"; sleep 0.1; done ) &
+  _MM_SPIN_PID=$!
+  disown "$_MM_SPIN_PID" 2>/dev/null
+}
+# mm_spin_stop — stop mm_spin_start's spinner and erase its line.
+mm_spin_stop() {
+  [[ -n "${_MM_SPIN_PID:-}" ]] || return 0
+  kill "$_MM_SPIN_PID" 2>/dev/null
+  local k; for ((k = 0; k < 50; k++)); do kill -0 "$_MM_SPIN_PID" 2>/dev/null || break; sleep 0.01; done
+  _MM_SPIN_PID=""
+  mm_spin_clear
 }
 
-# mm_ago SECONDS — a span as one unit: "16m" under an hour, "16h" under two days, else "3d".
+# ---------------------------------------------------------------- formatting
+
+# MM_AWK_HUMAN — awk source of human(BYTES): "1.2GB" / "340.0MB" / "12KB" / "999B", for awk
+# programs that print sizes. Units step up at 1000 of the current one, so 1000-1023 bytes are
+# "1KB", never "0KB"; KB is rounded, not truncated (1.9KB is "2KB").
+MM_AWK_HUMAN='function human(b, u, i) {
+  split("B KB MB GB TB", u, " "); i = 1
+  while (b >= 1000 && i < 5) { b /= 1024; i++ }
+  if (i == 1) return sprintf("%dB", b)
+  if (i == 2) return sprintf("%dKB", int(b + 0.5))
+  return sprintf("%.1f%s", b, u[i])
+}'
+
+# MM_AWK_FREED — awk source of freed_row(ACTION): 1 for the operations-log rows whose bytes count
+# as freed (remove, run, worktree), the one definition of "freed" mm history and milestones use.
+MM_AWK_FREED='function freed_row(a) { return a == "remove" || a == "run" || a == "worktree" }'
+
+# mm_human BYTES — 1.2GB / 340.0MB / 12KB.
+mm_human() { awk -v b="${1:-0}" "$MM_AWK_HUMAN"' BEGIN { printf "%s", human(b) }'; }
+
+# Ages and durations read the same everywhere (mm status, mm schedule status, banners): mm_dur for
+# how long something took or has been running, mm_ago for when something happened.
+
+# mm_dur_r SECONDS — the span in its two largest units, in REPLY (no subshell: mm status renders
+# call it every tick): "45s", "12m 34s", "2h 5m", "3d 12h"; a zero second unit is left out.
+mm_dur_r() {
+  local s=$(( $1 < 0 ? 0 : $1 )) a b u v
+  if (( s < 60 )); then REPLY="${s}s"; return; fi
+  if (( s < 3600 )); then a=$((s / 60)) u=m b=$((s % 60)) v=s
+  elif (( s < 86400 )); then a=$((s / 3600)) u=h b=$((s % 3600 / 60)) v=m
+  else a=$((s / 86400)) u=d b=$((s % 86400 / 3600)) v=h; fi
+  REPLY="$a$u"; (( b )) && REPLY+=" $b$v"
+  return 0
+}
+# mm_dur SECONDS — mm_dur_r, printed.
+mm_dur() { mm_dur_r "$1"; printf '%s' "$REPLY"; }
+
+# mm_ago SECONDS — when something happened, SECONDS ago: "just now" under a minute, else one unit
+# ("16m ago" under an hour, "16h ago" under two days, "3d ago").
 mm_ago() {
-  if (( $1 < 3600 )); then printf '%dm' $(( $1 / 60 ))
-  elif (( $1 < 172800 )); then printf '%dh' $(( $1 / 3600 ))
-  else printf '%dd' $(( $1 / 86400 )); fi
+  if (( $1 < 60 )); then printf 'just now'
+  elif (( $1 < 3600 )); then printf '%dm ago' $(( $1 / 60 ))
+  elif (( $1 < 172800 )); then printf '%dh ago' $(( $1 / 3600 ))
+  else printf '%dd ago' $(( $1 / 86400 )); fi
+}
+
+# mm_when EPOCH — a moment ahead: "in 9h (03:27)", "in 2d (Sun 03:27)", "in 5m (14:02)", or "now"
+# when it is due.
+mm_when() {
+  local d=$(( $1 - $(date +%s) )) at
+  (( d <= 0 )) && { printf 'now'; return; }
+  if (( d < 86400 )); then at=$(date -d "@$1" +%H:%M); else at=$(date -d "@$1" '+%a %H:%M'); fi
+  mm_dur_r "$d"; printf 'in %s (%s)' "${REPLY%% *}" "$at"
 }
 
 # mm_tilde PATH — PATH with a leading $HOME shown as ~, in REPLY. No subshell: status renders
@@ -274,24 +425,95 @@ mm_cg_cores() {
 
 # MM_NO_SUDO=1 (unattended runs: mm schedule run) means never run sudo, not even `sudo -n`: only
 # root counts as able to, mm_sudo fails, and in-use detection sees only this user's processes.
+# Otherwise sudo never asks mid-run: a command that may need root calls mm_sudo_ask once, up
+# front, and every sudo after it is `sudo -n`, served by passwordless sudo or by the credentials
+# sudo cached when it asked. mm_sudo_keepalive_start keeps that cache warm for the whole run.
 
-# mm_can_sudo — 0 if root, or sudo is installed and either works without a password or can prompt
-# on a tty.
+# mm_sudo_ask WHAT — before a run's first root step, on a terminal: unless root, MM_NO_SUDO=1, no
+# sudo, or sudo that works without a password, say that root is needed for WHAT (in a dry run,
+# that nothing will be deleted) and let sudo ask for the password once (`sudo -v`). Refused,
+# failed or not allowed: the rest of the run is MM_NO_SUDO=1, with no more prompts and every root
+# step skipped. Without a terminal nothing is asked. A usable session starts the keepalive.
+mm_sudo_ask() {
+  (( EUID == 0 )) && return 0
+  [[ "$MM_NO_SUDO" == 1 || "$MM_TTY" != 1 ]] && return 0
+  command -v sudo >/dev/null || return 0
+  if sudo -n true 2>/dev/null; then mm_sudo_keepalive_start; return 0; fi
+  local dry=""
+  [[ "$MM_DRY_RUN" == 1 ]] && dry=" (dry run: it only reads, nothing will be deleted)"
+  printf '%s?%s Root is needed for %s%s. sudo asks once; Ctrl-D goes on without it.\n' \
+    "$C_YELLOW" "$C_RESET" "$1" "$dry"
+  if sudo -v; then mm_sudo_keepalive_start; return 0; fi
+  MM_NO_SUDO=1
+  mm_warn "Continuing without sudo: steps that need root are skipped"
+}
+
+# mm_sudo_keepalive_start — start a background loop that refreshes sudo's credential cache with
+# `sudo -n -v` (first after 2 s, then every 30 s; after a failed refresh, again after 5 s), so a
+# run longer than the cache's lifetime keeps its session. Never prompts. Nothing starts as root,
+# with MM_NO_SUDO=1, without a terminal or without sudo; a second call keeps the loop already
+# running. The loop exits when marmot does (it polls this process every second) or at
+# mm_sudo_keepalive_stop. Its stdio is /dev/null and fds 3-9 are closed, so command substitutions
+# and the in-use scan never wait on it or see it holding the user's files. The test suite may
+# shorten the intervals with MM_TEST_SUDO_INTERVAL, honored only inside bats' per-test directory.
+mm_sudo_keepalive_start() {
+  local parent=$$ first=2 period=30 retry=5 box home
+  (( EUID == 0 )) && return 0
+  [[ "$MM_NO_SUDO" == 1 || "$MM_TTY" != 1 ]] && return 0
+  command -v sudo >/dev/null || return 0
+  if [[ -n "${MM_SUDO_KEEPALIVE_PID:-}" ]] && kill -0 "$MM_SUDO_KEEPALIVE_PID" 2>/dev/null; then
+    return 0
+  fi
+  if [[ -n "${MM_TEST_SUDO_INTERVAL:-}" && -n "${BATS_TEST_TMPDIR:-}" ]]; then
+    box=$(realpath -e -- "$BATS_TEST_TMPDIR" 2>/dev/null)
+    home=$(realpath -e -- "$HOME" 2>/dev/null)
+    if [[ -n "$box" && "$home" == "$box"/?* ]]; then
+      first=$MM_TEST_SUDO_INTERVAL period=$MM_TEST_SUDO_INTERVAL retry=$MM_TEST_SUDO_INTERVAL
+    fi
+  fi
+  (
+    cd / || exit 0
+    exec 0</dev/null 1>/dev/null 2>/dev/null 3>&- 4>&- 5>&- 6>&- 7>&- 8>&- 9>&-
+    elapsed=0 due=$first
+    while kill -0 "$parent" 2>/dev/null; do
+      sleep 1
+      elapsed=$((elapsed + 1))
+      (( elapsed >= due )) || continue
+      if sudo -n -v >/dev/null 2>&1; then due=$((elapsed + period))
+      else due=$((elapsed + retry)); fi
+    done
+  ) &
+  MM_SUDO_KEEPALIVE_PID=$!
+}
+
+# mm_sudo_keepalive_stop — stop the loop mm_sudo_keepalive_start began, if one is running.
+mm_sudo_keepalive_stop() {
+  local p=${MM_SUDO_KEEPALIVE_PID:-}
+  [[ -n "$p" ]] || return 0
+  kill "$p" 2>/dev/null
+  wait "$p" 2>/dev/null || :
+  MM_SUDO_KEEPALIVE_PID=""
+}
+
+# mm_can_sudo — 0 if root, or sudo runs without asking (passwordless, or credentials mm_sudo_ask
+# cached). Never prompts.
 mm_can_sudo() {
   (( EUID == 0 )) && return 0
   [[ "$MM_NO_SUDO" == 1 ]] && return 1
-  command -v sudo >/dev/null && { sudo -n true 2>/dev/null || [[ "$MM_TTY" == 1 ]]; }
+  command -v sudo >/dev/null && sudo -n true 2>/dev/null
 }
-# mm_sudo CMD... — run as root; prompts only when needed.
+# mm_sudo CMD... — run as root; never asks for a password (see mm_sudo_ask).
 mm_sudo() {
   if (( EUID == 0 )); then "$@"
   elif [[ "$MM_NO_SUDO" == 1 ]]; then mm_err "not run without sudo: $*"; return 1
-  elif sudo -n true 2>/dev/null; then sudo -n "$@"
-  else sudo "$@"; fi
+  else sudo -n "$@"; fi
 }
 
 # ---------------------------------------------------------------- in-use detection
 
+# The snapshot reaches grep and awk through <(printf ...), never a here-string: bash writes one over
+# 64 KiB (any busy machine's snapshot) to a temp file, which a full disk refuses, and the check would
+# then die or answer "nothing in use" just when space is needed.
 MM_INUSE=""        # newline-separated snapshot; kept in memory so a killed run leaves no files
 MM_INUSE_REFS=""   # "path<TAB>source" for snapshot paths that only a reference keeps (mm_inuse_why)
 MM_INUSE_TAKEN=0 MM_INUSE_AT=0   # whether a snapshot exists, and when it was taken (date +%s)
@@ -300,32 +522,34 @@ MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""   # what the last snapshot could not 
 # bound unix socket, plus every mount point and bind-mount source (per mount namespace), so a
 # target containing a mount is never removed through it; then add references (_mm_inuse_refs):
 # files that a process's arguments, a launcher, a tool config, a systemd user unit or the crontab name.
-# The scan runs as this user and, as root or through passwordless sudo, again as root for the other
-# users' processes; both are merged, because root without CAP_SYS_PTRACE (a container's default
-# capabilities) may not read this user's process entries. Whatever a scan could not see (a process
-# entry it may not read, a mount it cannot place, no root scan at all) makes the snapshot partial:
-# MM_INUSE_PARTIAL=1, the reason in MM_INUSE_PARTIAL_WHY, warned once. An empty process snapshot is
-# fatal: it would mean "nothing is in use".
+# The scan runs as this user and, as root or through sudo that needs no password (mm_can_sudo),
+# again as root for the other users' processes; both are merged, because root without
+# CAP_SYS_PTRACE (a container's default capabilities) may not read this user's process entries.
+# Whatever a scan could not see (a process entry it may not read, a mount it cannot place, no root
+# scan at all) makes the snapshot partial: MM_INUSE_PARTIAL=1, the reason in MM_INUSE_PARTIAL_WHY,
+# warned once. An empty process snapshot is fatal: it would mean "nothing is in use".
 mm_inuse_refresh() {
   local out live refs script root
   script="$(declare -f _mm_inuse_scan _mm_inuse_live _mm_mounts _mm_mount_paths); _mm_inuse_scan"
   MM_INUSE_PARTIAL=0 MM_INUSE_PARTIAL_WHY=""
+  mm_spin_start "Checking what is in use…"
   out=$(bash -c "$script")
   if (( EUID == 0 )); then
-    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$out" | cut -f2-)
-  elif [[ "$MM_NO_SUDO" != 1 ]] && sudo -n true 2>/dev/null; then
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <(printf '%s\n' "$out") | cut -f2-)
+  elif mm_can_sudo; then
     root=$(mm_sudo bash -c "$script")
-    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$root" | cut -f2-)
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <(printf '%s\n' "$root") | cut -f2-)
     out+=$'\n'$root
   elif [[ "$MM_NO_SUDO" == 1 ]]; then MM_INUSE_PARTIAL_WHY="running without sudo, only your own processes are checked"
   else MM_INUSE_PARTIAL_WHY="no passwordless sudo, only your own processes are checked"; fi
   [[ -n "$MM_INUSE_PARTIAL_WHY" ]] && MM_INUSE_PARTIAL=1
-  live=$(grep '^/' <<<"$out" | sort -u)
+  mm_spin_stop
+  live=$(grep '^/' <(printf '%s\n' "$out") | sort -u)
   MM_INUSE_TAKEN=1 MM_INUSE="" MM_INUSE_REFS=""
   [[ -n "$live" ]] || mm_die "could not list in-use paths; refusing to delete anything"
-  refs=$(grep '^A' <<<"$out" | _mm_inuse_refs)
-  MM_INUSE_REFS=$(awk -F'\t' 'NR == FNR { live[$0] = 1; next } !($1 in live)' - <(printf '%s\n' "$refs") <<<"$live")
-  MM_INUSE=$({ printf '%s\n' "$live"; [[ -n "$MM_INUSE_REFS" ]] && cut -f1 <<<"$MM_INUSE_REFS"; } | sort -u)
+  refs=$(grep '^A' <(printf '%s\n' "$out") | _mm_inuse_refs)
+  MM_INUSE_REFS=$(awk -F'\t' 'NR == FNR { live[$0] = 1; next } !($1 in live)' <(printf '%s\n' "$live") <(printf '%s\n' "$refs"))
+  MM_INUSE=$({ printf '%s\n' "$live"; [[ -n "$MM_INUSE_REFS" ]] && cut -f1 <(printf '%s\n' "$MM_INUSE_REFS"); } | sort -u)
   if [[ "$MM_INUSE_PARTIAL" == 1 && -z "${_MM_PARTIAL_WARNED:-}" ]]; then
     _MM_PARTIAL_WARNED=1
     mm_warn "In-use check is partial: $MM_INUSE_PARTIAL_WHY"
@@ -622,7 +846,7 @@ mm_in_use() {
   (( MM_INUSE_TAKEN )) || mm_inuse_refresh
   [[ -n "$MM_INUSE" ]] || return 0   # no snapshot (e.g. refresh died in a subshell): fail closed
   MM_P="${1%/}" awk 'BEGIN { p = ENVIRON["MM_P"] }
-    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !found }' <<<"$MM_INUSE"
+    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !found }' <(printf '%s\n' "$MM_INUSE")
 }
 
 # mm_inuse_why PATH — print why PATH is kept and return 0: "in use" when a process uses it or
@@ -637,7 +861,7 @@ mm_inuse_why() {
     NR == FNR { if ($1 != "" && !($1 in why)) why[$1] = $2; next }
     $0 == p || index($0, p "/") == 1 { if (!($0 in why)) { live = 1; exit } if (ref == "") ref = why[$0] }
     END { if (live) print "in use"; else if (ref != "") print "used by " ref; else exit 1 }' \
-    <(printf '%s\n' "$MM_INUSE_REFS") - <<<"$MM_INUSE"
+    <(printf '%s\n' "$MM_INUSE_REFS") <(printf '%s\n' "$MM_INUSE")
 }
 
 # mm_proc_age PID — seconds since process start. Fields are counted after the last ") " because
@@ -970,7 +1194,9 @@ mm_config() {
 # ---------------------------------------------------------------- history
 
 # mm_log ACTION TARGET [BYTES] [DETAIL] — append to the operations log (real runs only, never dry-run).
-# ACTION: remove | trash | refused | failed | run. DETAIL: refusal reason or Trash location.
+# ACTION: remove | trash | refused | failed | run | worktree. BYTES: what the operation freed (a
+# "run" row: what the tool's command freed, as its caller measured). DETAIL: refusal or failure
+# reason, Trash location, or a worktree's branch.
 # Row: time, command, action, target, bytes, detail, run id (MM_RUN_ID, set once per marmot
 # invocation by the entry point). A log past MM_LOG_MAX_BYTES (default 5 MB) is first renamed to
 # operations.log.old, replacing the previous one; mm history reads both.
@@ -984,6 +1210,194 @@ mm_log() {
   local target="${2//[[:cntrl:]]/?}" detail="${4:-}"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$(date -Iseconds)" "$MM_CMD" "$1" "$target" "${3:-0}" \
     "${detail//[[:cntrl:]]/?}" "${MM_RUN_ID:-}" >>"$MM_LOG_FILE"
+}
+
+# _mm_logs — the operations logs that exist, oldest first (the rotated one, then the current).
+_mm_logs() { local f; for f in "$MM_LOG_FILE.old" "$MM_LOG_FILE"; do [[ -s "$f" ]] && printf '%s\n' "$f"; done; return 0; }
+
+# MM_AWK_EPOCH — awk source of epoch(T): seconds since 1970 of a log row's `date -Iseconds` time.
+MM_AWK_EPOCH='function epoch(t,   y, m, s, o) {
+  y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0
+  if (m < 3) { y--; m += 12 }
+  s = (365 * y + int(y / 4) - int(y / 100) + int(y / 400) + int((153 * (m - 3) + 2) / 5) \
+    + substr(t, 9, 2) - 719469) * 86400 + substr(t, 12, 2) * 3600 + substr(t, 15, 2) * 60 + substr(t, 18, 2)
+  o = substr(t, 20)
+  if (o ~ /^[+-][0-9][0-9]:[0-9][0-9]$/) s -= (o ~ /^-/ ? -1 : 1) * (substr(o, 2, 2) * 3600 + substr(o, 5, 2) * 60)
+  return s
+}'
+
+# mm_log_facts [NOW] — what the operations logs say, for the marmot (lib/mascot.sh); each is empty
+# when unknown. MM_FACT_LAST_AT and MM_FACT_LAST_FREED: when the newest run wrote its last row
+# (epoch) and the bytes it freed. MM_FACT_SINCE: when marmot first ran here (the oldest row, or
+# install.sh's record if that is older). MM_FACT_YEAR_FREED: freed in NOW's year (default: now).
+# MM_FACT_PREV_RUNS, MM_FACT_PREV_FREED, MM_FACT_PREV_BIG_AT and MM_FACT_PREV_BIG: the runs that
+# freed something in the year before, their total, and the biggest single item with its size.
+# MM_FACT_BIG_AT and MM_FACT_BIG: the biggest item ever freed. Sizes are mm_human text, paths
+# with ~. A run is its run id's rows (an old row without one: its command and hour).
+mm_log_facts() {
+  local -a logs
+  local out y mt
+  MM_FACT_LAST_AT="" MM_FACT_LAST_FREED="" MM_FACT_SINCE="" MM_FACT_YEAR_FREED="" MM_FACT_PREV_RUNS=""
+  MM_FACT_PREV_FREED="" MM_FACT_PREV_BIG_AT="" MM_FACT_PREV_BIG="" MM_FACT_BIG_AT="" MM_FACT_BIG=""
+  if [[ -z "${1:-}" ]]; then mm_now; set -- "$REPLY"; fi
+  printf -v y '%(%Y)T' "$1"
+  mapfile -t logs < <(_mm_logs)
+  if (( ${#logs[@]} )); then
+    out=$(awk -F'\t' -v year="$y" -v home="$HOME" "$MM_AWK_HUMAN"$'\n'"$MM_AWK_FREED"$'\n'"$MM_AWK_EPOCH"'
+      function tilde(p) { return index(p, home "/") == 1 ? "~" substr(p, length(home) + 1) : p }
+      function dash(v) { return v == "" ? "-" : v }
+      NF < 3 { next }
+      {
+        if (first == "") first = $1
+        run = (NF >= 7 && $7 != "") ? $7 : $2 "@" substr($1, 1, 13)
+        last = run; at[run] = $1
+        if (!freed_row($3) || $5 !~ /^[0-9]+$/) next
+        b = $5 + 0; f[run] += b
+        if (b > big) { big = b; bigat = $4 }
+        if (substr($1, 1, 4) == year) ytd += b
+        if (substr($1, 1, 4) == year - 1) {
+          pf += b; if (!(run in pr)) { pr[run] = 1; pn++ }
+          if (b > pbig) { pbig = b; pbigat = $4 }
+        }
+      }
+      END {
+        if (last == "") exit
+        printf "%.0f\t%.0f\t%.0f\t%s\t%d\t%s\t%s\t%s\t%s\t%s\n", epoch(at[last]), f[last], epoch(first),
+          (ytd > 0 ? human(ytd) : "-"), pn, (pn ? human(pf) : "-"), dash(tilde(pbigat)), (pbig > 0 ? human(pbig) : "-"),
+          dash(tilde(bigat)), (big > 0 ? human(big) : "-")
+      }' "${logs[@]}")
+    IFS=$'\t' read -r MM_FACT_LAST_AT MM_FACT_LAST_FREED MM_FACT_SINCE MM_FACT_YEAR_FREED MM_FACT_PREV_RUNS \
+      MM_FACT_PREV_FREED MM_FACT_PREV_BIG_AT MM_FACT_PREV_BIG MM_FACT_BIG_AT MM_FACT_BIG <<<"$out"
+    local v
+    for v in MM_FACT_YEAR_FREED MM_FACT_PREV_FREED MM_FACT_PREV_BIG_AT MM_FACT_PREV_BIG MM_FACT_BIG_AT MM_FACT_BIG; do
+      [[ "${!v}" == - ]] && printf -v "$v" ''
+    done
+  fi
+  if [[ -f "$MM_HOME/.install-source" ]] && mt=$(stat -c %Y -- "$MM_HOME/.install-source" 2>/dev/null); then
+    if [[ -z "$MM_FACT_SINCE" ]] || (( mt < MM_FACT_SINCE )); then MM_FACT_SINCE=$mt; fi
+  fi
+  return 0
+}
+
+# mm_festive — 0 unless the config says `festive = off` (also no, false, 0): then the calendar
+# (lib/mascot.sh) is not consulted anywhere. Moods, milestones and easter eggs are not festive.
+mm_festive() {
+  local v
+  v=$(mm_config festive 2>/dev/null) || return 0
+  [[ "${v,,}" != off && "${v,,}" != no && "${v,,}" != false && "$v" != 0 ]]
+}
+
+# mm_occasions_now NOW — the day's occasions into MM_OCC (mm_occasions, with the first run's date
+# from mm_log_facts, which this calls); none when festive is off.
+mm_occasions_now() {
+  mm_log_facts "$1"
+  MM_OCC=()
+  mm_festive || return 0
+  mm_occasions "$1" "$MM_FACT_SINCE"
+}
+
+# mm_greeting — the day's first greeting (lib/mascot.sh's calendar order) in REPLY; empty on an
+# ordinary day or with festive off.
+mm_greeting() {
+  mm_now
+  mm_occasions_now "$REPLY"
+  mm_marmot_dress happy 0 "${MM_OCC[@]}"
+  REPLY=${MM_LOOK_GREETS[0]:-}
+}
+
+# Lifetime totals at which a real interactive run says how far marmot has come, in GB, and run
+# counts at which it says how many cleanups that makes.
+MM_MILESTONES_GB=(10 50 100 250 500 1000)
+MM_MILESTONES_RUNS=(10 100 1000)
+MM_CELEBRATED="$MM_STATE_DIR/celebrated"   # "anniversary 2027", "review 2027": said in a banner
+
+# mm_milestone_line — after a real run on a terminal, what this run (its MM_RUN_ID rows) means for
+# marmot on this machine, one line each, every one said once: marmot's first cleanup here (the
+# logs hold no other run); its 10th, 100th or 1000th run that changed something; a new record
+# (it freed 1GB or more, more than any earlier run); the freed total crossing one of
+# MM_MILESTONES_GB ("marmot has now freed 100GB on this machine", the highest crossed). Then, on
+# the day, the anniversary of the first run and last year's review (lib/mascot.sh's calendar),
+# once a year each (MM_CELEBRATED). Nothing when there is nothing to celebrate.
+mm_milestone_line() {
+  [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 && -n "${MM_RUN_ID:-}" ]] || return 0
+  local -a logs lines=(); mapfile -t logs < <(_mm_logs)
+  (( ${#logs[@]} )) || return 0
+  local total mine this runs best others g hit="" id key now
+  read -r total mine this runs best others < <(awk -F'\t' -v run="$MM_RUN_ID" "$MM_AWK_FREED"'
+    NF < 3 { next }
+    {
+      id = (NF >= 7 && $7 != "") ? $7 : $2 "@" substr($1, 1, 13)
+      b = ($5 ~ /^[0-9]+$/) ? $5 : 0
+      if (freed_row($3)) { t += b; f[id] += b }
+      if (freed_row($3) || $3 == "trash") changed[id] = 1
+      if (id != run) o++
+    }
+    END {
+      for (id in changed) n++
+      for (id in f) if (id != run && f[id] > best) best = f[id]
+      printf "%.0f %.0f %d %d %.0f %d\n", t, f[run], (run in changed), n, best, o
+    }' "${logs[@]}")
+  for g in "${MM_MILESTONES_GB[@]}"; do
+    (( total >= g * 1073741824 && total - mine < g * 1073741824 )) && hit=$g
+  done
+  if [[ -n "$hit" ]]; then
+    if (( hit >= 1000 )); then hit="$((hit / 1000))TB"; else hit+=GB; fi
+    lines+=("marmot has now freed $hit on this machine")
+  fi
+  if (( this && !others )); then
+    lines+=("Welcome to marmot: that was its first cleanup on this machine.")
+  elif (( this )); then
+    for g in "${MM_MILESTONES_RUNS[@]}"; do
+      (( runs == g )) && lines+=("That was marmot's ${g}th cleanup on this machine.")
+    done
+  fi
+  (( others && mine >= 1073741824 && mine > best )) &&
+    lines+=("New record: $(mm_human "$mine") is the most marmot has freed here in one run.")
+  mm_now
+  now=$REPLY
+  mm_occasions_now "$now"
+  for id in "${MM_OCC[@]}"; do
+    [[ "$id" == anniversary || "$id" == review ]] || continue
+    printf -v key '%s %(%Y)T' "$id" "$now"
+    grep -qxF -- "$key" "$MM_CELEBRATED" 2>/dev/null && continue
+    _mm_greeting "$id"
+    [[ -n "$REPLY" ]] || continue
+    [[ "$id" == anniversary ]] && REPLY="Happy anniversary: $REPLY"
+    lines+=("$REPLY.")
+    mkdir -p "$MM_STATE_DIR" && printf '%s\n' "$key" >>"$MM_CELEBRATED"
+  done
+  (( ${#lines[@]} )) || return 0
+  local IFS=$'\n'
+  printf '%s' "${lines[*]}"
+}
+
+MM_AWAY_STAMP="$MM_STATE_DIR/schedule-seen"   # when an interactive run last reported scheduled runs
+
+# mm_away_line — on a real terminal run: "While you were away: 3 scheduled runs freed 4.2GB"
+# (+ what went to the Trash, + failures with where to look) for the scheduled runs logged since
+# the last report, then marks them reported. Says and writes nothing in a dry run, without a
+# terminal, for mm schedule itself, or when there is nothing new.
+mm_away_line() {
+  [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 && "$MM_CMD" != schedule ]] || return 0
+  local -a logs; mapfile -t logs < <(_mm_logs)
+  (( ${#logs[@]} )) || return 0
+  local since="" out runs freed trashed failed now
+  [[ -r "$MM_AWAY_STAMP" ]] && read -r since <"$MM_AWAY_STAMP"
+  now=$(date -Iseconds)
+  # Rows carry date -Iseconds, like the stamp: on one machine they compare as strings.
+  read -r runs freed trashed failed < <(awk -F'\t' -v since="$since" "$MM_AWK_FREED"'
+    $2 == "schedule" && $1 > since {
+      if (!($7 in seen)) { seen[$7] = 1; r++ }
+      b = ($5 ~ /^[0-9]+$/) ? $5 : 0
+      if (freed_row($3)) f += b; else if ($3 == "trash") t += b; else if ($3 == "failed") e++
+    }
+    END { printf "%d %.0f %.0f %d\n", r, f, t, e }' "${logs[@]}")
+  mkdir -p "$MM_STATE_DIR" && printf '%s\n' "$now" >"$MM_AWAY_STAMP"
+  (( runs )) || return 0
+  out="While you were away: $runs scheduled run$( (( runs > 1 )) && echo s) freed $(mm_human "$freed")"
+  (( trashed )) && out+=", moved $(mm_human "$trashed") to the Trash"
+  (( failed )) && out+=", $failed failed (mm schedule status)"
+  printf '%s' "$out"
 }
 
 # ---------------------------------------------------------------- safe actions
@@ -1247,21 +1661,39 @@ _mm_trash() {
   mm_log trash "$real" "$bytes" "$files/$name"
 }
 
-# mm_run DESCRIPTION CMD... — run a state-changing command; in dry-run only reports it.
-# Output goes to stderr in debug mode, otherwise is captured and shown only on failure.
+# mm_run [--measured] DESCRIPTION CMD... — run a state-changing command; in dry-run only reports
+# it. Output goes to stderr in debug mode, otherwise is captured (in MM_RUN_OUT, for callers that
+# read a tool's own report) and shown only on failure. A failure is reported by mm_failed. A
+# success is logged as "run", except with --measured: then the caller measures what the command
+# freed and logs that row itself (mm_log run DESCRIPTION BYTES), so mm history counts the bytes
+# the closing summary claims.
 mm_run() {
+  local measured=0; [[ "$1" == --measured ]] && { measured=1; shift; }
   local desc="$1"; shift
+  MM_RUN_OUT=""
   if [[ "$MM_DRY_RUN" == 1 ]]; then mm_debug "would run: $*"; return 0; fi
   local out rc
   out=$("$@" 2>&1); rc=$?
+  MM_RUN_OUT=$out
   [[ "$MM_DEBUG" == 1 && -n "$out" ]] && printf '%s\n' "$out" | sed 's/^/    /' >&2
   if (( rc != 0 )); then
-    mm_err "$desc failed (exit $rc)"
-    printf '%s\n' "$out" | tail -5 | sed 's/^/    /' >&2
-  else
+    mm_failed "$desc" "$rc" "$out"
+  elif (( ! measured )); then
     mm_log run "$desc"
   fi
   return "$rc"
+}
+
+# mm_failed DESCRIPTION STATUS OUTPUT — report a command that exited STATUS: an error ("would
+# fail" in a dry run, where a read-only probe found it), the last lines of its OUTPUT, and a
+# "failed" row with 0 bytes, the exit status and the last line (dry runs log nothing).
+mm_failed() {
+  local verb=failed last
+  [[ "$MM_DRY_RUN" == 1 ]] && verb="would fail"
+  mm_err "$1 $verb (exit $2)"
+  printf '%s\n' "$3" | tail -5 | sed 's/^/    /' >&2
+  last=$(awk 'NF { l = $0 } END { print l }' <<<"$3")
+  mm_log failed "$1" 0 "exit $2${last:+: $last}"
 }
 
 # ---------------------------------------------------------------- processes
@@ -1303,18 +1735,16 @@ mm_proc_children() {
 
 # mm_apt_busy — 0, printing why, when apt, dpkg or an unattended-upgrade run is in progress, or a
 # process holds one of the dpkg/apt lock files open. The holders are root's processes, so their
-# open files are read as root; when that fails (sudo password refused) the answer is "busy": a
-# step that runs apt must skip rather than race.
+# open files are read as root; when that fails (sudo stopped working mid-run) the answer is
+# "busy": a step that runs apt must skip rather than race.
 # (unattended-upgrade-shutdown waits for shutdown all day and shares the truncated comm
 # "unattended-upgr" with the run itself, so the run is matched on its command line.)
 mm_apt_busy() {
   if mm_proc_match 'apt|apt-get|aptitude|dpkg' '/unattended-upgrade( |$)'; then echo "apt is running"; return 0; fi
   local out locks=(/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock /var/cache/apt/archives/lock)
-  if (( EUID != 0 )) && ! { command -v sudo >/dev/null && sudo -n true 2>/dev/null; }; then
-    # Without root, passwordless sudo, or a terminal to ask for a password, nothing can run apt as
-    # root either (and a dry run runs nothing): there is no step to protect.
-    [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" == 1 ]] && command -v sudo >/dev/null || return 1
-  fi
+  # Without root or sudo that runs without asking, nothing can run apt as root either: there is
+  # no step to protect.
+  mm_can_sudo || return 1
   out=$(mm_sudo bash -c 'if find /proc/[0-9]*/fd -maxdepth 1 -type l -printf "%l\n" 2>/dev/null |
     grep -qxF -f <(printf "%s\n" "$@"); then echo held; else echo free; fi' _ "${locks[@]}")
   case "$out" in
@@ -1330,13 +1760,20 @@ mm_apt_busy() {
 mm_pick() {
   if [[ "$MM_TTY" != 1 ]] || ! command -v fzf >/dev/null; then
     cat >/dev/null
-    [[ "$MM_TTY" == 1 ]] && mm_warn "fzf is not installed: nothing selected" >&2
+    [[ "$MM_TTY" == 1 ]] && printf '  %s!%s fzf is not installed: nothing selected\n' "$CE_YELLOW" "$CE_RESET" >&2
     return 0
   fi
-  # Adaptive height (~60%) came with fzf 0.34; older ones (Ubuntu 22.04 ships 0.29) exit with
-  # "not a valid number" on it, which would select nothing.
-  local height='~60%'
-  [[ "$(fzf --version 2>/dev/null)" =~ ^0\.([0-9]+) ]] && (( 10#${BASH_REMATCH[1]} < 34 )) && height=60%
-  fzf --multi --ansi --reverse --height="$height" --header="$1" --header-first \
+  fzf --multi --ansi --reverse --height="$(mm_fzf_height 60)" --header="$1" --header-first \
       --bind 'ctrl-a:select-all,ctrl-d:deselect-all' --prompt='filter> '
+}
+
+# mm_fzf_height PERCENT — the value for fzf --height: adaptive (~PERCENT%, fzf 0.34 and later),
+# or a fixed PERCENT% for older fzf (Ubuntu 22.04 ships 0.29), which rejects "~" with "not a
+# valid number" and exits: the picker or menu would never open.
+mm_fzf_height() {
+  if [[ "$(fzf --version 2>/dev/null)" =~ ^0\.([0-9]+) ]] && (( 10#${BASH_REMATCH[1]} < 34 )); then
+    printf '%s%%' "$1"
+  else
+    printf '~%s%%' "$1"
+  fi
 }

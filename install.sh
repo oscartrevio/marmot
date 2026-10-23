@@ -22,16 +22,25 @@ manifest=.install-manifest
 # What install copies: the launcher, libraries, commands, completion, and this installer (for
 # --uninstall). Tests and git metadata stay in the checkout.
 PAYLOAD=(marmot install.sh lib cmd completion)
-# Everything an install made before .install-manifest existed can hold (no file has left these
-# folders since): such a copy is replaced or removed only when it holds nothing else.
+# Every file an install can hold, also one made before .install-manifest existed (no file has
+# left these folders since): such a copy is replaced or removed only when it holds nothing else.
 LEGACY_DIRS=(lib cmd completion)
-LEGACY_FILES=(marmot install.sh .install-source lib/agents.sh lib/catalog.sh lib/core.sh lib/schedule.sh
-  cmd/analyze.sh cmd/clean.sh cmd/history.sh cmd/optimize.sh cmd/purge.sh cmd/schedule.sh cmd/status.sh
-  cmd/uninstall.sh cmd/update.sh completion/_mm completion/mm.bash)
+LEGACY_FILES=(marmot install.sh .install-source lib/agents.sh lib/catalog.sh lib/core.sh lib/mascot.sh
+  lib/schedule.sh cmd/analyze.sh cmd/clean.sh cmd/history.sh cmd/optimize.sh cmd/purge.sh cmd/schedule.sh
+  cmd/status.sh cmd/uninstall.sh cmd/update.sh completion/_mm completion/mm.bash)
 
+# Lines look like marmot's own (lib/core.sh mm_ok/mm_warn/mm_err), which this does not source: it
+# would canonicalize HOME and probe the terminal. Color only when that stream is a terminal.
+_mark() {   # _mark FD COLOR SYMBOL MESSAGE
+  local c="" r=""
+  if [[ -t $1 && -z "${NO_COLOR:-}" && "${TERM:-}" != dumb ]]; then c=$'\e['"$2m" r=$'\e[0m'; fi
+  printf '  %s%s%s %s\n' "$c" "$3" "$r" "$4" >&"$1"
+}
 say()  { printf '%s\n' "$*"; }
-warn() { printf '! %s\n' "$*" >&2; }
-die()  { printf '✗ %s\n' "$*" >&2; exit 1; }
+info() { printf '  %s\n' "$*"; }
+ok()   { _mark 1 32 ✓ "$*"; }
+warn() { _mark 2 33 ! "$*"; }
+die()  { _mark 2 31 ✗ "$*"; exit 1; }
 
 # _is_marmot_tree DIR — DIR looks like a marmot install.
 _is_marmot_tree() { [[ -f "$1/marmot" && -f "$1/lib/core.sh" && -d "$1/cmd" ]]; }
@@ -126,10 +135,10 @@ _foreign() {
 _link() {
   local l="$bindir/$1"
   if _foreign "$1"; then
-    warn "kept $l: it is not a marmot launcher (remove or rename it to use $1)"
+    warn "Kept $l: it is not a marmot launcher (remove or rename it to use $1)"
     return 1
   fi
-  ln -sfn "$prefix/marmot" "$l" && say "linked $l"
+  ln -sfn "$prefix/marmot" "$l" && ok "Linked $l"
 }
 
 # _path_hint — the line that puts $bindir on PATH, and the startup file it belongs in.
@@ -138,15 +147,15 @@ _path_hint() {
   [[ "$dir" == "$HOME"/* ]] && dir="\$HOME/${dir#"$HOME"/}"
   case "${SHELL:-}" in */zsh) rc=~/.zshrc ;; */bash) rc=~/.bashrc ;; esac
   warn "$bindir is not on your PATH. Add this line to $rc, then open a new shell:"
-  printf '    export PATH="%s:$PATH"\n' "$dir" >&2
+  printf '      export PATH="%s:$PATH"\n' "$dir" >&2
 }
 
 # _unschedule — remove the timer or crontab line `mm schedule enable` created, so nothing keeps
 # calling a launcher that is about to go away.
 _unschedule() {
   [[ -f "$prefix/marmot" ]] || return 0
-  say "disabling marmot's schedule (mm schedule disable):"
-  bash "$prefix/marmot" schedule disable </dev/null || warn "could not disable the schedule: run mm schedule disable before uninstalling"
+  info "Disabling marmot's schedule (mm schedule disable):"
+  bash "$prefix/marmot" schedule disable </dev/null || warn "Could not disable the schedule: run mm schedule disable before uninstalling"
 }
 
 uninstall() {
@@ -165,37 +174,41 @@ uninstall() {
   _unschedule
   for l in "$bindir/mm" "$bindir/marmot"; do
     if [[ -L "$l" && "$(readlink -f "$l")" == "$prefix/marmot" ]]; then
-      rm -f -- "$l" && say "removed $l"   # SAFE: our own launcher symlink, target verified
+      rm -f -- "$l" && ok "Removed $l"   # SAFE: our own launcher symlink, target verified
     fi
   done
   case "$keep" in
     "")
       _remove_owned
       if rmdir -- "$prefix" 2>/dev/null; then   # SAFE: rmdir removes only an empty folder
-        say "removed $prefix"
+        ok "Removed $prefix"
       else
-        say "removed marmot's files from $prefix; kept the rest (marmot did not install it)"
+        ok "Removed marmot's files from $prefix; kept the rest (marmot did not install it)"
       fi ;;
     none) ;;
-    *) say "kept $prefix ($keep)" ;;
+    *) info "Kept $prefix ($keep)" ;;
   esac
-  say "Kept: ${XDG_CONFIG_HOME:-~/.config}/marmot, ${XDG_STATE_HOME:-~/.local/state}/marmot and the Trash."
+  info "Kept ${XDG_CONFIG_HOME:-~/.config}/marmot, ${XDG_STATE_HOME:-~/.local/state}/marmot and the Trash."
 }
 
 check() {
   [[ "$(uname -s)" == Linux ]] || die "marmot runs on Linux (Ubuntu/Debian)."
-  (( BASH_VERSINFO[0] >= 5 )) || die "bash 5.0 or newer is required (found $BASH_VERSION)."
+  (( BASH_VERSINFO[0] >= 5 )) || die "Bash 5.0 or newer is required (found $BASH_VERSION)."
   local c missing=()
   for c in find awk sed grep stat realpath du df; do command -v "$c" >/dev/null || missing+=("$c"); done
-  (( ${#missing[@]} == 0 )) || die "missing required tools: ${missing[*]}"
-  command -v git >/dev/null || say "git not found: everything works except mm update (install git and clone marmot to use it)."
-  command -v apt-get >/dev/null || warn "no apt-get: system-package steps will be skipped (marmot targets Ubuntu/Debian)."
-  local opt=()
-  command -v fzf >/dev/null      || opt+=("fzf (pickers)")
-  command -v ncdu >/dev/null     || opt+=("ncdu (mm analyze PATH)")
-  command -v jq >/dev/null       || opt+=("jq (--json output)")
-  command -v trash-restore >/dev/null || opt+=("trash-cli (trash-restore)")
-  (( ${#opt[@]} == 0 )) || say "Optional, recommended: sudo apt-get install fzf ncdu jq trash-cli   # ${opt[*]}"
+  (( ${#missing[@]} == 0 )) || die "Missing required tools: ${missing[*]}"
+  command -v git >/dev/null || info "Git not found: everything works except mm update (install git and clone marmot to use it)."
+  command -v apt-get >/dev/null || warn "No apt-get: system-package steps will be skipped (marmot targets Ubuntu/Debian)."
+  local opt=() pkg=()
+  command -v fzf >/dev/null      || { opt+=("fzf (pickers)"); pkg+=(fzf); }
+  command -v ncdu >/dev/null     || { opt+=("ncdu (mm analyze PATH)"); pkg+=(ncdu); }
+  command -v jq >/dev/null       || { opt+=("jq (--json output)"); pkg+=(jq); }
+  command -v trash-restore >/dev/null || { opt+=("trash-cli (trash-restore)"); pkg+=(trash-cli); }
+  if (( ${#opt[@]} )); then
+    info "Optional tools missing (recommended):"
+    printf '    %s\n' "${opt[@]}"
+    info "  Install them with: sudo apt-get install ${pkg[*]}"
+  fi
 }
 
 # record_source — write $prefix/.install-source: plain key=value lines (read, never sourced).
@@ -208,12 +221,12 @@ record_source() {
     if [[ -n "$commit" ]]; then describe=$(git -C "$src" describe --tags --always --dirty 2>/dev/null) || describe=""; fi
   fi
   if [[ "$src$bin" == *$'\n'* ]]; then
-    warn "not recording the source folder (its path has a newline): mm update will not work"
+    warn "Not recording the source folder (its path has a newline): mm update will not work"
     return 0
   fi
   printf 'source=%s\ncommit=%s\ndescribe=%s\nbin=%s\n' "$src" "$commit" "$describe" "$bin" >"$prefix/.install-source"
-  if [[ -n "$commit" ]]; then say "recorded source $src at ${commit:0:7} (for mm update)"
-  else say "recorded source $src (not a git checkout: mm update needs a git clone)"; fi
+  if [[ -n "$commit" ]]; then ok "Recorded source $src at ${commit:0:7} (for mm update)"
+  else warn "Recorded source $src: not a git checkout, so mm update needs a git clone"; fi
 }
 
 # write_manifest — list the copied files (files, from install) in $prefix/.install-manifest:
@@ -248,10 +261,43 @@ _in_the_way() {
     die "$prefix already has ${blocked[*]:0:5}, which marmot did not install and would overwrite; nothing changed: move them away or set MARMOT_PREFIX"
 }
 
+# _finale — the first-run message: the marmot (dressed for the day: lib/mascot.sh, which this does
+# source, has no side effects; not with `festive = off` in marmot's config), three next steps,
+# then the completion line for each shell whose rc file does not load it yet. Printed only:
+# nothing is run, no rc file is written.
+_finale() {
+  local C_BOLD="" C_DIM="" C_RED="" C_GREEN="" C_YELLOW="" C_BLUE="" C_MAGENTA="" C_CYAN="" C_RESET=""
+  # shellcheck source=lib/mascot.sh
+  . "$src/lib/mascot.sh"
+  mm_now
+  MM_OCC=()
+  grep -Eqis '^[[:space:]]*festive[[:space:]]*=[[:space:]]*(off|no|false|0)[[:space:]]*(#|$)' \
+    "${XDG_CONFIG_HOME:-$HOME/.config}/marmot/config" || mm_occasions "$REPLY" || MM_OCC=()
+  mm_marmot_dress happy 0 "${MM_OCC[@]}"
+  MM_LOOK_GREET="run on clean, fast and healthy."
+  mm_marmot_draw happy 60 marmot "Keep the machines your coding agents"
+  say ""
+  printf '%s\n' "${MM_ART[@]}"
+  say ""
+  say "marmot is installed. Three next steps:"
+  say "  1. mm clean --dry-run    preview: lists what mm clean would remove, deletes nothing"
+  say "  2. mm status             see what the machine is doing"
+  say "  3. mm schedule enable    clean up on a schedule"
+  local bash_hint=1 zsh_hint=1
+  grep -qsF -- "$prefix/completion" ~/.bashrc && bash_hint=0
+  grep -qsF -- "$prefix/completion" ~/.zshrc && zsh_hint=0
+  (( bash_hint || zsh_hint )) || return 0
+  say ""
+  say "Shell completion:"
+  (( bash_hint )) && say "  bash: echo 'source $prefix/completion/mm.bash' >> ~/.bashrc"
+  (( zsh_hint )) && say "  zsh:  echo 'fpath=($prefix/completion \$fpath)' >> ~/.zshrc   # before compinit"
+  return 0
+}
+
 install() {
   check
   _foreign mm && die "$bindir/mm exists and is not a marmot launcher: move it away or set MARMOT_BIN, then run install.sh again"
-  local copied=0 top f files=() dirs=()
+  local copied=0 fresh=0 top f files=() dirs=()
   owned=()
   if [[ "$(readlink -f "$prefix" 2>/dev/null)" != "$src" ]]; then
     [[ ! -L "$prefix" ]] ||
@@ -264,6 +310,7 @@ install() {
       if [[ -d "$src/$f" && ! -L "$src/$f" ]]; then dirs+=("$f"); else files+=("$f"); fi
     done < <(cd "$src" && find "${PAYLOAD[@]}" -print0)
     files+=(.install-source)
+    [[ -e "$prefix" ]] || fresh=1
     if [[ -e "$prefix" ]]; then
       real=$(realpath -e -- "$prefix")
       _owned || die "$prefix exists and is not a marmot install; set MARMOT_PREFIX."
@@ -272,7 +319,7 @@ install() {
     fi
     mkdir -p "$prefix"
     cp -R -- "${PAYLOAD[@]/#/$src/}" "$prefix/"
-    say "installed to $prefix"
+    ok "Installed to $prefix"
     copied=1
   fi
   mkdir -p "$bindir"
@@ -280,17 +327,12 @@ install() {
   _link mm
   _link marmot || true
   case ":$PATH:" in *":$bindir:"*) ;; *) _path_hint ;; esac
-  say ""
-  say "Shell completion:"
-  say "  bash: echo 'source $prefix/completion/mm.bash' >> ~/.bashrc"
-  say "  zsh:  echo 'fpath=($prefix/completion \$fpath)' >> ~/.zshrc   # before compinit"
-  say ""
-  say "Start with a preview:  mm clean --dry-run"
+  if (( fresh )); then _finale; fi
 }
 
 case "${1:-}" in
   "") install ;;
   --uninstall) uninstall ;;
   -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown option: $1 (see --help)" ;;
+  *) die "Unknown option: $1 (see --help)" ;;
 esac

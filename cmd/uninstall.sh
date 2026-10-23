@@ -7,7 +7,7 @@
 # purge, snap after `snap save`).
 
 # One entry per removable item (parallel arrays, index = item id).
-_UN_SRC=() _UN_NAME=() _UN_BYTES=() _UN_TIME=() _UN_PATH=() _UN_NOTE=() _UN_HIDDEN=()
+_UN_SRC=() _UN_NAME=() _UN_BYTES=() _UN_FREED=() _UN_TIME=() _UN_PATH=() _UN_NOTE=() _UN_HIDDEN=()
 declare -A _UN_BASE=()   # manual apt packages refused as base system: name → reason
 _UN_APP_DATA=0           # 1 with --app-data: offer ~/.NAME and ~/.local/share/NAME, one confirmation each
 
@@ -55,6 +55,10 @@ _uninstall_add() { # SRC NAME BYTES EPOCH PATH NOTE HIDDEN (BYTES empty: size un
   _UN_SRC+=("$1") _UN_NAME+=("$2") _UN_BYTES+=("$3") _UN_TIME+=("${4:-0}")
   _UN_PATH+=("$5") _UN_NOTE+=("$6") _UN_HIDDEN+=("${7:-0}")
 }
+
+# _uninstall_about IDX — "about " when package IDX's size is apt's Installed-Size estimate, not
+# measured on disk; nothing otherwise.
+_uninstall_about() { [[ "${_UN_SRC[$1]}" == apt && -n "${_UN_BYTES[$1]}" ]] && printf 'about '; return 0; }
 
 # _uninstall_human BYTES — mm_human, or "size unknown" for an empty BYTES.
 _uninstall_human() { if [[ -n "$1" ]]; then mm_human "$1"; else printf 'size unknown'; fi; }
@@ -210,7 +214,7 @@ _uninstall_json_keys() {
 _uninstall_collect_npm() {
   command -v npm >/dev/null || return 0
   local root name dir
-  root=$(timeout 15 npm root -g 2>/dev/null) || return 0
+  root=$(env -C / timeout 15 npm root -g 2>/dev/null) || return 0
   [[ -d "$root" ]] || return 0
   while IFS= read -r dir; do
     [[ "$dir" == "$root"/* ]] || continue
@@ -218,7 +222,7 @@ _uninstall_collect_npm() {
     [[ "$name" == npm || "$name" == corepack ]] && continue
     _uninstall_add npm "$name" "$(mm_size "$dir")" "$(stat -c %Y -- "$dir" 2>/dev/null || echo 0)" "$dir" \
       "$(_uninstall_note "$name")" "$(_uninstall_remote "$name" && echo 2 || echo 0)"
-  done < <(timeout 30 npm ls -g --depth=0 --parseable 2>/dev/null)
+  done < <(env -C / timeout 30 npm ls -g --depth=0 --parseable 2>/dev/null)
 }
 
 _uninstall_collect_bun() {
@@ -235,12 +239,12 @@ _uninstall_collect_bun() {
 _uninstall_collect_pipx() {
   command -v pipx >/dev/null || return 0
   local venvs name dir
-  venvs=$(timeout 15 pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null) || venvs="$HOME/.local/share/pipx/venvs"
+  venvs=$(env -C / timeout 15 pipx environment --value PIPX_LOCAL_VENVS 2>/dev/null) || venvs="$HOME/.local/share/pipx/venvs"
   while read -r name _; do
     [[ -n "$name" ]] || continue
     dir="$venvs/$name"
     _uninstall_add pipx "$name" "$(mm_size "$dir")" "$(stat -c %Y -- "$dir" 2>/dev/null || echo 0)" "$dir" "" 0
-  done < <(timeout 30 pipx list --short 2>/dev/null)
+  done < <(env -C / timeout 30 pipx list --short 2>/dev/null)
 }
 
 # _uninstall_uv_dir — where uv keeps its tools (`uv tool dir`): UV_TOOL_DIR, else
@@ -663,11 +667,17 @@ _uninstall_apply() {
   [[ "$MM_DRY_RUN" == 1 || "$MM_TTY" != 1 ]] && dry=1
   local -a keep=()
   [[ "$MM_DRY_RUN" != 1 && "$MM_TTY" != 1 ]] && mm_warn "No terminal: preview only, nothing will be removed"
+  if (( ! dry )); then
+    for i in "$@"; do
+      [[ "${_UN_SRC[i]}" == apt || "${_UN_SRC[i]}" == snap ]] || continue
+      mm_sudo_ask "removing apt and snap packages"; break
+    done
+  fi
   mm_inuse_refresh
 
   # 1. running processes and high-impact packages
   for i in "$@"; do
-    mm_ok "${_UN_NAME[i]}" "${_UN_SRC[i]}, $(_uninstall_human "${_UN_BYTES[i]}")"
+    mm_ok "${_UN_NAME[i]}" "${_UN_SRC[i]}, $(_uninstall_about "$i")$(_uninstall_human "${_UN_BYTES[i]}")"
     if what=$(_uninstall_running "$i"); then
       if [[ "$dry" == 1 ]]; then
         mm_warn "${_UN_NAME[i]} is running ($what); a real run asks before removing it"
@@ -758,7 +768,7 @@ _uninstall_apply() {
       fi
     done
     unknown=$(( unknown + item_unknown ))
-    printf '\n%s✓%s %s, %s%s\n' "$C_GREEN" "$C_RESET" "${_UN_NAME[i]}" "$(mm_human "$item_bytes")" \
+    printf '\n%s✓%s %s, %s%s%s\n' "$C_GREEN" "$C_RESET" "${_UN_NAME[i]}" "$(_uninstall_about "$i")" "$(mm_human "$item_bytes")" \
       "$( (( item_unknown )) && printf ' + size unknown')"
     while IFS= read -r p; do
       [[ -n "$p" ]] && { mm_tilde "$p"; lines+=("$C_DIM◎$C_RESET $REPLY $C_DIM· kept ($MM_UN_AGENT_KEPT)$C_RESET"); }
@@ -829,8 +839,9 @@ _uninstall_apply() {
   sizes="free $(mm_human "$free_bytes"), move $(mm_human "$trash_bytes") to Trash"
   (( unknown )) && sizes+=", plus $unknown of unknown size"
   if [[ "$dry" == 1 ]]; then
-    mm_banner "Uninstall preview$([[ "$MM_DRY_RUN" == 1 ]] && printf ' (dry run)')" \
-      "Would remove ${#todo[@]} package$( (( ${#todo[@]} == 1 )) || printf s), $sizes: ${todo_names[*]}" \
+    mm_banner "$([[ "$MM_DRY_RUN" == 1 ]] && printf 'Dry run complete' || printf 'Uninstall preview')" \
+      "Would free: $(mm_human "$free_bytes")$( (( unknown )) && printf ' + %d of unknown size' "$unknown")$(MM_DRY_RUN=1 mm_banner_trash "$trash_bytes") | Packages to remove: ${#todo[@]} (${todo_names[*]})" \
+      "$([[ "$MM_DRY_RUN" == 1 ]] && mm_banner_free 0 "$free_bytes")" \
       "$([[ "$MM_DRY_RUN" == 1 ]] && printf 'Run without --dry-run to apply.' || printf 'Run from a terminal to apply.')"
     return 0
   fi
@@ -867,10 +878,28 @@ _uninstall_apt_recheck() {
   [[ "$(sort <<<"$now")" == "$(sort <<<"$expected")" ]]
 }
 
+# _uninstall_apt_installed PKG — 0 while dpkg still has PKG installed.
+_uninstall_apt_installed() { [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "$1" 2>/dev/null)" == ii* ]]; }
+
+# _uninstall_tool IDX DESC CMD... — mm_run a package manager's own removal of package IDX from /,
+# like the listing that found it (snap: through mm_sudo, as is), so no project config in the current folder (.npmrc, bunfig.toml,
+# pyproject.toml) changes its target. A package with a folder of its own (npm, bun, pipx, uv) is
+# measured: what left that folder, in _UN_FREED[IDX] and on its history row. A snap carries its
+# listed size.
+_uninstall_tool() {
+  local i=$1 desc=$2 before=""; shift 2
+  [[ "${_UN_SRC[i]}" != snap ]] && { before=$(mm_size "${_UN_PATH[i]}"); set -- env -C / "$@"; }
+  mm_run --measured "$desc" "$@" || return
+  if [[ -n "$before" ]]; then _UN_FREED[i]=$(( before - $(mm_size "${_UN_PATH[i]}" || echo "$before") ))
+  else _UN_FREED[i]=${_UN_BYTES[i]:-}; fi
+  (( ${_UN_FREED[i]:-0} >= 0 )) || _UN_FREED[i]=0
+  mm_log run "$desc" "${_UN_FREED[i]:-0}"
+}
+
 # _uninstall_execute APT_STEPS APT_EXTRA_BYTES APT_PLAN IDX... — APT_STEPS: 2 remove+autoremove,
 # 1 remove only. APT_PLAN: the simulated removal set the user confirmed, re-checked here.
 _uninstall_execute() {
-  local apt_steps=$1 apt_extra_bytes=$2 apt_plan=$3 i busy rc pkg_bytes=0 unknown=0 free_before ok found p
+  local apt_steps=$1 apt_extra_bytes=$2 apt_plan=$3 i busy rc pkg_bytes=0 unknown=0 free_before ok found p b
   shift 3
   local -a removed=() removed_idx=() apt_sel=() apt_idx=()
   free_before=$(mm_free_bytes /)
@@ -890,11 +919,16 @@ _uninstall_execute() {
     else
       # remove, never purge: purge runs maintainer scripts that delete data (PostgreSQL clusters,
       # /var/lib/docker). The confirmed plan said config and data are kept.
-      mm_run "apt-get remove ${apt_sel[*]}" mm_sudo env DEBIAN_FRONTEND=noninteractive \
-        apt-get -y -o DPkg::Lock::Timeout=60 remove "${apt_sel[@]}"
+      if mm_run --measured "apt-get remove ${apt_sel[*]}" mm_sudo env DEBIAN_FRONTEND=noninteractive \
+        apt-get -y -o DPkg::Lock::Timeout=60 remove "${apt_sel[@]}"; then
+        # the row carries what the banner counts: the extra packages, and each selected one gone
+        b=$apt_extra_bytes
+        for i in "${apt_idx[@]}"; do _uninstall_apt_installed "${_UN_NAME[i]}" || b=$(( b + ${_UN_BYTES[i]:-0} )); done
+        mm_log run "apt-get remove ${apt_sel[*]}" "$b"
+        pkg_bytes=$(( pkg_bytes + apt_extra_bytes ))
+      fi
       (( apt_steps >= 2 )) && mm_run "apt-get autoremove" mm_sudo env DEBIAN_FRONTEND=noninteractive \
         apt-get -y -o DPkg::Lock::Timeout=60 autoremove
-      pkg_bytes=$(( pkg_bytes + apt_extra_bytes ))
     fi
   fi
 
@@ -904,30 +938,32 @@ _uninstall_execute() {
     case "${_UN_SRC[i]}" in
       apt)
         [[ " ${apt_idx[*]} " == *" $i "* ]] || continue
-        [[ "$(dpkg-query -W -f='${db:Status-Abbrev}' "${_UN_NAME[i]}" 2>/dev/null)" == ii* ]] && ok=0 ;;
+        _uninstall_apt_installed "${_UN_NAME[i]}" && ok=0 ;;
       snap)
         # snapd deletes ~/snap/NAME for every user on remove. A snapshot of marmot's own comes
         # first (no snap goes without one); --purge then skips snapd's duplicate automatic one.
+        if ! mm_can_sudo; then mm_skip "${_UN_NAME[i]}" "needs sudo"; continue; fi
         if snapshot=$(_uninstall_snap_save "${_UN_NAME[i]}"); then
           mm_info "${_UN_NAME[i]} data saved as snapshot ${snapshot:-(id: snap saved ${_UN_NAME[i]})}; bring it back: sudo snap restore ${snapshot:-<id>}"
-          mm_run "snap remove --purge ${_UN_NAME[i]}" mm_sudo timeout 600 snap remove --purge "${_UN_NAME[i]}" || ok=0
+          _uninstall_tool "$i" "snap remove --purge ${_UN_NAME[i]}" mm_sudo timeout 600 snap remove --purge "${_UN_NAME[i]}" || ok=0
         else
           ok=0
         fi ;;
-      npm)  mm_run "npm rm -g ${_UN_NAME[i]}" timeout 300 npm rm -g "${_UN_NAME[i]}" || ok=0 ;; # SAFE: confirmed package-manager removal via mm_run
-      bun)  mm_run "bun remove -g ${_UN_NAME[i]}" timeout 300 bun remove -g "${_UN_NAME[i]}" || ok=0 ;;
-      pipx) mm_run "pipx uninstall ${_UN_NAME[i]}" timeout 300 pipx uninstall "${_UN_NAME[i]}" || ok=0 ;;
-      uv)   mm_run "uv tool uninstall ${_UN_NAME[i]}" timeout 300 uv tool uninstall "${_UN_NAME[i]}" || ok=0 ;;
+      npm)  _uninstall_tool "$i" "npm rm -g ${_UN_NAME[i]}" timeout 300 npm rm -g "${_UN_NAME[i]}" || ok=0 ;; # SAFE: confirmed package-manager removal via mm_run
+      bun)  _uninstall_tool "$i" "bun remove -g ${_UN_NAME[i]}" timeout 300 bun remove -g "${_UN_NAME[i]}" || ok=0 ;;
+      pipx) _uninstall_tool "$i" "pipx uninstall ${_UN_NAME[i]}" timeout 300 pipx uninstall "${_UN_NAME[i]}" || ok=0 ;;
+      uv)   _uninstall_tool "$i" "uv tool uninstall ${_UN_NAME[i]}" timeout 300 uv tool uninstall "${_UN_NAME[i]}" || ok=0 ;;
       bin)
         if ! mm_rm --trash "${_UN_PATH[i]}" "$HOME/.local/bin"; then
           mm_skip "${_UN_NAME[i]}" "${MM_SKIP_REASON:-move to Trash failed}"; continue
         fi ;;
     esac
     if (( ! ok )); then mm_err "${_UN_NAME[i]}: removal failed; leftovers kept"; continue; fi
-    mm_ok "${_UN_NAME[i]}" "${_UN_SRC[i]}, $(_uninstall_human "${_UN_BYTES[i]}")$([[ "${_UN_SRC[i]}" == bin ]] && printf ' to Trash')"
+    b=${_UN_FREED[i]-${_UN_BYTES[i]}}
+    mm_ok "${_UN_NAME[i]}" "${_UN_SRC[i]}, $(_uninstall_about "$i")$(_uninstall_human "$b")$([[ "${_UN_SRC[i]}" == bin ]] && printf ' to Trash')"
     removed+=("${_UN_NAME[i]}"); removed_idx+=("$i")
     if [[ "${_UN_SRC[i]}" != bin ]]; then
-      if [[ -n "${_UN_BYTES[i]}" ]]; then pkg_bytes=$(( pkg_bytes + _UN_BYTES[i] )); else unknown=$((unknown + 1)); fi
+      if [[ -n "$b" ]]; then pkg_bytes=$(( pkg_bytes + b )); else unknown=$((unknown + 1)); fi
     fi
   done
 
@@ -951,11 +987,10 @@ _uninstall_execute() {
   done
   rc=0; (( ${#removed[@]} )) || rc=1
 
-  local freed=$(( pkg_bytes + MM_FREED )) free_after
-  free_after=$(mm_free_bytes /)
+  local freed=$(( pkg_bytes + MM_FREED ))
   mm_banner "Uninstall complete" \
-    "Removed ${#removed[@]} package$( (( ${#removed[@]} == 1 )) || printf s)${removed[*]:+: ${removed[*]}}" \
-    "Space freed: $(mm_human "$freed")$( (( unknown )) && printf ' + %d of unknown size' "$unknown") | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)" \
-    "Free space: $(mm_human "$free_after") (+$(mm_human $(( free_after > free_before ? free_after - free_before : 0 ))))"
+    "Space freed: $(mm_human "$freed")$( (( unknown )) && printf ' + %d of unknown size' "$unknown")$(mm_banner_trash "$MM_TRASHED") | Packages removed: ${#removed[@]}${removed[*]:+ (${removed[*]})}" \
+    "$(mm_banner_free "$free_before")" \
+    "$(mm_milestone_line)"
   return "$rc"
 }

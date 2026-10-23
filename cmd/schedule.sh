@@ -19,8 +19,6 @@
 # git worktrees, uninstalls, and mm optimize's process kills and upgrades. A lock keeps two runs
 # from overlapping; each real run leaves its summary in last-run.json (lib/schedule.sh).
 
-# shellcheck source=../lib/schedule.sh
-. "$MM_HOME/lib/schedule.sh"
 # shellcheck source=clean.sh
 . "$MM_HOME/cmd/clean.sh"
 # shellcheck source=purge.sh
@@ -145,11 +143,11 @@ _schedule_run() {
     _SCHEDULE_STARTED=$(date -Iseconds) _SCHEDULE_T0=$(date +%s)
     trap '_schedule_abort' EXIT
   fi
-  mm_header "Scheduled Cleanup"
+  mm_header "Scheduled cleanup"
   mm_catalog_load
   mm_inuse_refresh
-  local free0 free1 total items delta sign=+
-  free0=$(mm_free_bytes /)
+  local free0 pct0 total items
+  free0=$(mm_free_bytes /) pct0=$(mm_disk_pct)
 
   if _schedule_trash_days; then
     _clean_user --yes "$_SCHEDULE_TRASH_KEEP"
@@ -175,30 +173,27 @@ _schedule_run() {
   _purge_run scheduled "$_SCHEDULE_PURGE_DAYS"
 
   total=$((MM_FREED + _CLEAN_TOOL_BYTES + _PURGE_STORE_BYTES)) items=$((MM_COUNT + _CLEAN_TOOL_ITEMS))
-  free1=$(mm_free_bytes /)
-  local trash="" notes="Skipped: ${#MM_SKIPS[@]} | Errors: ${#MM_ERRORS[@]}"
+  local notes="Skipped: ${#MM_SKIPS[@]} | Errors: ${#MM_ERRORS[@]}"
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    (( MM_TRASHED )) && trash=" | Would move to Trash: $(mm_human "$MM_TRASHED")"
     mm_banner "Dry run complete" \
-      "Would free: $(mm_human "$total")$trash | Items: $items" \
-      "$notes" \
+      "Would free: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items to clean: $items" \
+      "$notes" "$(_clean_best_line)" \
+      "$(mm_banner_free "$free0" "$total")" \
       "Run without --dry-run to apply."
     return 0
   fi
-  (( MM_TRASHED )) && trash=" | Moved to Trash: $(mm_human "$MM_TRASHED") (restore: trash-restore)"
-  delta=$((free1 - free0)); (( delta < 0 )) && { sign=-; delta=$((-delta)); }
   trap - EXIT
   _schedule_record "$_SCHEDULE_STARTED" "$_SCHEDULE_T0" "$total" "$MM_TRASHED" "$items"
   mm_tilde "$MM_SCHEDULE_LAST"
   mm_banner "Scheduled cleanup complete" \
-    "Space freed: $(mm_human "$total")$trash | Items: $items" \
-    "$notes" \
-    "Free space: $(mm_human "$free1") ($sign$(mm_human "$delta")) | Summary: $REPLY"
+    "Space freed: $(mm_human "$total")$(mm_banner_trash "$MM_TRASHED") | Items cleaned: $items" \
+    "$notes" "$(_clean_best_line)" \
+    "$(mm_banner_free "$free0") | Summary: $REPLY" \
+    "$(mm_banner_disk "$pct0")"
 }
 
 # ---------------------------------------------------------------- enable, disable, status
 
-_SCHEDULE_HOUR=3          # runs start at 03:00 local time, plus a random delay
 _SCHEDULE_DELAY=1h        # systemd RandomizedDelaySec: many machines do not all start at once
 
 _SCHEDULE_SD=""          # 1 or 0 once _schedule_systemd_ok has asked
@@ -388,7 +383,7 @@ _schedule_enable() {
     pins=$(_schedule_pins "$_SCHEDULE_SD_ENV")
     _schedule_pins_check "$pins"
     while IFS= read -r p; do [[ -n "$p" ]] && env+="Environment=$p"$'\n'; done <<<"$pins"
-    cal="*-*-* $(printf '%02d' "$_SCHEDULE_HOUR"):00:00"; [[ "$freq" == weekly ]] && cal="Sun $cal"
+    cal="*-*-* $(printf '%02d' "$MM_SCHEDULE_HOUR"):00:00"; [[ "$freq" == weekly ]] && cal="Sun $cal"
     svc="$MM_SCHEDULE_MARK
 [Unit]
 Description=marmot scheduled cleanup (mm schedule run)
@@ -420,7 +415,7 @@ WantedBy=timers.target
       fi
     done
     if [[ "$MM_DRY_RUN" == 1 ]]; then
-      mm_info "Would write $MM_SCHEDULE_UNIT_DIR/$MM_SCHEDULE_UNIT.service and .timer ($freq at $(printf '%02d' "$_SCHEDULE_HOUR"):00 + up to $_SCHEDULE_DELAY) and enable the timer."
+      mm_info "Would write $MM_SCHEDULE_UNIT_DIR/$MM_SCHEDULE_UNIT.service and .timer ($freq at $(printf '%02d' "$MM_SCHEDULE_HOUR"):00 + up to $_SCHEDULE_DELAY) and enable the timer."
       return 0
     fi
     mkdir -p "$MM_SCHEDULE_UNIT_DIR" || mm_die "cannot create $MM_SCHEDULE_UNIT_DIR"
@@ -441,7 +436,7 @@ WantedBy=timers.target
     pins=$(_schedule_pins "$(_schedule_cron_env "$_SCHEDULE_CRON_KEEP")")
     _schedule_pins_check "$pins"
     min=$((RANDOM % 60)) dow='*'; [[ "$freq" == weekly ]] && dow=0
-    line="$min $_SCHEDULE_HOUR * * $dow PATH=$path${pins:+ ${pins//$'\n'/ }} MM_SCHEDULE_TRIGGER=cron $exe schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG"
+    line="$min $MM_SCHEDULE_HOUR * * $dow PATH=$path${pins:+ ${pins//$'\n'/ }} MM_SCHEDULE_TRIGGER=cron $exe schedule run >/dev/null 2>&1 $MM_SCHEDULE_CRON_TAG"
     if [[ "$MM_DRY_RUN" == 1 ]]; then mm_info "Would add to your crontab: $line"; return 0; fi
     _schedule_cron_set "$_SCHEDULE_CRON_KEEP$line"$'\n' "add marmot's crontab line" || mm_die "could not install the crontab line"
     _schedule_note cron "$freq"
@@ -498,6 +493,8 @@ _schedule_status() {
     if _schedule_systemd_ok; then
       state=$(timeout 10 systemctl --user is-enabled "$MM_SCHEDULE_UNIT.timer" 2>/dev/null)
       next=$(timeout 10 systemctl --user show "$MM_SCHEDULE_UNIT.timer" -p NextElapseUSecRealtime --value 2>/dev/null)
+      # systemd prints "Wed 2026-10-22 03:27:00 UTC" (or "n/a"): said as "in 9h (03:27)"
+      if [[ -n "$next" ]] && when=$(date -d "$next" +%s 2>/dev/null); then next=$(mm_when "$when"); else next=""; fi
       if [[ "$state" == enabled ]]; then
         mm_ok "systemd user timer $MM_SCHEDULE_UNIT.timer" "$cal + up to $_SCHEDULE_DELAY${next:+ · next run $next}"
       else
@@ -521,7 +518,7 @@ _schedule_status() {
       any=1
       read -r -a f <<<"$line"
       when="daily at $(printf '%02d:%02d' "${f[1]}" "${f[0]}")"
-      [[ "${f[4]}" == '*' ]] || when="weekly (day ${f[4]}) at $(printf '%02d:%02d' "${f[1]}" "${f[0]}")"
+      [[ "${f[4]}" == '*' ]] || when="weekly on $(_schedule_weekday "${f[4]}") at $(printf '%02d:%02d' "${f[1]}" "${f[0]}")"
       mm_ok "crontab line" "$when"
       # The run gets the crontab's settings above the line, then the line's own NAME=VALUE words.
       _schedule_drift "$(_schedule_cron_env "${_SCHEDULE_CRONTAB%%"$line"*}")"$'\n'"$(printf '%s\n' "${f[@]:5}" | awk '/^[A-Za-z_][A-Za-z0-9_]*=/ { print; next } { exit }')"
@@ -535,10 +532,16 @@ _schedule_status() {
   fi
 }
 
+# _schedule_weekday N — cron's day of the week as a name (0 and 7 are Sunday); N itself otherwise.
+_schedule_weekday() {
+  local -a d=(Sunday Monday Tuesday Wednesday Thursday Friday Saturday Sunday)
+  if [[ "$1" =~ ^[0-7]$ ]]; then printf '%s' "${d[$1]}"; else printf 'day %s' "$1"; fi
+}
+
 # _schedule_last_line — one line about the last run (after mm_schedule_last).
 _schedule_last_line() {
-  printf '%s (%s ago, %s) · took %ss · freed %s' "${MM_LAST_AT/T/ }" "$(mm_ago $(( $(date +%s) - MM_LAST_EPOCH )))" \
-    "$MM_LAST_TRIGGER" "$MM_LAST_DURATION" "$(mm_human "$MM_LAST_FREED")"
+  printf '%s (%s, %s) · took %s · freed %s' "${MM_LAST_AT/T/ }" "$(mm_ago $(( $(date +%s) - MM_LAST_EPOCH )))" \
+    "$MM_LAST_TRIGGER" "$(mm_dur "$MM_LAST_DURATION")" "$(mm_human "$MM_LAST_FREED")"
   (( MM_LAST_TRASHED )) && printf ' · %s to Trash' "$(mm_human "$MM_LAST_TRASHED")"
   printf ' · %s items · %s skipped · %s errors' "$MM_LAST_ITEMS" "$MM_LAST_SKIPPED" "$MM_LAST_ERRORS"
 }

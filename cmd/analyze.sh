@@ -41,7 +41,7 @@ _analyze_locations() {
 # _analyze_du SUDO PATH — "bytes<TAB>status" where status is complete|partial. On timeout the
 # size is a lower bound: the sum of every directory du finished (depth <= 3) not inside another.
 _analyze_du() {
-  local -a pre=(); [[ "$1" == 1 ]] && (( EUID != 0 )) && sudo -n true 2>/dev/null && pre=(sudo -n)
+  local -a pre=(); [[ "$1" == 1 ]] && (( EUID != 0 )) && mm_can_sudo && pre=(sudo -n)
   local out rc
   out=$(timeout "${MM_ANALYZE_TIMEOUT:-20}" "${pre[@]}" stdbuf -oL du -xB1 -d3 -- "$2" 2>/dev/null); rc=$?
   awk -F'\t' -v root="$2" -v rc="$rc" '
@@ -69,6 +69,7 @@ _analyze_measure() {
   IFS=$'\x1f' read -r -a paths <<<"$4"
   for p in "${paths[@]}"; do
     [[ -e "$p" ]] || continue
+    printf '%s\n' "$p" >"$dir/now.$idx"   # for the spinner: the folder being measured
     for q in "${paths[@]}"; do [[ "$p" == "$q"/* && -e "$q" ]] && continue 2; done
     if [[ "$label" == Old\ Downloads* ]]; then
       [[ -d "$p" ]] || continue
@@ -86,22 +87,28 @@ _analyze_measure() {
   mv "$dir/$idx.tmp" "$dir/$idx"
 }
 
-# _analyze_overview_rows — measures every location in parallel (spinner on stderr) and prints
-# rows sorted by size, largest first.
+# _analyze_overview_rows — measures every location in parallel (a spinner on stderr names a folder
+# still being measured: one can take up to MM_ANALYZE_TIMEOUT) and prints rows sorted by size,
+# largest first.
 _analyze_overview_rows() {
-  local dir label sudo paths i=0 n frames='⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏' f=0
+  local dir label sudo paths i=0 n f=0 now p
   dir=$(mktemp -d -t marmot-analyze.XXXXXX)
   while IFS=$'\t' read -r label sudo paths; do
     i=$((i + 1))
     _analyze_measure "$i" "$label" "$sudo" "$paths" "$dir" &
   done < <(_analyze_locations)
-  if [[ -t 2 ]]; then
+  if mm_spin_ok; then
     while [[ -n "$(jobs -rp)" ]]; do
-      n=$(find "$dir" -maxdepth 1 -type f ! -name '*.tmp' | wc -l)
-      printf '\r  %s%s%s Measuring %d locations… %d done ' "$C_CYAN" "${frames:f++%10:1}" "$C_RESET" "$i" "$n" >&2
+      n=$(find "$dir" -maxdepth 1 -name '[0-9]*' ! -name '*.tmp' | wc -l) now=""
+      for p in "$dir"/now.*; do
+        [[ -e "$p" && ! -e "$dir/${p##*.}" ]] || continue
+        now=$(<"$p"); break
+      done
+      mm_tilde "$now"
+      mm_spin_frame $((f++)) "Measuring $i locations… $n done${now:+ · $REPLY}"
       sleep 0.1
     done
-    printf '\r\e[K' >&2
+    mm_spin_clear
   fi
   wait
   cat "$dir"/[0-9]* 2>/dev/null | sort -t$'\t' -k2,2nr
@@ -137,31 +144,33 @@ _analyze_render() {
 }
 
 # _analyze_launch PATH [ACCESS] — explore PATH: ncdu, always read-only (ncdu's own delete would
-# bypass marmot's checks), or a largest-entries list when ncdu is missing. ACCESS root opens as
-# root when sudo is available. Afterwards, on a terminal, a user-writable PATH (ACCESS user) gets
-# the offer to move picked entries to the Trash through mm_rm.
+# bypass marmot's checks), or a largest-entries list when ncdu is missing or there is no terminal
+# for it. ACCESS root opens as root when sudo is available. Afterwards, on a terminal, a
+# user-writable PATH (ACCESS user) gets the offer to move picked entries to the Trash via mm_rm.
 _analyze_launch() {
   local path=$1 access=${2:-user} note="read-only" offer=0
   local -a pre=()
   if [[ "$access" == root ]] && (( EUID != 0 )); then
-    if mm_can_sudo; then pre=(sudo); note="read-only, opened as root"
+    mm_sudo_ask "reading every folder under $path (read-only)"
+    if mm_can_sudo; then pre=(sudo -n); note="read-only, opened as root"
     else mm_warn "No sudo: some folders under $path will be unreadable"; fi
   fi
   [[ "$MM_TTY" == 1 && "$access" == user && -w "$path" ]] && offer=1
   (( offer )) && note+="; afterwards marmot offers to move picked items to the Trash"
   [[ "$access" == keep ]] && note+="; agent state is reported, never removed"
-  if command -v ncdu >/dev/null; then
+  if [[ "$MM_TTY" == 1 ]] && command -v ncdu >/dev/null; then
     local -a cmd=(ncdu -x -r --color dark)
     ncdu --help 2>&1 | grep -q -- '--exclude-kernfs' && cmd+=(--exclude-kernfs)
     printf '\n  %sKeys:%s g graph · q quit  %s(%s)%s\n' "$C_BOLD" "$C_RESET" "$C_DIM" "$note" "$C_RESET"
     printf '  %sOpening %s in ncdu%s\n' "$C_DIM" "$path" "$C_RESET"
-    [[ "$MM_TTY" == 1 ]] && sleep 0.5
+    sleep 0.5
     "${pre[@]}" "${cmd[@]}" -- "$path"
   else
-    printf '\n%sLargest entries under %s%s  %s(install ncdu for an interactive browser)%s\n\n' \
-      "$C_BOLD" "$path" "$C_RESET" "$C_DIM" "$C_RESET"
+    local why="install ncdu for an interactive browser"
+    [[ "$MM_TTY" == 1 ]] || why="no terminal: the ncdu explorer needs one"
+    printf '\n%sLargest entries under %s%s  %s(%s)%s\n\n' "$C_BOLD" "$path" "$C_RESET" "$C_DIM" "$why" "$C_RESET"
     local line as=""
-    [[ ${#pre[@]} -gt 0 ]] && sudo -n true 2>/dev/null && as=sudo
+    (( ${#pre[@]} )) && as=sudo
     while IFS= read -r line; do
       printf '  %9s  %s\n' "$(mm_human "${line%%$'\t'*}")" "${line#*$'\t'}"
     done < <(_analyze_candidates "$path" "$as" | head -25)
@@ -241,8 +250,9 @@ Usage: mm analyze [PATH] [--json]
 
 Sizes ending in + are lower bounds (scan hit the ${MM_ANALYZE_TIMEOUT:-20}s limit or unreadable folders).
 Exploring uses ncdu, always read-only (root-owned locations as root, when sudo is available);
-without ncdu the largest entries are listed. Afterwards, for a folder of yours, marmot offers to
-move picked items to the Trash (fzf; same safety checks as mm clean; dry-run only reports).
+without ncdu or without a terminal the largest entries are listed. Afterwards, for a folder of
+yours, marmot offers to move picked items to the Trash (fzf; same safety checks as mm clean;
+dry-run only reports).
 Agent state (Claude Code, Codex, ... see lib/agents.sh) is reported only.
 Environment: MM_ANALYZE_TIMEOUT (seconds per location).
 EOF
@@ -252,10 +262,10 @@ mm_cmd_main() {
   local json=0 path=""
   while (( $# )); do
     case "$1" in
-      --json) json=1 ;;
+      --json) json=1 MM_NO_SPIN=1 ;;
       -h|--help) _analyze_usage; return 0 ;;
       -*) mm_die "unknown option: $1 (see mm analyze --help)" ;;
-      *) [[ -z "$path" ]] || mm_die "only one PATH allowed"; path=$1 ;;
+      *) [[ -z "$path" ]] || mm_die "only one PATH allowed (see mm analyze --help)"; path=$1 ;;
     esac
     shift
   done
@@ -275,7 +285,7 @@ mm_cmd_main() {
   if (( json )); then _analyze_json "$used" "$free" "${rows[@]}"; return; fi
 
   local header
-  header="Analyze Disk  ($(mm_human "$free") free)"
+  header="Analyze disk  ($(mm_human "$free") free)"
   if [[ "$MM_TTY" == 1 && -t 1 ]] && command -v fzf >/dev/null && (( ${#rows[@]} )); then
     local pick
     pick=$(_analyze_render "$used" "${rows[@]}" | fzf --ansi --reverse --no-multi --no-sort \

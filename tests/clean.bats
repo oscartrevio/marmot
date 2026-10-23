@@ -83,8 +83,10 @@ case "$1 ${2:-}" in
     done
     row sha256:dangling "" "$(iso "300 days ago")" 0001-01-01T00:00:00Z 0 ;;
   "image rm") echo "$*" >>"$gone" ;;
-  "images "*) printf "%s\t%s\n" sha256:dangling 12MB ;;
+  "images "*) if [[ "$*" == *" -q "* ]]; then grep -q sha256:dangling "$gone" 2>/dev/null || echo sha256:dangling
+    else printf "%s\t%s\n" sha256:dangling 12MB; fi ;;
   "builder du") echo "Reclaimable: 1.5GB" ;;
+  "builder prune") echo "Total reclaimed space: 1.2GB" ;;
   "volume ls") echo vol-db ;;
   "system df")
     case "$*" in
@@ -129,9 +131,17 @@ esac'
 # blob PATH — a 1.1MB file (tool cleans skip caches under 1MB).
 blob() { mkdir -p "$(dirname "$1")"; head -c 1100000 /dev/urandom >"$1"; }
 
+# fake_bun [BODY] — like bun 1.3.14: from a folder without a package.json every `pm` command fails
+# (exit 1, its two lines on stderr); `pm cache` prints the cache folder without a newline; then BODY.
+fake_bun() {
+  fake_rec bun '[[ -f package.json ]] || { printf "error: No package.json was found for directory \"%s\"\nnote: Run \"bun init\" to initialize a project\n" "$PWD" >&2; exit 1; }
+[[ "$*" == "pm cache" ]] && printf %s "$HOME/.bun/install/cache"
+'"${1:-}"
+}
+
 fake_tools() {
-  fake_rec npm
-  fake_rec bun
+  fake_rec npm '[[ "$*" == "config get cache" ]] && echo "$HOME/.npm"; exit 0'
+  fake_bun
   # like pnpm 9: a probe file goes into the working directory first
   fake_rec pnpm '[[ -w . ]] || { echo "EACCES: permission denied" >&2; exit 243; }
 [[ "$*" == "store path" ]] && echo "$SB/store"; exit 0'
@@ -285,8 +295,11 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   grep -qxF "$HOME pnpm store prune" "$CALLS"
   grep -qxF '/ yarn cache dir' "$CALLS"
   grep -qxF '/ yarn cache clean' "$CALLS"
-  grep -qxF '/ bun pm cache rm' "$CALLS"
-  none grep -vE "^(/|$HOME) " "$CALLS"
+  # bun needs a package.json: it runs from a folder marmot made for it, which is gone afterwards
+  local bun_cwd; bun_cwd=$(awk '$2 == "bun" && $3 == "pm" && $4 == "cache" && $5 == "rm" { print $1 }' "$CALLS")
+  [[ "$bun_cwd" == /*/marmot-bun.* ]]
+  [ ! -e "$bun_cwd" ]
+  none grep -vE "^(/|$HOME|$bun_cwd) " "$CALLS"
 }
 
 # ---------------------------------------------------------------- docker
@@ -332,6 +345,39 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   MM_DRY_RUN=1 _clean_docker_images >/dev/null
   none grep ' docker image rm ' "$CALLS"
   [ "$_CLEAN_TOOL_BYTES" -eq 2000000000 ]                         # unique sizes of the two offered images
+}
+
+@test "docker: dry and real runs count the same untagged images; build cache is docker's estimate, then its report" {
+  fake_docker
+  src
+  mm_confirm() { return 0; }
+  MM_DRY_RUN=1 _clean_docker_dangling >/dev/null
+  [ "$_CLEAN_TOOL_BYTES" -eq 12000000 ]
+  _CLEAN_TOOL_BYTES=0
+  MM_CMD=clean _clean_docker_dangling >/dev/null
+  [ "$_CLEAN_TOOL_BYTES" -eq 12000000 ]
+  # the build cache: 1.5GB estimated by `builder du`, 1.2GB reclaimed by docker's own report
+  _clean_docker_images() { :; }; _clean_docker_containers() { :; }; _clean_docker_dangling() { :; }
+  _CLEAN_TOOL_BYTES=0; MM_DRY_RUN=1 _clean_docker >/dev/null
+  [ "$_CLEAN_TOOL_BYTES" -eq 1500000000 ]
+  _CLEAN_TOOL_BYTES=0; MM_CMD=clean _clean_docker >/dev/null
+  [ "$_CLEAN_TOOL_BYTES" -eq 1200000000 ]
+  [ "$(awk -F'\t' '$3 == "run" && $4 == "docker builder prune" { print $5 }' "$XDG_STATE_HOME/marmot/operations.log")" = 1200000000 ]
+}
+
+@test "docker: when docker removes only some untagged images, those count and the rest are failed" {
+  fake_rec docker 'case "$1 ${2:-}" in
+  "images "*) if [[ "$*" == *" -q "* ]]; then [[ -e "$CALLS.gone" ]] || echo sha256:a; echo sha256:b
+    else printf "%s\t%s\n" sha256:a 10MB sha256:b 20MB; fi ;;
+  "image rm") : >"$CALLS.gone"; echo "Error response from daemon: conflict: unable to delete b" >&2; exit 1 ;;
+esac'
+  src
+  mm_confirm() { return 0; }
+  MM_CMD=clean _clean_docker_dangling >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq 10000000 ]
+  [ "${#MM_ERRORS[@]}" -eq 1 ]
+  [ "$(awk -F'\t' '$3 == "run" { s += $5 } END { printf "%.0f", s }' "$XDG_STATE_HOME/marmot/operations.log")" = 10000000 ]
+  [ "$(mm_log_rows failed | wc -l)" -eq 1 ]
 }
 
 @test "docker: no image is offered when the container list cannot be read" {
@@ -555,7 +601,7 @@ exec $real \"\$@\""
   exist "$HOME/.cache/pip/wheels/w.whl"
   gone "$HOME/.cache/pip/http-v2"
   [ "$(mm_log_rows refused)" = "$HOME/.cache/pip/wheels"$'\t'"size unknown (timed out)" ]
-  [[ "$output" == *"1 kept"* ]]
+  [[ "$output" == *"1 kept (size unknown (timed out))"* ]]   # the actual reason, not a guess
 }
 
 @test "catalog cache entries used in the last 7 days stay (an MCP server npx runs); older ones go" {
@@ -850,10 +896,76 @@ EOF
   [ ! -e "$XDG_STATE_HOME/marmot/operations.log" ]
 }
 
+@test "an interactive clean asks for sudo once, up front; refused, the system steps are skipped" {
+  (( EUID != 0 )) || skip "root needs no sudo"
+  fake_tools; fake_docker
+  mm_test_fake sudo 'echo "$*" >>"$BATS_TEST_TMPDIR/sudo.calls"; exit 1'   # needs a password; refused
+  local mode
+  for mode in --dry-run ""; do
+    rm -f "$BATS_TEST_TMPDIR/sudo.calls"
+    # a terminal run (setsid: no terminal to block on if something else asked)
+    MM_TTY=1 run setsid -w mm clean $mode
+    [ "$status" -eq 0 ]
+    [ "$(cat "$BATS_TEST_TMPDIR/sudo.calls")" = $'-n true\n-v' ] || { echo "mm clean $mode:"; cat "$BATS_TEST_TMPDIR/sudo.calls"; false; }
+    [[ "$output" == *"System cleanup · skipped (needs sudo)"* ]]
+  done
+}
+
 @test "tool-reported sizes above 2 GiB convert to exact bytes" {
   src
   [ "$(_clean_to_bytes 3GiB)" = 3221225472 ]
   [ "$(_clean_to_bytes 2.5GB)" = 2500000000 ]
+}
+
+@test "the bytes a tool's own clean frees are on its history row and in the history totals" {
+  blob "$HOME/.npm/_cacache/gone"; blob "$HOME/.npm/_cacache/stays"
+  fake_rec npm '[[ "$*" == "cache clean --force" ]] && rm -f "$HOME/.npm/_cacache/gone"; exit 0'
+  src
+  local want; want=$(mm_frees "$HOME/.npm/_cacache/gone")
+  MM_CMD=clean _clean_tool "npm cache" npm "$HOME/.npm/_cacache" / npm cache clean --force >/dev/null
+  [ "$_CLEAN_TOOL_BYTES" -eq "$want" ]          # what the closing banner counts
+  run mm history --json
+  [ "$(jq -r 'map(select(.action == "run" and .target == "npm cache")) | .[0].bytes' <<<"$output")" -eq "$want" ]
+  run mm history
+  [[ "$output" == *"clean · 1 ran $(mm_human "$want")"* ]]
+  [[ "$output" == *": 1 run · $(mm_human "$want") freed"* ]]
+}
+
+@test "the closing banner names the category that freed the most" {
+  full_run --dry-run
+  [ "$status" -eq 0 ]
+  grep -qE '^Biggest win: Docker, [0-9.]+[KMG]B$' <<<"$output"   # its images and build cache
+}
+
+# no_bare_headings — every "➤" heading in $output has a line under it.
+no_bare_headings() {
+  awk '/➤/ { h = $0; next } h != "" { if ($0 == "") { print "bare heading: " h; bad = 1 } h = "" } END { exit bad }' <<<"$output"
+}
+
+@test "a clean machine gets a success line, not a banner of zeros, and no empty headings" {
+  # the tools work and point at caches that are not there
+  local t; for t in npm pnpm bun uv conda brew mise; do mm_test_fake "$t" 'echo "$SB/none"'; done
+  for t in yarn docker go nix-collect-garbage; do mm_test_fake "$t" 'exit 1'; done
+  run mm clean
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"======"* ]]                                 # no closing banner
+  grep -qE '^  ✓ ' <<<"$(tail -2 <<<"$output")"                  # it ends on a success
+  [[ "$(tail -1 <<<"$output")" == *"mm schedule enable"* ]]       # and how to keep it that way
+  no_bare_headings
+  run mm clean --dry-run
+  [[ "$output" != *"======"* ]]
+  no_bare_headings
+}
+
+@test "docker cleanups log the bytes they are counted with" {
+  fake_docker
+  src
+  mm_confirm() { return 0; }
+  MM_CMD=clean _clean_docker >/dev/null 2>&1
+  local logged
+  logged=$(awk -F'\t' '$3 == "run" { s += $5 } END { printf "%.0f", s }' "$XDG_STATE_HOME/marmot/operations.log")
+  [ "$_CLEAN_TOOL_BYTES" -gt 0 ]
+  [ "$logged" -eq "$_CLEAN_TOOL_BYTES" ]
 }
 
 # ---------------------------------------------------------------- agent session retention
@@ -993,7 +1105,7 @@ hide_tool() {
 
 @test "tool cleans count only what they free: cache files hard-linked from elsewhere stay on disk" {
   fake_tools
-  fake_rec npm '[[ "$*" == "cache clean --force" ]] && rm -rf "$HOME/.npm/_cacache"; exit 0'
+  fake_rec npm 'case "$*" in "config get cache") echo "$HOME/.npm" ;; "cache clean --force") rm -rf "$HOME/.npm/_cacache" ;; esac'
   blob "$HOME/.npm/_cacache/linked"; mkdir -p "$SB/venv"; ln "$HOME/.npm/_cacache/linked" "$SB/venv/linked"
   src
   mm_proc_running() { return 1; }
@@ -1004,6 +1116,83 @@ hide_tool() {
   [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]        # dry-run matches the run
   [ "$_CLEAN_TOOL_BYTES" -ge 1100000 ]       # the unlinked blob
   [ "$_CLEAN_TOOL_BYTES" -lt 2200000 ]       # not the one a link outside keeps
+}
+
+@test "bun, which refuses to run without a package.json (1.3.14 from /), frees what its dry run counted" {
+  fake_bun '[[ "$*" == "pm cache rm" ]] && rm -rf "$HOME/.bun/install/cache"; exit 0'
+  blob "$HOME/.bun/install/cache/blob"
+  src
+  mm_proc_running() { return 1; }
+  cd /
+  MM_DRY_RUN=1 _clean_bun >/dev/null 2>&1
+  local est=$_CLEAN_TOOL_BYTES
+  [ "$est" -ge 1100000 ]
+  exist "$HOME/.bun/install/cache/blob"
+  _CLEAN_TOOL_BYTES=0
+  MM_CMD=clean _clean_bun >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]
+  gone "$HOME/.bun/install/cache"
+  [ "${#MM_ERRORS[@]}" -eq 0 ]
+  run mm history --json
+  [ "$(jq -r 'map(select(.action == "run" and .target == "bun cache")) | .[0].bytes' <<<"$output")" -eq "$est" ]
+  [ "$(jq 'map(select(.action == "failed")) | length' <<<"$output")" -eq 0 ]
+}
+
+@test "bun's clean also counts the packages bun x unpacked in the temp folder, which it clears too" {
+  export TMPDIR="$SB/tmp"
+  local bunx; bunx="$TMPDIR/bunx-$(id -u)-cowsay@latest"
+  fake_bun '[[ "$*" == "pm cache rm" ]] && rm -rf "$HOME/.bun/install/cache" "$TMPDIR"/bunx-*; exit 0'
+  blob "$HOME/.bun/install/cache/blob"; blob "$bunx/node_modules/cowsay/index.js"
+  src
+  mm_proc_running() { return 1; }
+  MM_DRY_RUN=1 _clean_bun >/dev/null 2>&1
+  local est=$_CLEAN_TOOL_BYTES
+  [ "$est" -ge $((2 * 1100000)) ]
+  _CLEAN_TOOL_BYTES=0
+  MM_CMD=clean _clean_bun >/dev/null 2>&1
+  gone "$bunx"
+  [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]
+}
+
+@test "delegated cache cleans: the dry run counts exactly what the real run frees and logs" {
+  fake_tools
+  fake_rec npm 'case "$*" in "config get cache") echo "$HOME/.npm" ;; "cache clean --force") rm -rf "$HOME/.npm/_cacache" ;; esac'
+  fake_bun '[[ "$*" == "pm cache rm" ]] && rm -rf "$HOME/.bun/install/cache"; exit 0'
+  fake_rec yarn 'case "$*" in --version) echo 1.22.22 ;; "cache dir") echo "$SB/yarncache" ;; "cache clean") rm -rf "$SB/yarncache" ;; esac'
+  src
+  mm_proc_running() { return 1; }
+  steps() { _clean_npm; _clean_bun; _clean_yarn; }
+  MM_DRY_RUN=1 steps >/dev/null 2>&1
+  local est=$_CLEAN_TOOL_BYTES logged
+  [ "$est" -ge $((3 * 1100000)) ]
+  _CLEAN_TOOL_BYTES=0
+  MM_CMD=clean steps >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]
+  logged=$(awk -F'\t' '$3 == "run" { s += $5 } END { printf "%.0f", s }' "$XDG_STATE_HOME/marmot/operations.log")
+  [ "$logged" -eq "$est" ]
+  [ "${#MM_ERRORS[@]}" -eq 0 ]
+}
+
+@test "a tool whose probe fails: the dry run reports the step failing and counts nothing, like the real run" {
+  local t
+  for t in npm bun uv pnpm; do fake_rec "$t" 'echo "error: ${0##*/} is broken" >&2; exit 3'; done
+  fake_rec yarn '[[ "$*" == --version ]] && { echo 1.22.22; exit 0; }; echo "error: yarn is broken" >&2; exit 3'
+  blob "$HOME/.npm/_cacache/blob"; blob "$HOME/.bun/install/cache/blob"
+  src
+  mm_proc_running() { return 1; }
+  fake_rec nix-collect-garbage 'echo "error: cannot open connection to remote store" >&2; exit 3'
+  mkdir -p "$(dirname "$MM_CONFIG_FILE")"; echo 'nix_gc = on' >"$MM_CONFIG_FILE"
+  steps() { _clean_npm; _clean_bun; _clean_yarn; _clean_uv; _clean_pnpm; _clean_nix; }
+  MM_DRY_RUN=1 steps >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq 0 ]
+  [ "${#MM_ERRORS[@]}" -eq 6 ]
+  MM_ERRORS=()
+  MM_CMD=clean steps >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq 0 ]
+  [ "${#MM_ERRORS[@]}" -eq 6 ]
+  none grep -E 'cache (clean|rm|prune)|store prune' "$CALLS"
+  exist "$HOME/.npm/_cacache/blob" "$HOME/.bun/install/cache/blob"
+  [ "$(mm_log_rows failed | grep -c $'\texit 3: error: ')" -eq 6 ]
 }
 
 @test "uv installed: its cache is pruned by uv from /, never removed by marmot" {
@@ -1683,7 +1872,8 @@ pkg_tools() { _clean_mise; _clean_conda; _clean_brew; }
   [ ! -s "$CALLS" ]
   printf '# opt in\nnix_gc = on\n' >"$MM_CONFIG_FILE"
   MM_DRY_RUN=1 _clean_nix >/dev/null
-  [ ! -s "$CALLS" ]
+  [ "$(cat "$CALLS")" = "/ nix-collect-garbage --delete-older-than 30d --dry-run" ]   # read-only rehearsal only
+  [ "$_CLEAN_TOOL_BYTES" -eq 0 ]
   _clean_nix >/dev/null
   grep -qxF '/ nix-collect-garbage --delete-older-than 30d' "$CALLS"
   [ "$_CLEAN_TOOL_BYTES" -eq 3670016 ]

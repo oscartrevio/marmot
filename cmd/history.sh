@@ -2,7 +2,9 @@
 # mm history [-l N | --all] [--json] — show recorded operations (read-only), grouped by run.
 # (-n is marmot's global --dry-run, so the limit is -l/--limit.)
 # Log rows: time, command, action, target, bytes, detail, run id. Older rows have fewer fields:
-# 5 (no detail) or 6 (no run id). operations.log.old (rotated by mm_log) is read first.
+# 5 (no detail) or 6 (no run id). operations.log.old (rotated by mm_log) is read first. Freed
+# space is what remove, run (a tool's own clean; older run rows carry no bytes) and worktree
+# rows record.
 # Rows without a run id form one run per stretch of the same command with no gap over 30 minutes.
 
 _history_usage() {
@@ -20,17 +22,13 @@ EOF
 }
 
 # _history_awk LIMIT JSON FILE... — the rows of the newest LIMIT runs (0 = all) in FILEs: as
-# 7-field TSV when JSON=1, else as the text listing with all-time totals.
+# 7-field TSV when JSON=1, else as the text listing closed by the story so far: since when, how
+# many runs, what was freed (MM_AWK_FREED rows), moved to the Trash and refused, and the three
+# biggest single wins.
 _history_awk() {
   awk -F'\t' -v limit="$1" -v json="$2" -v dim="$C_DIM" -v red="$C_RED" -v yellow="$C_YELLOW" \
-    -v bold="$C_BOLD" -v reset="$C_RESET" '
-    function human(b, u, i) {
-      split("B KB MB GB TB", u, " "); i = 1
-      while (b >= 1000 && i < 5) { b /= 1024; i++ }
-      if (i == 1) return sprintf("%dB", b)
-      if (i == 2) return sprintf("%dKB", b)
-      return sprintf("%.1f%s", b, u[i])
-    }
+    -v bold="$C_BOLD" -v reset="$C_RESET" -v home="$HOME" "$MM_AWK_HUMAN"$'\n'"$MM_AWK_FREED"'
+    function tilde(p) { return index(p, home "/") == 1 ? "~" substr(p, length(home) + 1) : p }
     # minute(ISO time) — minutes since a fixed epoch (days from the civil date), offset ignored.
     function minute(t, y, m) {
       y = substr(t, 1, 4) + 0; m = substr(t, 6, 2) + 0
@@ -52,7 +50,13 @@ _history_awk() {
     {
       n++; row[n] = $0
       b = ($5 ~ /^[0-9]+$/) ? $5 + 0 : 0
-      if ($3 == "remove") all_r += b; else if ($3 == "trash") all_t += b
+      if (freed_row($3)) all_f += b; else if ($3 == "trash") all_t += b; else if ($3 == "refused") refused++
+      # the three biggest single wins (freed or to Trash), kept by hand: mawk has no sort
+      if ((freed_row($3) || $3 == "trash") && b > 0) {
+        if (b > wb[1]) { wb[3] = wb[2]; wt[3] = wt[2]; wb[2] = wb[1]; wt[2] = wt[1]; wb[1] = b; wt[1] = $4 }
+        else if (b > wb[2]) { wb[3] = wb[2]; wt[3] = wt[2]; wb[2] = b; wt[2] = $4 }
+        else if (b > wb[3]) { wb[3] = b; wt[3] = $4 }
+      }
       run = (NF >= 7) ? $7 : ""; min = minute($1)
       if (n == 1 || run != prun || (run == "" && ($2 != pcmd || min - pmin > 30))) { g++; gtime[g] = $1; gcmd[g] = $2 }
       prun = run; pcmd = $2; pmin = min; grp[n] = g
@@ -72,8 +76,18 @@ _history_awk() {
         if (f[3] == "refused" || f[3] == "failed") note = " (" f[6] ")"; else if (f[3] == "trash") note = " → Trash"
         size = (f[5] ~ /^[0-9]+$/ && f[5] + 0 > 0) ? " " human(f[5] + 0) : ""
         printf "  %s%-7s %s%s%s%s%s%s\n", color, f[3], f[4], reset, dim, size, note, reset
+        if (f[3] == "refused") shown_refused = 1
       }
-      if (!json) printf "\nAll-time: %s removed, %s moved to Trash (restore: trash-restore), %d log rows\n", human(all_r), human(all_t), n
+      if (json || n == 0) exit
+      s = sprintf("Since %s: %d run%s · %s freed", substr(row[1], 1, 10), g, (g == 1 ? "" : "s"), human(all_f))
+      if (all_t > 0) s = s " · " human(all_t) " to Trash (restore: trash-restore)"
+      if (refused > 0) s = s " · " refused " refused" (shown_refused ? " (each with its reason above)" : "")
+      printf "\n%s%s%s\n", bold, s, reset
+      if (wb[1] > 0) {
+        s = "Biggest wins: " tilde(wt[1]) " " human(wb[1])
+        for (i = 2; i <= 3; i++) if (wb[i] > 0) s = s ", " tilde(wt[i]) " " human(wb[i])
+        print s
+      }
     }' "${@:3}"
 }
 
@@ -81,18 +95,21 @@ mm_cmd_main() {
   local limit=10 json=0
   while (( $# )); do
     case "$1" in
-      -l|--limit) [[ "${2:-}" =~ ^[0-9]+$ ]] || mm_die "$1 needs a number"; limit="$2"; shift ;;
+      -l|--limit) [[ "${2:-}" =~ ^[0-9]+$ ]] || mm_die "$1 needs a number of runs (see mm history --help)"; limit="$2"; shift ;;
       --all) limit=0 ;;
       --json) json=1 ;;
       -h|--help) _history_usage; return 0 ;;
-      *) mm_die "unknown option: $1" ;;
+      *) mm_die "unknown option: $1 (see mm history --help)" ;;
     esac
     shift
   done
-  (( json )) && ! command -v jq >/dev/null && mm_die "jq is required for --json"
   local f; local -a logs=()
   for f in "$MM_LOG_FILE.old" "$MM_LOG_FILE"; do [[ -s "$f" ]] && logs+=("$f"); done
-  (( ${#logs[@]} )) || { echo "No operations recorded yet ($MM_LOG_FILE)."; return 0; }
+  if (( ${#logs[@]} == 0 )); then
+    if (( json )); then echo '[]'; else echo "No operations recorded yet ($MM_LOG_FILE)."; fi
+    return 0
+  fi
+  (( json )) && ! command -v jq >/dev/null && mm_die "jq is required for --json"
 
   if (( json )); then
     _history_awk "$limit" 1 "${logs[@]}" | jq -R -s -c 'split("\n") | map(select(length > 0) | split("\t")

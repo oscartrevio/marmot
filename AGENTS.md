@@ -15,12 +15,14 @@ coding agents. It must never delete what an agent or tool still uses.
 - `lib/agents.sh`: known agents (state, sessions, versions, worktrees, logs, helpers); format in
   its header.
 - `lib/schedule.sh`: shared facts of `mm schedule` for `mm status`.
+- `lib/mascot.sh`: the marmot (faces, the calendar of occasions, drawing); no side effects, so
+  `install.sh` sources it too.
 - `cmd/*.sh`: one file per command (clean, purge, status, analyze, optimize, uninstall, schedule,
   history, update).
 - `install.sh`, `completion/`: installer and bash/zsh completion.
-- `tests/*.bats`: one file per command plus `core`, `references`, `agents`, `audit`, `cli`,
-  `harness`, `install`, `personal` (the unattended-safety corpus); `tests/helpers/common.bash`
-  is the sandbox; `tests/e2e/` the container run.
+- `tests/*.bats`: one file per command plus `core`, `references`, `agents`, `mascot`, `audit`,
+  `cli`, `harness`, `install`, `personal` (the unattended-safety corpus);
+  `tests/helpers/common.bash` is the sandbox; `tests/e2e/` the container run.
 
 ## Safety rules
 
@@ -38,7 +40,10 @@ coding agents. It must never delete what an agent or tool still uses.
   partial or missing in-use snapshot means "keep", never "nothing there" or 0 bytes.
 - Protections compare the path as written and as resolved; a resolved path never grants what
   the literal lacked. Re-check at the sink, right before the deletion, not only at discovery.
-- `--dry-run` changes nothing and reports the same items and numbers as a real run.
+- `--dry-run` changes nothing and reports the same items and numbers as a real run. A step handed
+  to a tool asks the tool's read-only probe (`npm config get cache`, `bun pm cache`, ...) from the
+  same folder and environment as its clean (`_clean_probe`, `_clean_tool`): a failing probe is a
+  failing step in both runs. A prune no tool can preview says "up to" and counts nothing.
 - Without a terminal, prompts decline and pickers select nothing. Prompts that remove packages,
   containers, images, worktrees or build artifacts name every item (no "+N more"); bulk steps
   (Trash items, logs, crash dumps, sessions) state the count and the size. Answers are whole
@@ -74,6 +79,7 @@ coding agents. It must never delete what an agent or tool still uses.
 | `lib/core.sh` gate, whitelist, sizing | `tests/run.sh tests/core.bats tests/references.bats` |
 | `lib/catalog.sh` | `tests/run.sh tests/clean.bats` |
 | `lib/agents.sh` | `tests/run.sh tests/agents.bats tests/status.bats` |
+| `lib/mascot.sh` | `tests/run.sh tests/mascot.bats tests/status.bats` |
 | `install.sh` | `tests/run.sh tests/install.bats` |
 | a raw deletion or process call | `tests/run.sh tests/audit.bats` |
 | what gets deleted | the above, then `tests/run.sh tests/personal.bats` and `tests/e2e/run.sh` (needs docker) |

@@ -41,7 +41,8 @@ _update_is_checkout() {
 }
 
 # _update_version — "marmot 0.2.0 (1a2b3c4)": the commit this copy was installed from, or HEAD
-# when marmot runs straight from a git checkout; "-dirty" when it had uncommitted changes.
+# when marmot runs straight from a git checkout; "-dirty" when it had uncommitted changes. On a
+# terminal, the day's greeting follows (mm_greeting) on an occasion.
 _update_version() {
   local commit describe=""
   commit=$(_update_field commit)
@@ -56,6 +57,9 @@ _update_version() {
   else
     printf 'marmot %s\n' "$MM_VERSION"
   fi
+  [[ -t 1 ]] || return 0
+  mm_greeting
+  [[ -z "$REPLY" ]] || printf '%s%s%s\n' "$C_DIM" "$REPLY" "$C_RESET"
 }
 
 # _update_resolve — set _UP_SRC (the checkout), _UP_INSTALLED (commit of this copy), _UP_BIN
@@ -133,6 +137,17 @@ _update_ignored_clash() {
   done
 }
 
+# _update_changelog FROM TO — the CHANGELOG.md bullets that the range FROM..TO adds, indented; the
+# first _UPDATE_SHOW, then "… and N more". Prints nothing when the range leaves the file alone.
+_update_changelog() {
+  git -C "$_UP_SRC" diff --unified=0 "$1" "$2" -- CHANGELOG.md 2>/dev/null |
+    awk -v show="$_UPDATE_SHOW" '
+      /^\+- / { on = 1; n++; if (n <= show) print "    " substr($0, 2); next }
+      /^\+  / { if (on && n <= show) print "    " substr($0, 2); next }
+      { on = 0 }
+      END { if (n > show) printf "    … and %d more\n", n - show }'
+}
+
 mm_cmd_main() {
   local report=""
   while (( $# )); do
@@ -158,9 +173,7 @@ mm_cmd_main() {
   upstream=$(git -C "$_UP_SRC" rev-parse -q --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null) ||
     mm_die "branch $branch in $_UP_SRC tracks no upstream: git -C '$_UP_SRC' branch --set-upstream-to=<remote>/<branch>"
 
-  printf '\n%smarmot update%s' "$C_BOLD" "$C_RESET"
-  [[ "$MM_DRY_RUN" == 1 ]] && printf '  %s(dry run: nothing will change)%s' "$C_YELLOW" "$C_RESET"
-  printf '\n\n'
+  mm_header "marmot update"
   mm_info "Checkout: $_UP_SRC ($branch, tracking $upstream)"
   _update_git fetch --quiet || mm_die "git fetch failed in $_UP_SRC; nothing changed"
 
@@ -180,9 +193,17 @@ mm_cmd_main() {
   fi
   (( ahead > 0 )) && mm_info "$ahead local commit(s) not on $upstream: kept"
   if (( behind > 0 )); then
-    mm_info "$behind new commit(s) on $upstream:"
-    git -C "$_UP_SRC" log --no-decorate --format='%h %s' -n "$_UPDATE_SHOW" "HEAD..$target" | sed 's/^/    /'
-    (( behind > _UPDATE_SHOW )) && mm_info "  … and $((behind - _UPDATE_SHOW)) more"
+    # The CHANGELOG bullets say what changes for the user; the commit subjects stand in without them.
+    local notes
+    notes=$(_update_changelog "$head" "$target")
+    if [[ -n "$notes" ]]; then
+      mm_info "$behind new commit(s) on $upstream, from CHANGELOG.md:"
+      printf '%s\n' "$notes"
+    else
+      mm_info "$behind new commit(s) on $upstream:"
+      git -C "$_UP_SRC" log --no-decorate --format='%h %s' -n "$_UPDATE_SHOW" "HEAD..$target" | sed 's/^/    /'
+      (( behind > _UPDATE_SHOW )) && mm_info "  … and $((behind - _UPDATE_SHOW)) more"
+    fi
   fi
 
   # The install can lag the checkout (pulled by hand, not reinstalled): reinstalling catches up.

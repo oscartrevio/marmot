@@ -38,8 +38,9 @@ pick() {
 }
 
 @test "ncdu opens read-only for a user-owned path" {
+  load_analyze; mm_confirm() { return 1; }   # no Trash afterwards
   mkdir -p "$SB/mine"
-  run mm analyze "$SB/mine"
+  MM_TTY=1 run mm_cmd_main "$SB/mine"
   [ "$status" -eq 0 ]
   [ "$(wc -l <"$NCDU_ARGS")" -eq 1 ]
   [[ " $(cat "$NCDU_ARGS") " == *" -r "* ]]
@@ -47,20 +48,31 @@ pick() {
 }
 
 @test "ncdu opens read-only for root-owned and unreadable locations" {
-  run mm analyze /var/log
+  load_analyze; mm_confirm() { return 1; }
+  MM_NO_SUDO=1 MM_TTY=1 run mm_cmd_main /var/log
   mkdir -p "$SB/locked"; chmod 000 "$SB/locked"
-  run mm analyze "$SB/locked"
+  MM_NO_SUDO=1 MM_TTY=1 run mm_cmd_main "$SB/locked"
   chmod 700 "$SB/locked"
   [ "$(wc -l <"$NCDU_ARGS")" -eq 2 ]
   [ "$(grep -c -- ' -r ' "$NCDU_ARGS")" -eq 2 ]
 }
 
 @test "a location opened as root through sudo is still read-only" {
+  load_analyze
   mm_test_fake sudo "[[ \"\$*\" == '-n true' ]] && exit 0; printf 'sudo %s\n' \"\$*\" >>'$NCDU_ARGS'"
   mkdir -p "$SB/locked"; chmod 000 "$SB/locked"
-  run mm analyze "$SB/locked"
+  MM_TTY=1 run mm_cmd_main "$SB/locked"
   chmod 700 "$SB/locked"
-  [[ "$(cat "$NCDU_ARGS")" == "sudo ncdu "*" -r "*"-- $SB/locked" ]]
+  [[ "$(cat "$NCDU_ARGS")" == "sudo -n ncdu "*" -r "*"-- $SB/locked" ]]
+}
+
+@test "without a terminal, mm analyze PATH lists the largest entries instead of starting ncdu" {
+  load_analyze
+  run mm analyze "$SB/root"
+  [ "$status" -eq 0 ]
+  [ ! -e "$NCDU_ARGS" ]
+  [[ "$output" == *"$SB/root/big"* ]]
+  [ -f "$SB/root/big/blob" ]
 }
 
 @test "--json returns every overview entry with numeric bytes" {
@@ -70,6 +82,13 @@ pick() {
     and all(.entries[]; (.bytes | type) == "number" and (.name | length) > 0)
     and (.free_bytes | type) == "number"'
   echo "$output" | jq -e --arg h "$HOME" 'any(.entries[]; .path == $h)'
+}
+
+@test "--json draws no spinner even on a terminal, and stdout carries only the JSON" {
+  command -v script >/dev/null || skip "needs script (util-linux)"
+  MM_TTY=1 script -qec "mm analyze --json >'$SB/out'" /dev/null >"$SB/tty"
+  jq -e . "$SB/out" >/dev/null
+  [ "$(grep -c '⠋\|⠙\|⠹\|Measuring' "$SB/tty")" = 0 ]
 }
 
 # entry NAME — the JSON overview entry called NAME (from $output).
