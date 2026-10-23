@@ -112,7 +112,8 @@ changes nothing and reports what a real run would.
 | `mm update` | Updates marmot from the git checkout it was installed from |
 
 `mm help <command>` (or `mm <command> --help`) explains each command and its options. `mm` alone
-opens a command picker that previews each command's help.
+opens a command picker that previews each command's help, on a terminal with fzf; otherwise it
+prints the usage.
 
 With no folder and no `purge_paths` file, `mm purge` scans your home, your folders in
 `/workspaces` and `/workspace`, and every worktree of the repositories it finds there or in an
@@ -121,8 +122,11 @@ agent's worktree folder. `mm purge --paths` sets your own roots.
 `mm status --agent` prints one plain-text snapshot for a coding agent to read, problems first,
 each with the command that addresses it. It is the default when stdout is not a terminal.
 
-Steps that need root ask for your password once and say what for. Decline, and the rest of the
-run skips those steps instead of asking again.
+On a terminal, `mm clean` (dry runs too), `mm optimize` and `mm uninstall` (real runs, the latter
+only for apt or snap packages) and `mm analyze` (only for a root-owned folder) ask for your sudo
+password once, before their first root step, and say what for. They don't ask as root, with
+passwordless sudo, or while sudo still remembers you. Decline, and the rest of that run skips
+root steps. `mm status`, `mm purge` and scheduled runs never ask.
 
 ### The marmot
 
@@ -149,8 +153,8 @@ snow on the rule all winter, fangs and a web in Halloween week, a jack-o'-lanter
 on Halloween itself, papel picado, marigolds and calavera eyes on Día de Muertos, a lightsaber on
 May 4, a tree on Earth Day, its anniversary on this machine, and more (`MM_CALENDAR` in
 `lib/mascot.sh`). It is all printable ASCII but the `∆` eyes, one column wide, so no terminal
-shows an emoji. The day never changes a face that reports a problem, and `festive = off` in the
-config turns the calendar off.
+shows an emoji. The day never changes the eyes of a face that reports a problem, and
+`festive = off` in the config turns the calendar off.
 
 On those days `mm --version` and a run with nothing to do greet you too. The closing banner of a
 real run celebrates firsts, round run counts, records and anniversaries, each once.
@@ -199,9 +203,9 @@ uses a systemd user timer, which catches up on missed runs at boot, or a crontab
 `systemctl --user` doesn't work. `mm schedule disable` removes only what `enable` created.
 
 A run removes caches, old browser and agent CLI builds, logs older than 7 days, `/tmp` browser
-leftovers, old editor server builds, and build artifacts of projects idle 14+ days. Two settings
-widen it: `trash_keep_days` empties old Trash items, and `sessions_keep_days` moves old agent
-sessions to the Trash.
+leftovers, old editor server builds, and build artifacts of projects idle more than 14 days. Two
+settings widen it: `trash_keep_days` empties old Trash items, and `sessions_keep_days` moves old
+agent sessions to the Trash.
 
 A run never asks, never uses sudo, and never touches Docker, worktrees, packages, or processes.
 It reads the same config folder as the shell that enabled it, so your whitelist applies.
