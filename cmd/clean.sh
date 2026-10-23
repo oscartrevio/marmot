@@ -290,15 +290,29 @@ _clean_busy() {
   return 1
 }
 
-# _clean_tool [--prune] LABEL "BUSY_PROC..." SIZE_DIR CMD... — run a tool's own cache clean,
-# measured by what it frees in SIZE_DIR: files hard-linked from outside (uv links its cache into
-# virtualenvs) stay on disk, so they are not counted. CMD runs from / so project-local config
-# (.npmrc, .yarnrc.yml, committed .yarn/cache) never applies. Dry-run estimates what removing all
-# of SIZE_DIR would free; with --prune CMD removes only entries nothing uses, which no tool can
-# preview, so dry-run claims no bytes. Callers only invoke it when the tool is installed.
+# _clean_probe LABEL CWD CMD... — a tool's read-only question (where its cache is, what a clean
+# would free), asked from CWD, the folder its clean runs from, in dry and real runs alike. 0 with
+# its standard output in REPLY when it succeeds. When it fails, so would the step: mm_failed
+# reports LABEL with the tool's own message (a dry run: would fail), nothing is counted, and 1.
+_clean_probe() {
+  local label="$1" cwd="$2" err rc; shift 2
+  err=$(mktemp -t marmot-probe.XXXXXX) || return 1
+  REPLY=$(env -C "$cwd" "$@" 2>"$err"); rc=$?
+  (( rc == 0 )) || mm_failed "$label" "$rc" "$(cat -- "$err")${REPLY:+$'\n'$REPLY}"
+  rm -f -- "$err" # SAFE: the mktemp file created above for the probe's stderr
+  return $(( rc != 0 ))
+}
+
+# _clean_tool [--prune] LABEL "BUSY_PROC..." SIZE_DIR CWD CMD... — run a tool's own cache clean
+# from CWD (where its probe ran), measured by what it frees in SIZE_DIR: files hard-linked from
+# outside (uv links its cache into virtualenvs) stay on disk, so they are not counted. CWD is never
+# a project, so project-local config (.npmrc, .yarnrc.yml, committed .yarn/cache, bunfig.toml)
+# never applies. A dry run takes the same path up to the command and counts what removing all of
+# SIZE_DIR frees; with --prune CMD removes only entries nothing uses, which no tool can preview,
+# so it shows "up to" that and counts nothing. Callers only invoke it when the tool is installed.
 _clean_tool() {
   local prune=0; [[ "$1" == --prune ]] && { prune=1; shift; }
-  local label="$1" procs="$2" dir="$3" busy size before verb=cleaned; shift 3
+  local label="$1" procs="$2" dir="$3" cwd="$4" busy size before verb=cleaned; shift 4
   _CLEAN_HANDLED+=("$dir")
   [[ -d "$dir" ]] || { mm_ok "$label" "nothing to clean"; return; }
   if mm_whitelisted "$dir"; then mm_skip "$label" "whitelisted"; return; fi
@@ -306,14 +320,11 @@ _clean_tool() {
   read -r size before < <(mm_size_frees "$dir")
   [[ -n "$before" ]] || { mm_skip "$label" "size unknown"; return; }
   if (( size < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$size"))"; return; fi
+  mm_run --measured "$label" env -C "$cwd" "$@" || return 0
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    mm_run "$label" env -C / "$@"
-    if (( prune )); then
-      mm_ok "$label" "$(mm_human "$size") cache, would prune unused entries (size unknown until run)"; return
-    fi
+    if (( prune )); then mm_ok "$label" "up to $(mm_human "$before"), would prune unused entries"; return; fi
     _clean_track "$before" 1; mm_ok "$label" "$(mm_human "$before")"; return
   fi
-  mm_run --measured "$label" env -C / "$@" || return 0
   (( prune )) && verb=pruned
   _clean_tool_freed "$label" "$verb" "$before" "$(mm_frees "$dir")"
 }
@@ -614,46 +625,62 @@ _clean_builds() {
 # _cacache is cleared whole; packages npx installed live in _npx (a catalog row, recent ones kept).
 _clean_npm() {
   local dir
-  dir=$(env -C / timeout 15 npm config get cache 2>/dev/null | tail -1)
-  [[ "$dir" == /* ]] || dir="$HOME/.npm"
-  _clean_tool "npm cache" "npm npm-cli.js npx npx-cli.js" "${dir%/}/_cacache" npm cache clean --force
+  _clean_probe "npm cache" / timeout 15 npm config get cache || return 0
+  dir=${REPLY##*$'\n'}
+  [[ "$dir" == /* ]] || { mm_skip "npm cache" "cache dir unknown"; return; }
+  _clean_tool "npm cache" "npm npm-cli.js npx npx-cli.js" "${dir%/}/_cacache" / npm cache clean --force
 }
 
+# bun's `pm` commands, `pm cache rm` included, refuse to run without a package.json in the working
+# directory (bun 1.3: `error: No package.json was found for directory "/"`). Both the probe and the
+# clean run from a new empty folder holding only `{}` as package.json: no project, so no project's
+# bunfig.toml moves the cache; the user's ~/.bunfig.toml and BUN_INSTALL_CACHE_DIR still apply.
 _clean_bun() {
+  local cwd
+  cwd=$(mktemp -d -t marmot-bun.XXXXXX) || return 0
+  echo '{}' >"$cwd/package.json"
+  _clean_bun_in "$cwd"
+  rm -f -- "$cwd/package.json" && rmdir -- "$cwd" 2>/dev/null # SAFE: the folder made above, with the one file it was given
+  return 0
+}
+
+# _clean_bun_in CWD — the bun cache step, asked and run from CWD.
+_clean_bun_in() {
   local dir
-  dir=$(env -C / timeout 15 bun pm cache 2>/dev/null | tail -1)
-  [[ "$dir" == /* ]] || dir="$HOME/.bun/install/cache"
-  _clean_tool "bun cache" bun "$dir" bun pm cache rm
+  _clean_probe "bun cache" "$1" timeout 15 bun pm cache || return 0
+  dir=${REPLY##*$'\n'}
+  [[ "$dir" == /* ]] || { mm_skip "bun cache" "cache dir unknown"; return; }
+  _clean_tool "bun cache" bun "$dir" "$1" bun pm cache rm
 }
 
 # Yarn 1 has one global cache (`yarn cache dir`). Berry caches live per project (often committed for
 # zero-installs), so it is never touched. Queried from / so no project's yarnrc is picked up.
 _clean_yarn() {
-  local -a yarn=(env -C / COREPACK_ENABLE_DOWNLOAD_PROMPT=0 timeout 20 yarn)
-  local ver dir
-  ver=$("${yarn[@]}" --version 2>/dev/null) || { mm_skip "yarn cache" "yarn unavailable"; return; }
+  local -a yarn=(COREPACK_ENABLE_DOWNLOAD_PROMPT=0 timeout 20 yarn)
+  local ver
+  ver=$(env -C / "${yarn[@]}" --version 2>/dev/null) || { mm_skip "yarn cache" "yarn unavailable"; return; }
   if [[ "$ver" != 1.* ]]; then mm_skip "yarn cache" "Yarn $ver caches per project"; return; fi
-  dir=$("${yarn[@]}" cache dir 2>/dev/null | tail -1)
-  [[ "$dir" == /* ]] || { mm_skip "yarn cache" "cache dir unknown"; return; }
-  _clean_tool "yarn cache" yarn "$dir" COREPACK_ENABLE_DOWNLOAD_PROMPT=0 yarn cache clean
+  _clean_probe "yarn cache" / "${yarn[@]}" cache dir || return 0
+  [[ "${REPLY##*$'\n'}" == /* ]] || { mm_skip "yarn cache" "cache dir unknown"; return; }
+  _clean_tool "yarn cache" yarn "${REPLY##*$'\n'}" / COREPACK_ENABLE_DOWNLOAD_PROMPT=0 yarn cache clean
 }
 
 # pnpm writes a probe file into its working directory before it answers anything, so it runs from
-# $HOME: from / every non-root user got EACCES and the store was never pruned.
+# $HOME: from / every non-root user got EACCES and the store was never pruned. (Not a temporary
+# folder: pnpm puts its store on the working directory's filesystem.)
 _clean_pnpm() {
   local store before
-  store=$(env -C "$HOME" timeout 15 pnpm store path 2>/dev/null) || return 0
-  [[ -d "$store" ]] || return 0
+  _clean_probe "pnpm store" "$HOME" timeout 15 pnpm store path || return 0
+  store=${REPLY##*$'\n'}
+  [[ "$store" == /* && -d "$store" ]] || return 0
   _CLEAN_HANDLED+=("$store")
   if mm_whitelisted "$store"; then mm_skip "pnpm store" "whitelisted"; return; fi
   if mm_proc_running pnpm; then mm_skip "pnpm store" "pnpm busy"; return; fi
   before=$(mm_size "$store") || { mm_skip "pnpm store" "size unknown"; return; }
-  if [[ "$MM_DRY_RUN" == 1 ]]; then
-    mm_run "pnpm store prune" env -C "$HOME" pnpm store prune
-    mm_ok "pnpm store" "$(mm_human "$before") store, would prune unreferenced packages (size unknown until run)"
-    return
-  fi
   mm_run --measured "pnpm store prune" env -C "$HOME" pnpm store prune || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    mm_ok "pnpm store" "up to $(mm_human "$before"), would prune unreferenced packages"; return
+  fi
   _clean_tool_freed "pnpm store" pruned "$before" "$(mm_size "$store")" "pnpm store prune"
 }
 
@@ -858,9 +885,10 @@ _clean_sessions() {
 # but no project's.
 _clean_uv() {
   local dir
-  dir=$(env -C / timeout 15 uv cache dir 2>/dev/null | tail -1)
+  _clean_probe "uv cache" / timeout 15 uv cache dir || return 0
+  dir=${REPLY##*$'\n'}
   [[ "$dir" == /* ]] || { mm_skip "uv cache" "cache dir unknown"; return; }
-  _clean_tool --prune "uv cache" "uv uvx" "$dir" uv cache prune
+  _clean_tool --prune "uv cache" "uv uvx" "$dir" / uv cache prune
 }
 
 # ---------------------------------------------------------------- cloud CLI logs
@@ -942,7 +970,7 @@ _clean_cloud_log_rm() {
 # (MISE_CACHE_PRUNE_AGE), so what current tools use stays.
 _clean_mise() {
   local dir="${MISE_CACHE_DIR:-$(mm_catalog_expand %CACHE%)/mise}"
-  _clean_tool --prune "mise cache" mise "${dir%/}" mise cache prune
+  _clean_tool --prune "mise cache" mise "${dir%/}" / mise cache prune
 }
 
 # conda: package tarballs, the index cache and log files of every package cache it can write.
@@ -951,11 +979,12 @@ _clean_mise() {
 _clean_conda() {
   local label="conda package cache" busy d est before
   local -a dirs=() parts=()
+  _clean_probe "$label" / timeout 30 conda config --show pkgs_dirs || return 0
   while IFS= read -r d; do
     [[ -d "$d" && -w "$d" ]] || continue
     if mm_whitelisted "$d"; then mm_skip "$label" "whitelisted"; return; fi
     dirs+=("$d")
-  done < <(env -C / timeout 30 conda config --show pkgs_dirs 2>/dev/null | awk '/^[[:space:]]*- / { sub(/^[[:space:]]*- /, ""); print }')
+  done < <(awk '/^[[:space:]]*- / { sub(/^[[:space:]]*- /, ""); print }' <<<"$REPLY")
   (( ${#dirs[@]} )) || return 0
   _CLEAN_HANDLED+=("${dirs[@]}")
   if busy=$(_clean_busy "conda mamba micromamba"); then mm_skip "$label" "$busy busy"; return; fi
@@ -963,35 +992,39 @@ _clean_conda() {
     \( -name '*.tar.bz2' -o -name '*.conda' -o -name cache -o -name .logs \) -print0 2>/dev/null)
   est=$(mm_size "${parts[@]}") || { mm_skip "$label" "size unknown"; return; }
   if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$est"))"; return; fi
+  before=$(mm_size "${dirs[@]}") || { mm_skip "$label" "size unknown"; return; }
+  mm_run --measured "$label" env -C / conda clean --yes --index-cache --tarballs --logfiles || return 0
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") of tarballs, index cache and logs"; return
   fi
-  before=$(mm_size "${dirs[@]}") || { mm_skip "$label" "size unknown"; return; }
-  mm_run --measured "$label" env -C / conda clean --yes --index-cache --tarballs --logfiles || return 0
   _clean_tool_freed "$label" cleaned "$before" "$(mm_size "${dirs[@]}")"
 }
 
 # Homebrew (on Linux, linuxbrew): old versions of installed formulae and downloads older than 30
-# days. The dry-run figure is brew's own (`brew cleanup -n`); a real run is measured on the Cellar
-# and the download cache.
+# days. Both runs ask brew first (`brew cleanup -n`) and stop when it would free nothing; the dry-run
+# figure is that estimate, a real run is measured on the Cellar and the download cache.
 _clean_brew() {
   local label="Homebrew cleanup" busy cache cellar size est before
-  local -a brew=(env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 timeout 300 brew)
+  local -a brew=(HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 timeout 300 brew)
   if busy=$(_clean_busy "brew f:Homebrew/brew\.(sh|rb)"); then mm_skip "$label" "$busy busy"; return; fi
-  cache=$("${brew[@]}" --cache 2>/dev/null) cellar=$("${brew[@]}" --cellar 2>/dev/null)
+  _clean_probe "$label" / "${brew[@]}" --cache || return 0
+  cache=${REPLY##*$'\n'}
+  _clean_probe "$label" / "${brew[@]}" --cellar || return 0
+  cellar=${REPLY##*$'\n'}
   [[ "$cache" == /* && "$cellar" == /* ]] || { mm_skip "$label" "brew paths unknown"; return; }
   _CLEAN_HANDLED+=("$cache")
   if mm_whitelisted "$cache" || mm_whitelisted "$cellar"; then mm_skip "$label" "whitelisted"; return; fi
-  if [[ "$MM_DRY_RUN" == 1 ]]; then
-    # "This operation would free approximately 1.2GB of disk space." (binary units)
-    size=$("${brew[@]}" cleanup --prune=30 -n 2>/dev/null | grep -oE 'free approximately [0-9.]+[KMGT]?B' | tail -1)
-    size=${size##* }
-    est=$(_clean_to_bytes "${size/B/iB}")
-    if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean"; return; fi
-    _clean_track "$est" 1; mm_ok "$label" "$(mm_human "$est") (brew's estimate)"; return
-  fi
+  _clean_probe "$label" / "${brew[@]}" cleanup --prune=30 -n || return 0
+  # "This operation would free approximately 1.2GB of disk space." (binary units)
+  size=$(grep -oE 'free approximately [0-9.]+[KMGT]?B' <<<"$REPLY" | tail -1)
+  size=${size##* }
+  est=$(_clean_to_bytes "${size/B/iB}")
+  if (( est < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean"; return; fi
   before=$(mm_size "$cache" "$cellar") || { mm_skip "$label" "size unknown"; return; }
   mm_run --measured "$label" env -C / HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_ENV_HINTS=1 brew cleanup --prune=30 || return 0
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _clean_track "$est" 1; mm_ok "$label" "about $(mm_human "$est") (brew's estimate)"; return
+  fi
   _clean_tool_freed "$label" cleaned "$before" "$(mm_size "$cache" "$cellar")"
 }
 

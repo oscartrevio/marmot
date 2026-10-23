@@ -226,6 +226,15 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   more and skips each root step with "needs sudo". It used to prompt again
   for every system step, up to `sudo: 3 incorrect password attempts` and beyond. Without a
   terminal, as root and with passwordless sudo nothing changes.
+- `mm clean` empties bun's cache again: bun 1.3 refuses `bun pm cache rm` from `/` ("No
+  package.json was found"), so the step failed while its dry run promised the whole cache. bun
+  now runs from a folder marmot makes with an empty `package.json`, which no project's
+  `bunfig.toml` can redirect.
+- Dry runs of the steps marmot hands to a tool (npm, bun, yarn, pnpm, uv, conda, Homebrew) ask
+  the tool the same read-only question a real run does, from the same folder with the same
+  environment. When it fails, the dry run shows the step failing with the tool's message and counts
+  nothing, as the real run does, instead of guessing a cache folder and promising its size. A
+  prune no tool can preview (uv, mise, pnpm) shows "up to" the cache size and counts nothing.
 
 ## 0.2.0
 

@@ -95,7 +95,9 @@ Run without --dry-run to apply.
 
 `mm clean --dry-run` previews the caches, old builds and logs `mm clean` would remove; a real run
 asks before anything that can't be regenerated. Every command takes `--dry-run` (`-n`), which
-changes nothing and reports what a real run would.
+changes nothing and reports what a real run would. Where a tool does the cleaning, the dry run asks
+that tool the same read-only questions first, so a step the tool would refuse shows as failing; a
+prune no tool can preview shows "up to" its cache size and is not counted.
 
 ## Commands
 

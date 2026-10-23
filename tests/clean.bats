@@ -129,9 +129,17 @@ esac'
 # blob PATH — a 1.1MB file (tool cleans skip caches under 1MB).
 blob() { mkdir -p "$(dirname "$1")"; head -c 1100000 /dev/urandom >"$1"; }
 
+# fake_bun [BODY] — like bun 1.3.14: from a folder without a package.json every `pm` command fails
+# (exit 1, its two lines on stderr); `pm cache` prints the cache folder without a newline; then BODY.
+fake_bun() {
+  fake_rec bun '[[ -f package.json ]] || { printf "error: No package.json was found for directory \"%s\"\nnote: Run \"bun init\" to initialize a project\n" "$PWD" >&2; exit 1; }
+[[ "$*" == "pm cache" ]] && printf %s "$HOME/.bun/install/cache"
+'"${1:-}"
+}
+
 fake_tools() {
-  fake_rec npm
-  fake_rec bun
+  fake_rec npm '[[ "$*" == "config get cache" ]] && echo "$HOME/.npm"; exit 0'
+  fake_bun
   # like pnpm 9: a probe file goes into the working directory first
   fake_rec pnpm '[[ -w . ]] || { echo "EACCES: permission denied" >&2; exit 243; }
 [[ "$*" == "store path" ]] && echo "$SB/store"; exit 0'
@@ -285,8 +293,11 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   grep -qxF "$HOME pnpm store prune" "$CALLS"
   grep -qxF '/ yarn cache dir' "$CALLS"
   grep -qxF '/ yarn cache clean' "$CALLS"
-  grep -qxF '/ bun pm cache rm' "$CALLS"
-  none grep -vE "^(/|$HOME) " "$CALLS"
+  # bun needs a package.json: it runs from a folder marmot made for it, which is gone afterwards
+  local bun_cwd; bun_cwd=$(awk '$2 == "bun" && $3 == "pm" && $4 == "cache" && $5 == "rm" { print $1 }' "$CALLS")
+  [[ "$bun_cwd" == /*/marmot-bun.* ]]
+  [ ! -e "$bun_cwd" ]
+  none grep -vE "^(/|$HOME|$bun_cwd) " "$CALLS"
 }
 
 # ---------------------------------------------------------------- docker
@@ -876,7 +887,7 @@ EOF
   fake_rec npm '[[ "$*" == "cache clean --force" ]] && rm -f "$HOME/.npm/_cacache/gone"; exit 0'
   src
   local want; want=$(mm_frees "$HOME/.npm/_cacache/gone")
-  MM_CMD=clean _clean_tool "npm cache" npm "$HOME/.npm/_cacache" npm cache clean --force >/dev/null
+  MM_CMD=clean _clean_tool "npm cache" npm "$HOME/.npm/_cacache" / npm cache clean --force >/dev/null
   [ "$_CLEAN_TOOL_BYTES" -eq "$want" ]          # what the closing banner counts
   run mm history --json
   [ "$(jq -r 'map(select(.action == "run" and .target == "npm cache")) | .[0].bytes' <<<"$output")" -eq "$want" ]
@@ -897,7 +908,9 @@ no_bare_headings() {
 }
 
 @test "a clean machine gets a success line, not a banner of zeros, and no empty headings" {
-  local t; for t in npm pnpm bun yarn uv conda brew docker mise go nix-collect-garbage; do mm_test_fake "$t" 'exit 1'; done
+  # the tools work and point at caches that are not there
+  local t; for t in npm pnpm bun uv conda brew mise; do mm_test_fake "$t" 'echo "$SB/none"'; done
+  for t in yarn docker go nix-collect-garbage; do mm_test_fake "$t" 'exit 1'; done
   run mm clean
   [ "$status" -eq 0 ]
   [[ "$output" != *"======"* ]]                                 # no closing banner
@@ -1057,7 +1070,7 @@ hide_tool() {
 
 @test "tool cleans count only what they free: cache files hard-linked from elsewhere stay on disk" {
   fake_tools
-  fake_rec npm '[[ "$*" == "cache clean --force" ]] && rm -rf "$HOME/.npm/_cacache"; exit 0'
+  fake_rec npm 'case "$*" in "config get cache") echo "$HOME/.npm" ;; "cache clean --force") rm -rf "$HOME/.npm/_cacache" ;; esac'
   blob "$HOME/.npm/_cacache/linked"; mkdir -p "$SB/venv"; ln "$HOME/.npm/_cacache/linked" "$SB/venv/linked"
   src
   mm_proc_running() { return 1; }
@@ -1068,6 +1081,65 @@ hide_tool() {
   [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]        # dry-run matches the run
   [ "$_CLEAN_TOOL_BYTES" -ge 1100000 ]       # the unlinked blob
   [ "$_CLEAN_TOOL_BYTES" -lt 2200000 ]       # not the one a link outside keeps
+}
+
+@test "bun, which refuses to run without a package.json (1.3.14 from /), frees what its dry run counted" {
+  fake_bun '[[ "$*" == "pm cache rm" ]] && rm -rf "$HOME/.bun/install/cache"; exit 0'
+  blob "$HOME/.bun/install/cache/blob"
+  src
+  mm_proc_running() { return 1; }
+  cd /
+  MM_DRY_RUN=1 _clean_bun >/dev/null 2>&1
+  local est=$_CLEAN_TOOL_BYTES
+  [ "$est" -ge 1100000 ]
+  exist "$HOME/.bun/install/cache/blob"
+  _CLEAN_TOOL_BYTES=0
+  MM_CMD=clean _clean_bun >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]
+  gone "$HOME/.bun/install/cache"
+  [ "${#MM_ERRORS[@]}" -eq 0 ]
+  run mm history --json
+  [ "$(jq -r 'map(select(.action == "run" and .target == "bun cache")) | .[0].bytes' <<<"$output")" -eq "$est" ]
+  [ "$(jq 'map(select(.action == "failed")) | length' <<<"$output")" -eq 0 ]
+}
+
+@test "delegated cache cleans: the dry run counts exactly what the real run frees and logs" {
+  fake_tools
+  fake_rec npm 'case "$*" in "config get cache") echo "$HOME/.npm" ;; "cache clean --force") rm -rf "$HOME/.npm/_cacache" ;; esac'
+  fake_bun '[[ "$*" == "pm cache rm" ]] && rm -rf "$HOME/.bun/install/cache"; exit 0'
+  fake_rec yarn 'case "$*" in --version) echo 1.22.22 ;; "cache dir") echo "$SB/yarncache" ;; "cache clean") rm -rf "$SB/yarncache" ;; esac'
+  src
+  mm_proc_running() { return 1; }
+  steps() { _clean_npm; _clean_bun; _clean_yarn; }
+  MM_DRY_RUN=1 steps >/dev/null 2>&1
+  local est=$_CLEAN_TOOL_BYTES logged
+  [ "$est" -ge $((3 * 1100000)) ]
+  _CLEAN_TOOL_BYTES=0
+  MM_CMD=clean steps >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq "$est" ]
+  logged=$(awk -F'\t' '$3 == "run" { s += $5 } END { printf "%.0f", s }' "$XDG_STATE_HOME/marmot/operations.log")
+  [ "$logged" -eq "$est" ]
+  [ "${#MM_ERRORS[@]}" -eq 0 ]
+}
+
+@test "a tool whose probe fails: the dry run reports the step failing and counts nothing, like the real run" {
+  local t
+  for t in npm bun uv pnpm; do fake_rec "$t" 'echo "error: ${0##*/} is broken" >&2; exit 3'; done
+  fake_rec yarn '[[ "$*" == --version ]] && { echo 1.22.22; exit 0; }; echo "error: yarn is broken" >&2; exit 3'
+  blob "$HOME/.npm/_cacache/blob"; blob "$HOME/.bun/install/cache/blob"
+  src
+  mm_proc_running() { return 1; }
+  steps() { _clean_npm; _clean_bun; _clean_yarn; _clean_uv; _clean_pnpm; }
+  MM_DRY_RUN=1 steps >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq 0 ]
+  [ "${#MM_ERRORS[@]}" -eq 5 ]
+  MM_ERRORS=()
+  MM_CMD=clean steps >/dev/null 2>&1
+  [ "$_CLEAN_TOOL_BYTES" -eq 0 ]
+  [ "${#MM_ERRORS[@]}" -eq 5 ]
+  none grep -E 'cache (clean|rm|prune)|store prune' "$CALLS"
+  exist "$HOME/.npm/_cacache/blob" "$HOME/.bun/install/cache/blob"
+  [ "$(mm_log_rows failed | grep -c $'\texit 3: error: ')" -eq 5 ]
 }
 
 @test "uv installed: its cache is pruned by uv from /, never removed by marmot" {

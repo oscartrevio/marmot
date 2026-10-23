@@ -40,7 +40,10 @@ coding agents. It must never delete what an agent or tool still uses.
   partial or missing in-use snapshot means "keep", never "nothing there" or 0 bytes.
 - Protections compare the path as written and as resolved; a resolved path never grants what
   the literal lacked. Re-check at the sink, right before the deletion, not only at discovery.
-- `--dry-run` changes nothing and reports the same items and numbers as a real run.
+- `--dry-run` changes nothing and reports the same items and numbers as a real run. A step handed
+  to a tool asks the tool's read-only probe (`npm config get cache`, `bun pm cache`, ...) from the
+  same folder and environment as its clean (`_clean_probe`, `_clean_tool`): a failing probe is a
+  failing step in both runs. A prune no tool can preview says "up to" and counts nothing.
 - Without a terminal, prompts decline and pickers select nothing. Prompts that remove packages,
   containers, images, worktrees or build artifacts name every item (no "+N more"); bulk steps
   (Trash items, logs, crash dumps, sessions) state the count and the size. Answers are whole

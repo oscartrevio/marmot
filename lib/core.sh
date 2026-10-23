@@ -1660,26 +1660,34 @@ _mm_trash() {
 
 # mm_run [--measured] DESCRIPTION CMD... — run a state-changing command; in dry-run only reports
 # it. Output goes to stderr in debug mode, otherwise is captured and shown only on failure. A
-# failure is logged as "failed" with the exit status and the command's last line of output. A
-# success is logged as "run", except with --measured: then the caller measures what the command
-# freed and logs that row itself (mm_log run DESCRIPTION BYTES), so mm history counts the bytes
-# the closing summary claims.
+# failure is reported by mm_failed. A success is logged as "run", except with --measured: then the
+# caller measures what the command freed and logs that row itself (mm_log run DESCRIPTION BYTES),
+# so mm history counts the bytes the closing summary claims.
 mm_run() {
   local measured=0; [[ "$1" == --measured ]] && { measured=1; shift; }
   local desc="$1"; shift
   if [[ "$MM_DRY_RUN" == 1 ]]; then mm_debug "would run: $*"; return 0; fi
-  local out rc last
+  local out rc
   out=$("$@" 2>&1); rc=$?
   [[ "$MM_DEBUG" == 1 && -n "$out" ]] && printf '%s\n' "$out" | sed 's/^/    /' >&2
   if (( rc != 0 )); then
-    mm_err "$desc failed (exit $rc)"
-    printf '%s\n' "$out" | tail -5 | sed 's/^/    /' >&2
-    last=$(awk 'NF { l = $0 } END { print l }' <<<"$out")
-    mm_log failed "$desc" 0 "exit $rc${last:+: $last}"
+    mm_failed "$desc" "$rc" "$out"
   elif (( ! measured )); then
     mm_log run "$desc"
   fi
   return "$rc"
+}
+
+# mm_failed DESCRIPTION STATUS OUTPUT — report a command that exited STATUS: an error ("would
+# fail" in a dry run, where a read-only probe found it), the last lines of its OUTPUT, and a
+# "failed" row with 0 bytes, the exit status and the last line (dry runs log nothing).
+mm_failed() {
+  local verb=failed last
+  [[ "$MM_DRY_RUN" == 1 ]] && verb="would fail"
+  mm_err "$1 $verb (exit $2)"
+  printf '%s\n' "$3" | tail -5 | sed 's/^/    /' >&2
+  last=$(awk 'NF { l = $0 } END { print l }' <<<"$3")
+  mm_log failed "$1" 0 "exit $2${last:+: $last}"
 }
 
 # ---------------------------------------------------------------- processes

@@ -35,7 +35,8 @@ the container.
   sets the user confirmed that are re-checked right before the `rm`.
 - When a check cannot decide (a probe fails, a size is unknown, a file changed), keep the thing
   and say why. Refuse rather than guess.
-- `--dry-run` changes nothing and reports the same items and byte counts a real run would.
+- `--dry-run` changes nothing and reports the same items and byte counts a real run would; a
+  step a tool performs asks that tool's read-only probe the way the real run does.
 - A new protection gets a line in `tests/fixtures/dangerous_paths.txt` or a test in
   `tests/core.bats` showing `mm_rm` refuses it.
 
