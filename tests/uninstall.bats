@@ -37,7 +37,8 @@ echo "snap $*" >>"$CALLS"
 printf "Set  Snap  Age    Version  Rev  Size  Notes\n%s  %s  1.00s  1.0  1  4kB  -\n" "$FAKE_SNAP_SET" "$2"'
   mm_test_fake npm '[[ "$1 $2" == "root -g" ]] && { echo "$HOME/npm-global/lib/node_modules"; exit 0; }
 [[ "$1 $2" == "ls -g" ]] && { echo "$HOME/npm-global/lib"; exit 0; }
-echo "npm $*" >>"$CALLS"'
+echo "npm $*" >>"$CALLS"
+[[ "$1 $2" == "rm -g" ]] && rm -rf "$HOME/npm-global/lib/node_modules/$3"; exit 0'
   mm_test_fake pipx '[[ "$1" == list || "$1" == environment ]] && exit 0
 echo "pipx $*" >>"$CALLS"'
   mm_test_fake dpkg-query 'fmt=""; pk=()
@@ -251,14 +252,15 @@ _trashed() { [[ -e "$XDG_DATA_HOME/Trash/files/$1" && -f "$XDG_DATA_HOME/Trash/i
   mm_confirm() { return 0; }
   _uninstall_add bin fakebin 4096 0 "$HOME/.local/bin/fakebin" "" 0
   _uninstall_add npm fakenpm 4096 0 "$HOME/npm-global/lib/node_modules/fakenpm" "" 0
+  local want; want=$(mm_size "$HOME/npm-global/lib/node_modules/fakenpm")
   run _uninstall_apply 0 1
   [ "$status" -eq 0 ]
   _trashed fakebin
   [ -d "$XDG_DATA_HOME/Trash/files/fakebin.2" ]   # ~/.cache/fakebin
   _trashed fakenpm
   [ "$(cat "$CALLS")" = "npm rm -g fakenpm" ]
-  # its history row carries the size the banner counts for it
-  [ "$(awk -F'\t' '$3 == "run" && $4 == "npm rm -g fakenpm" { print $5 }' "$XDG_STATE_HOME/marmot/operations.log")" = 4096 ]
+  # its history row carries what left its folder
+  [ "$(awk -F'\t' '$3 == "run" && $4 == "npm rm -g fakenpm" { print $5 }' "$XDG_STATE_HOME/marmot/operations.log")" = "$want" ]
   [[ "$output" == *"Moved to Trash"*"trash-restore"* ]]
 }
 
@@ -480,4 +482,46 @@ echo "apt-get $*" >>"$CALLS"'
   [ "$(cat "$CALLS")" = "uv tool uninstall fakeuv" ]
   [ -L "$HOME/.local/bin/fakeuv" ]   # uv removes its own link; marmot does not trash it
   [ -z "$(mm_log_rows trash)" ]
+}
+
+# fake_global_tools — npm, bun, pipx and uv doubles that write "<cwd> <tool> <args>" to $CALLS and
+# remove ~/pkgs/<tool>, each holding a 300KB file and listed as package fake<tool>.
+fake_global_tools() {
+  local t
+  for t in npm bun pipx uv; do
+    mm_test_fake "$t" 'echo "$PWD '"$t"' $*" >>"$CALLS"; rm -rf "$HOME/pkgs/'"$t"'"'
+    mkdir -p "$HOME/pkgs/$t"; head -c 300000 /dev/urandom >"$HOME/pkgs/$t/f"
+  done
+  _load
+  for t in npm bun pipx uv; do _uninstall_add "$t" "fake$t" "$(mm_size "$HOME/pkgs/$t")" 0 "$HOME/pkgs/$t" "" 0; done
+}
+
+@test "npm, bun, pipx and uv removals run from /, not a project, and free what the dry run counted" {
+  fake_global_tools
+  mkdir -p "$SB/proj"; echo 'prefix=/tmp/evil' >"$SB/proj/.npmrc"; printf '[install]\nglobalDir = "/tmp/evil"\n' >"$SB/proj/bunfig.toml"
+  cd "$SB/proj"
+  MM_DRY_RUN=1 run _uninstall_apply 0 1 2 3
+  local would; would=$(grep -oE 'Would free: [0-9.]+[KMGT]?B' <<<"$output")
+  [ ! -s "$CALLS" ]
+  MM_TTY=1
+  mm_confirm() { return 0; }
+  run _uninstall_apply 0 1 2 3
+  [ "$status" -eq 0 ]
+  [ "${would#Would free: }" = "$(grep -oE 'Space freed: [0-9.]+[KMGT]?B' <<<"$output" | sed 's/^Space freed: //')" ]
+  [ "$(cut -d' ' -f1 "$CALLS" | sort -u)" = / ]
+  [ "$(wc -l <"$CALLS")" -eq 4 ]
+  local want=$(( _UN_BYTES[0] + _UN_BYTES[1] + _UN_BYTES[2] + _UN_BYTES[3] ))
+  [ "$(awk -F'\t' '$3 == "run" { s += $5 } END { printf "%.0f", s }' "$XDG_STATE_HOME/marmot/operations.log")" -eq "$want" ]
+}
+
+@test "a package manager that fails to remove a package frees nothing and logs the failure" {
+  fake_global_tools
+  mm_test_fake npm 'echo "npm error EACCES: permission denied" >&2; exit 243'
+  MM_TTY=1
+  mm_confirm() { return 0; }
+  run _uninstall_apply 0
+  [ -d "$HOME/pkgs/npm" ]
+  [[ "$output" == *"Space freed: 0B"* ]]
+  [ "$(mm_log_rows failed | grep -c $'\texit 243: ')" -eq 1 ]
+  [ -z "$(mm_log_rows run)" ]
 }

@@ -714,7 +714,7 @@ _purge_to_trash() {
 # `pnpm store prune` drops the store files nothing links to any more.
 
 _PURGE_PNPM_PATHS=()   # pnpm-managed artifacts/worktrees removed (or that would be, in a dry run)
-_PURGE_STORE_BYTES=0   # what the pnpm store prune after them freed (a scheduled dry run: estimate)
+_PURGE_STORE_BYTES=0   # what the pnpm store prune after them freed (0 in a dry run)
 _PURGE_MODE=ask        # see _purge_run
 
 # _purge_pnpm_managed DIR — 0 if DIR is a node_modules pnpm installed, or a project/worktree with
@@ -1621,15 +1621,16 @@ _purge_banner() {
   fi
 }
 
-# _purge_scheduled_end — after a scheduled run's pnpm-managed removals: `pnpm store prune`, or in
-# a dry run its estimate, as a line of the section; the bytes go to _PURGE_STORE_BYTES.
+# _purge_scheduled_end — after a scheduled run's pnpm-managed removals: `pnpm store prune`, whose
+# measured bytes go to _PURGE_STORE_BYTES. A dry run shows its estimate as "about" on a line of the
+# section and, like mm clean's prunes, counts nothing for it.
 _purge_scheduled_end() {
   _PURGE_STORE_BYTES=0
   (( ${#_PURGE_PNPM_PATHS[@]} )) || return 0
   if [[ "$MM_DRY_RUN" == 1 ]]; then
-    _PURGE_STORE_BYTES=$(_purge_store_frees "${_PURGE_PNPM_PATHS[@]}")
-    _PURGE_STORE_BYTES=${_PURGE_STORE_BYTES:-0}
-    (( _PURGE_STORE_BYTES )) && mm_ok "pnpm store prune" "~$(mm_human "$_PURGE_STORE_BYTES") (store files only these used)"
+    local est
+    est=$(_purge_store_frees "${_PURGE_PNPM_PATHS[@]}")
+    (( ${est:-0} )) && mm_ok "pnpm store prune" "about $(mm_human "$est") (store files only these used; not counted until it runs)"
     return 0
   fi
   _purge_pnpm_prune

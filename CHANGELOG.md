@@ -229,12 +229,18 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - `mm clean` empties bun's cache again: bun 1.3 refuses `bun pm cache rm` from `/` ("No
   package.json was found"), so the step failed while its dry run promised the whole cache. bun
   now runs from a folder marmot makes with an empty `package.json`, which no project's
-  `bunfig.toml` can redirect.
-- Dry runs of the steps marmot hands to a tool (npm, bun, yarn, pnpm, uv, conda, Homebrew) ask
-  the tool the same read-only question a real run does, from the same folder with the same
+  `bunfig.toml` can redirect, and the `bun x` packages that command also clears are counted.
+- Dry runs of the steps marmot hands to a tool (npm, bun, yarn, pnpm, uv, conda, Homebrew, nix)
+  ask the tool the same read-only question a real run does, from the same folder with the same
   environment. When it fails, the dry run shows the step failing with the tool's message and counts
   nothing, as the real run does, instead of guessing a cache folder and promising its size. A
-  prune no tool can preview (uv, mise, pnpm) shows "up to" the cache size and counts nothing.
+  prune no tool can preview (uv, mise, pnpm, and `mm schedule`'s pnpm store prune after a purge)
+  shows "up to" or "about" and counts nothing. Real runs count what actually went: `mm uninstall`
+  measures each npm, bun, pipx and uv package's folder (and runs those tools from `/`, so a
+  project's `.npmrc` or `bunfig.toml` cannot change the target), `docker image rm` counts the
+  untagged images it removed when others fail, and `docker builder prune` counts docker's own
+  "Total reclaimed space". Sizes that are only estimates (dpkg's Installed-Size, `docker builder
+  du`) say "about".
 
 ## 0.2.0
 

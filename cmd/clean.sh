@@ -303,21 +303,25 @@ _clean_probe() {
   return $(( rc != 0 ))
 }
 
-# _clean_tool [--prune] LABEL "BUSY_PROC..." SIZE_DIR CWD CMD... — run a tool's own cache clean
-# from CWD (where its probe ran), measured by what it frees in SIZE_DIR: files hard-linked from
-# outside (uv links its cache into virtualenvs) stay on disk, so they are not counted. CWD is never
-# a project, so project-local config (.npmrc, .yarnrc.yml, committed .yarn/cache, bunfig.toml)
-# never applies. A dry run takes the same path up to the command and counts what removing all of
-# SIZE_DIR frees; with --prune CMD removes only entries nothing uses, which no tool can preview,
-# so it shows "up to" that and counts nothing. Callers only invoke it when the tool is installed.
+# _clean_tool [--prune] [--also PATH]... LABEL "BUSY_PROC..." SIZE_DIR CWD CMD... — run a tool's own
+# cache clean from CWD (where its probe ran), measured by what it frees in SIZE_DIR and each PATH
+# it also removes: files hard-linked from outside (uv links its cache into virtualenvs) stay on
+# disk, so they are not counted. CWD is never a project, so project-local config (.npmrc,
+# .yarnrc.yml, committed .yarn/cache, bunfig.toml) never applies. A dry run takes the same path up
+# to the command and counts what removing all of them frees; with --prune CMD removes only entries
+# nothing uses, which no tool can preview, so it shows "up to" that and counts nothing. Callers
+# only invoke it when the tool is installed.
 _clean_tool() {
-  local prune=0; [[ "$1" == --prune ]] && { prune=1; shift; }
+  local prune=0; local -a also=()
+  while [[ "$1" == --prune || "$1" == --also ]]; do
+    if [[ "$1" == --prune ]]; then prune=1; shift; else also+=("$2"); shift 2; fi
+  done
   local label="$1" procs="$2" dir="$3" cwd="$4" busy size before verb=cleaned; shift 4
   _CLEAN_HANDLED+=("$dir")
   [[ -d "$dir" ]] || { mm_ok "$label" "nothing to clean"; return; }
   if mm_whitelisted "$dir"; then mm_skip "$label" "whitelisted"; return; fi
   if busy=$(_clean_busy "$procs"); then mm_skip "$label" "$busy busy"; return; fi
-  read -r size before < <(mm_size_frees "$dir")
+  read -r size before < <(mm_size_frees "$dir" "${also[@]}")
   [[ -n "$before" ]] || { mm_skip "$label" "size unknown"; return; }
   if (( size < _CLEAN_MIN_TOOL )); then mm_ok "$label" "nothing to clean ($(mm_human "$size"))"; return; fi
   mm_run --measured "$label" env -C "$cwd" "$@" || return 0
@@ -326,7 +330,7 @@ _clean_tool() {
     _clean_track "$before" 1; mm_ok "$label" "$(mm_human "$before")"; return
   fi
   (( prune )) && verb=pruned
-  _clean_tool_freed "$label" "$verb" "$before" "$(mm_frees "$dir")"
+  _clean_tool_freed "$label" "$verb" "$before" "$(mm_frees "$dir" "${also[@]}")"
 }
 
 # _clean_home_dir LABEL DIR — 0 if DIR is a non-empty directory that resolves strictly inside $HOME
@@ -644,13 +648,15 @@ _clean_bun() {
   return 0
 }
 
-# _clean_bun_in CWD — the bun cache step, asked and run from CWD.
+# _clean_bun_in CWD — the bun cache step, asked and run from CWD. `bun pm cache rm` also clears the
+# packages `bun x` unpacked into the temp folder (bunx-<uid>-<package>), so those count too.
 _clean_bun_in() {
-  local dir
+  local dir p; local -a also=()
   _clean_probe "bun cache" "$1" timeout 15 bun pm cache || return 0
   dir=${REPLY##*$'\n'}
   [[ "$dir" == /* ]] || { mm_skip "bun cache" "cache dir unknown"; return; }
-  _clean_tool "bun cache" bun "$dir" "$1" bun pm cache rm
+  for p in "${BUN_TMPDIR:-${TMPDIR:-/tmp}}"/bunx-"$(id -u)"-*; do [[ -d "$p" && ! -L "$p" ]] && also+=(--also "$p"); done
+  _clean_tool "${also[@]}" "bun cache" bun "$dir" "$1" bun pm cache rm
 }
 
 # Yarn 1 has one global cache (`yarn cache dir`). Berry caches live per project (often committed for
@@ -1045,6 +1051,8 @@ _clean_nix() {
     mm_skip "$label" "$busy busy"; return
   fi
   if [[ "$MM_DRY_RUN" == 1 ]]; then
+    # nix's own read-only rehearsal, from where the real call runs: a refusal fails here too
+    _clean_probe "$label" / nix-collect-garbage --delete-older-than 30d --dry-run || return 0
     mm_ok "$label" "would delete generations older than 30 days and collect garbage (size known after the run)"; return
   fi
   log=$(mktemp -t marmot-nix.XXXXXX) || return 0
@@ -1199,7 +1207,7 @@ _clean_apt_autoremove() {
   b=$(_clean_pkg_bytes "${pkgs[@]}")
   _clean_confirm_pkgs "Unused packages" "Autoremove ${#pkgs[@]} packages (their config files stay)?" "${pkgs[@]}" || return 0
   _clean_apt_run "apt-get autoremove" "$b" "${#pkgs[@]}" -y autoremove || return 0
-  mm_ok "Unused packages" "$(_clean_detail "${#pkgs[@]}" packages "$b")"
+  mm_ok "Unused packages" "${#pkgs[@]} packages, about $(mm_human "$b") (dpkg's Installed-Size)"
 }
 
 # Where dpkg keeps the maintainer scripts of installed and removed packages (a plain variable:
@@ -1291,7 +1299,7 @@ _clean_kernels() {
   b=$(_clean_pkg_bytes "${pkgs[@]}")
   _clean_confirm_pkgs "Old kernels" "Purge ${#pkgs[@]} old kernel packages (keeping $running and $newest)?" "${pkgs[@]}" || return 0
   _clean_apt_run "purge old kernels" "$b" "${#pkgs[@]}" -y purge "${pkgs[@]}" || return 0
-  mm_ok "Old kernels" "$(_clean_detail "${#pkgs[@]}" packages "$b"), kept $running and $newest"
+  mm_ok "Old kernels" "${#pkgs[@]} packages, about $(mm_human "$b") (dpkg's Installed-Size), kept $running and $newest"
 }
 
 _clean_journal() {
@@ -1491,18 +1499,29 @@ _clean_docker() {
     mm_skip "Docker" "$why; MM_DOCKER_PRUNE=1 cleans it anyway"; _clean_cat_end; return
   fi
   if ! timeout 5 docker info >/dev/null 2>&1; then mm_skip "Docker" "daemon not reachable"; _clean_cat_end; return; fi
-  local b
+  local b before after freed
   _clean_docker_containers
   _clean_docker_dangling
 
   _clean_docker_images
 
-  # Build cache unused for 7 days.
+  # Build cache unused for 7 days: the dry run has docker's estimate; a real run counts docker's own
+  # "Total reclaimed space" (older clients: "Total:"), else the Build Cache total before and after.
   b=$(timeout 30 docker builder du --filter until=168h 2>/dev/null | awk '/^Reclaimable:/ { print $2 }')
   b=$(_clean_to_bytes "${b:-0}")
   if (( b == 0 )); then mm_ok "Build cache" "nothing older than 7 days"
-  elif mm_run --measured "docker builder prune" timeout 600 docker builder prune -f --filter until=168h; then
-    _clean_ran "docker builder prune" "$b" 1; mm_ok "Build cache" "$(mm_human "$b") older than 7 days"
+  else
+    before=$(_clean_docker_df_bytes "Build Cache")
+    if mm_run --measured "docker builder prune" timeout 600 docker builder prune -f --filter until=168h; then
+      if [[ "$MM_DRY_RUN" == 1 ]]; then
+        _clean_track "$b" 1; mm_ok "Build cache" "about $(mm_human "$b") older than 7 days (docker's estimate)"
+      else
+        freed=$(grep -oE '^Total( reclaimed space)?:[[:space:]]*[0-9.]+[A-Za-z]+' <<<"$MM_RUN_OUT" | tail -1)
+        if [[ -n "$freed" ]]; then freed=$(_clean_to_bytes "${freed##*[[:space:]]}")
+        else after=$(_clean_docker_df_bytes "Build Cache"); freed=$(( before > after ? before - after : 0 )); fi
+        _clean_ran "docker builder prune" "$freed" 1; mm_ok "Build cache" "$(mm_human "$freed") older than 7 days"
+      fi
+    fi
   fi
 
   _clean_docker_volumes
@@ -1548,15 +1567,15 @@ _clean_dockerd_here() {
 # on their own: `docker image prune -f` would take the lot with no prompt, including unattended
 # runs. Removal names each id, without -f, so the daemon still refuses one a container uses.
 _clean_docker_dangling() {
-  local out row id size n=0 b=0 d
-  local -a ids=()
+  local out row id size n=0 b=0 d i
+  local -a ids=() sizes=()
   if ! out=$(timeout 30 docker images -f dangling=true --no-trunc --format $'{{.ID}}\t{{.Size}}' 2>/dev/null); then
     mm_skip "Dangling images" "cannot list images"; return
   fi
   while IFS=$'\t' read -r id size; do
     [[ -n "$id" ]] || continue
     size=$(_clean_to_bytes "$size")
-    ids+=("$id") n=$((n + 1)) b=$((b + size))
+    ids+=("$id") sizes+=("$size") n=$((n + 1)) b=$((b + size))
     mm_act "${id#sha256:} · untagged, $(mm_human "$size")"
   done <<<"$out"
   if (( n == 0 )); then mm_ok "Dangling images" "none"; return; fi
@@ -1565,8 +1584,17 @@ _clean_docker_dangling() {
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     _clean_track "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"; return
   fi
-  d="docker image rm $n untagged images"; mm_run --measured "$d" timeout 600 docker image rm "${ids[@]}" || return 0 # SAFE: listed, confirmed untagged images; no -f, so the daemon refuses ones a container uses
-  _clean_ran "$d" "$b" "$n"; mm_ok "Dangling images" "$(_clean_detail "$n" images "$b")"
+  d="docker image rm $n untagged images"; mm_run --measured "$d" timeout 600 docker image rm "${ids[@]}" || : # SAFE: listed, confirmed untagged images; no -f, so the daemon refuses ones a container uses
+  # docker removes what it can and fails for the rest: count the ones that are gone
+  local done_n=0 freed=0 left
+  if left=$(timeout 30 docker images -f dangling=true -q --no-trunc 2>/dev/null); then
+    for i in "${!ids[@]}"; do
+      grep -qxF -- "${ids[i]}" <<<"$left" && continue
+      done_n=$((done_n + 1)) freed=$((freed + sizes[i]))
+    done
+  fi
+  (( done_n )) && _clean_ran "$d" "$freed" "$done_n"
+  mm_ok "Dangling images" "$(_clean_detail "$done_n" images "$freed" 0 $((n - done_n)))"
 }
 
 # Stopped containers whose last run ended 7+ days ago (never-started ones: created 7+ days ago).
@@ -1664,7 +1692,7 @@ _clean_docker_images() {
   if [[ "$MM_DRY_RUN" == 1 ]]; then
     _clean_track "$b" "$n"; mm_ok "Unused images" "$(_clean_detail "$n" images "$b") unused for ${_CLEAN_IMAGE_DAYS}+ days"; return
   fi
-  before=$(_clean_docker_images_bytes)
+  before=$(_clean_docker_df_bytes Images)
   for i in "${!rm_tags[@]}"; do
     read -r -a argv <<<"${rm_tags[i]}"
     d="docker image rm ${rm_tags[i]}"; if mm_run --measured "$d" timeout 300 docker image rm "${argv[@]}"; then # SAFE: listed, confirmed image unused by every container; no -f, so the daemon refuses images in use
@@ -1673,7 +1701,7 @@ _clean_docker_images() {
       fail=$((fail + 1))
     fi
   done
-  after=$(_clean_docker_images_bytes); freed=$(( before > after ? before - after : 0 ))
+  after=$(_clean_docker_df_bytes Images); freed=$(( before > after ? before - after : 0 ))
   # The space is measured once for all of them: each row gets its share by estimate.
   i=0
   while IFS= read -r share; do
@@ -1683,10 +1711,11 @@ _clean_docker_images() {
   mm_ok "Unused images" "$(_clean_detail "$ok" images "$freed" 0 "$fail") unused for ${_CLEAN_IMAGE_DAYS}+ days"
 }
 
-# _clean_docker_images_bytes — the Images total of `docker system df` (4 significant digits).
-_clean_docker_images_bytes() {
+# _clean_docker_df_bytes TYPE — the TYPE total ("Images", "Build Cache") of `docker system df` (4
+# significant digits).
+_clean_docker_df_bytes() {
   _clean_to_bytes "$(timeout 60 docker system df --format $'{{.Type}}\t{{.Size}}' 2>/dev/null |
-    awk -F'\t' '$1 == "Images" { print $2; exit }')"
+    awk -F'\t' -v t="$1" '$1 == t { print $2; exit }')"
 }
 
 # Volumes are never pruned (they hold databases); unused ones are listed for review.

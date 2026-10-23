@@ -1659,16 +1659,19 @@ _mm_trash() {
 }
 
 # mm_run [--measured] DESCRIPTION CMD... — run a state-changing command; in dry-run only reports
-# it. Output goes to stderr in debug mode, otherwise is captured and shown only on failure. A
-# failure is reported by mm_failed. A success is logged as "run", except with --measured: then the
-# caller measures what the command freed and logs that row itself (mm_log run DESCRIPTION BYTES),
-# so mm history counts the bytes the closing summary claims.
+# it. Output goes to stderr in debug mode, otherwise is captured (in MM_RUN_OUT, for callers that
+# read a tool's own report) and shown only on failure. A failure is reported by mm_failed. A
+# success is logged as "run", except with --measured: then the caller measures what the command
+# freed and logs that row itself (mm_log run DESCRIPTION BYTES), so mm history counts the bytes
+# the closing summary claims.
 mm_run() {
   local measured=0; [[ "$1" == --measured ]] && { measured=1; shift; }
   local desc="$1"; shift
+  MM_RUN_OUT=""
   if [[ "$MM_DRY_RUN" == 1 ]]; then mm_debug "would run: $*"; return 0; fi
   local out rc
   out=$("$@" 2>&1); rc=$?
+  MM_RUN_OUT=$out
   [[ "$MM_DEBUG" == 1 && -n "$out" ]] && printf '%s\n' "$out" | sed 's/^/    /' >&2
   if (( rc != 0 )); then
     mm_failed "$desc" "$rc" "$out"
