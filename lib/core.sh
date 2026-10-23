@@ -511,6 +511,9 @@ mm_sudo() {
 
 # ---------------------------------------------------------------- in-use detection
 
+# The snapshot reaches grep and awk through <(printf ...), never a here-string: bash writes one over
+# 64 KiB (any busy machine's snapshot) to a temp file, which a full disk refuses, and the check would
+# then die or answer "nothing in use" just when space is needed.
 MM_INUSE=""        # newline-separated snapshot; kept in memory so a killed run leaves no files
 MM_INUSE_REFS=""   # "path<TAB>source" for snapshot paths that only a reference keeps (mm_inuse_why)
 MM_INUSE_TAKEN=0 MM_INUSE_AT=0   # whether a snapshot exists, and when it was taken (date +%s)
@@ -532,21 +535,21 @@ mm_inuse_refresh() {
   mm_spin_start "Checking what is in use…"
   out=$(bash -c "$script")
   if (( EUID == 0 )); then
-    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$out" | cut -f2-)
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <(printf '%s\n' "$out") | cut -f2-)
   elif mm_can_sudo; then
     root=$(mm_sudo bash -c "$script")
-    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <<<"$root" | cut -f2-)
+    MM_INUSE_PARTIAL_WHY=$(grep -m1 '^P' <(printf '%s\n' "$root") | cut -f2-)
     out+=$'\n'$root
   elif [[ "$MM_NO_SUDO" == 1 ]]; then MM_INUSE_PARTIAL_WHY="running without sudo, only your own processes are checked"
   else MM_INUSE_PARTIAL_WHY="no passwordless sudo, only your own processes are checked"; fi
   [[ -n "$MM_INUSE_PARTIAL_WHY" ]] && MM_INUSE_PARTIAL=1
   mm_spin_stop
-  live=$(grep '^/' <<<"$out" | sort -u)
+  live=$(grep '^/' <(printf '%s\n' "$out") | sort -u)
   MM_INUSE_TAKEN=1 MM_INUSE="" MM_INUSE_REFS=""
   [[ -n "$live" ]] || mm_die "could not list in-use paths; refusing to delete anything"
-  refs=$(grep '^A' <<<"$out" | _mm_inuse_refs)
-  MM_INUSE_REFS=$(awk -F'\t' 'NR == FNR { live[$0] = 1; next } !($1 in live)' - <(printf '%s\n' "$refs") <<<"$live")
-  MM_INUSE=$({ printf '%s\n' "$live"; [[ -n "$MM_INUSE_REFS" ]] && cut -f1 <<<"$MM_INUSE_REFS"; } | sort -u)
+  refs=$(grep '^A' <(printf '%s\n' "$out") | _mm_inuse_refs)
+  MM_INUSE_REFS=$(awk -F'\t' 'NR == FNR { live[$0] = 1; next } !($1 in live)' <(printf '%s\n' "$live") <(printf '%s\n' "$refs"))
+  MM_INUSE=$({ printf '%s\n' "$live"; [[ -n "$MM_INUSE_REFS" ]] && cut -f1 <(printf '%s\n' "$MM_INUSE_REFS"); } | sort -u)
   if [[ "$MM_INUSE_PARTIAL" == 1 && -z "${_MM_PARTIAL_WARNED:-}" ]]; then
     _MM_PARTIAL_WARNED=1
     mm_warn "In-use check is partial: $MM_INUSE_PARTIAL_WHY"
@@ -843,7 +846,7 @@ mm_in_use() {
   (( MM_INUSE_TAKEN )) || mm_inuse_refresh
   [[ -n "$MM_INUSE" ]] || return 0   # no snapshot (e.g. refresh died in a subshell): fail closed
   MM_P="${1%/}" awk 'BEGIN { p = ENVIRON["MM_P"] }
-    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !found }' <<<"$MM_INUSE"
+    $0 == p || index($0, p "/") == 1 { found = 1; exit } END { exit !found }' <(printf '%s\n' "$MM_INUSE")
 }
 
 # mm_inuse_why PATH — print why PATH is kept and return 0: "in use" when a process uses it or
@@ -858,7 +861,7 @@ mm_inuse_why() {
     NR == FNR { if ($1 != "" && !($1 in why)) why[$1] = $2; next }
     $0 == p || index($0, p "/") == 1 { if (!($0 in why)) { live = 1; exit } if (ref == "") ref = why[$0] }
     END { if (live) print "in use"; else if (ref != "") print "used by " ref; else exit 1 }' \
-    <(printf '%s\n' "$MM_INUSE_REFS") - <<<"$MM_INUSE"
+    <(printf '%s\n' "$MM_INUSE_REFS") <(printf '%s\n' "$MM_INUSE")
 }
 
 # mm_proc_age PID — seconds since process start. Fields are counted after the last ") " because

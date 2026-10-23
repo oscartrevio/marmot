@@ -241,6 +241,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   untagged images it removed when others fail, and `docker builder prune` counts docker's own
   "Total reclaimed space". Sizes that are only estimates (dpkg's Installed-Size, `docker builder
   du`) say "about".
+- The in-use check works on a full disk. With no room left in the temp folder, a snapshot over
+  64 KiB (a machine with many processes) stopped `mm clean` and `mm purge` with "could not list
+  in-use paths", and a lookup in one already taken answered "not in use": bash kept those long
+  strings in temp files. They now go through pipes.
 
 ## 0.2.0
 

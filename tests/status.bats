@@ -462,16 +462,24 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
 }
 
 @test "live mode: refreshes rewrite only changed rows, the footer ends its line, q quits" {
-  # Room for every panel and no client link coming and going: rows only change by their values.
+  # Room for every panel of the full view, the CPU trend included; no client link to look up.
   fake_ss "$LISTEN_SSH" ""
   LIVE_ROWS=70 live 'sleep 5; printf q' --view full
   # 124 would mean q did not quit before the timeout.
   [ "$LIVE_STATUS" -eq 0 ]
   # The CPU trend grows every refresh, so it is rewritten each time: several frames were drawn.
   [ "$(grep -c '^Trend ' <<<"$LIVE_TEXT")" -ge 2 ]
-  # A panel title never changes: written by the first frame, again only if the layout shifts
-  # (the header gains a health reason under load), never on every refresh.
-  [ "$(grep -c '⚙ CPU' <<<"$LIVE_TEXT")" -lt "$(grep -c '^Trend ' <<<"$LIVE_TEXT")" ]
+  # Replayed as a screen (each row written as "ROW<TAB>text"), no refresh clears it and none
+  # writes a row with the text it already shows. Counting a panel title's writes instead counts
+  # what else runs: a cleanup in a test alongside puts the hard hat on the marmot, a row above
+  # every panel, and each panel row that moves is rightly written again.
+  local painted
+  painted=$(sed -e 's/\x1b\[2J/\nclear\n/g' -e 's/\x1b\[\([0-9]*\);1H/\n\1\t/g' \
+    -e 's/\x1b\[[0-9;?]*[A-Za-z]//g' "$LIVE_OUT" | tr -d '\r' | LC_ALL=C awk -F'\t' '
+    $0 == "clear" { if (rows) cleared++; delete shown; next }
+    $1 ~ /^[0-9]+$/ { rows++; if ($2 != "" && shown[$1] == $2) same++; shown[$1] = $2 }
+    END { print rows + 0, cleared + 0, same + 0 }')
+  [[ "$painted" =~ ^[1-9][0-9]*\ 0\ 0$ ]] || { echo "rows written, clears, rows written unchanged: $painted"; false; }
   [ "$(grep -c 'q quit' <<<"$LIVE_TEXT")" -ge 1 ]
   # Stripped of escapes, a footer glued to whatever is written next reads "...5mmm status".
   [ "$(grep -cE 'q quit.*(mm status|Trend|Total)' <<<"$LIVE_TEXT")" -eq 0 ]
