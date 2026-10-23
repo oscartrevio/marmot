@@ -172,8 +172,9 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   something went there (`mm uninstall` printed `Moved to Trash: 0B`), the command's counts, and a
   free-space change signed the same way everywhere (`mm purge` and `mm uninstall` clamped it to
   `+`); every dry run ends with `Free space: X now, ~Y after`.
-- CI runs once per pull request, as one job running the suite one file at a time; docs-only
-  changes skip it.
+- CI runs once per pull request, as one job; `tests/run.sh` runs bats with `--jobs $(nproc)` when
+  GNU parallel is installed (as on the runner), files that set `BATS_NO_PARALLELIZE_WITHIN_FILE`
+  staying serial inside. Docs-only changes skip it.
 - `install.sh` refuses to replace a git checkout or a foreign `mm`, and keeps a foreign `marmot`
   with a warning.
 - `install.sh --uninstall` disables the schedule first, so no timer or cron line calls a removed

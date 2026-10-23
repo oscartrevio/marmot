@@ -1,7 +1,8 @@
 name: test
 
-# One job on pull requests: shellcheck + the bats suite, one file at a time (a few tests time
-# processes and redraws and flake under parallel load). Docs-only changes skip it, and a new push
+# One job on pull requests: shellcheck + the bats suite. tests/run.sh adds --jobs $(nproc) when GNU
+# parallel is installed, as on the runner, so files run side by side; files that set
+# BATS_NO_PARALLELIZE_WITHIN_FILE stay serial inside. Docs-only changes skip it, and a new push
 # cancels the run it replaces. The end-to-end scenario (tests/e2e/run.sh) runs locally, not here.
 on:
   pull_request:
