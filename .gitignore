@@ -7,3 +7,4 @@ next-env.d.ts
 *.tsbuildinfo
 apps/web/src/generated/
 .env*.local
+apps/web/src/app/icon.svg

@@ -8,7 +8,7 @@
         "$TURBO_ROOT$/lib/mascot.sh",
         "$TURBO_ROOT$/lib/core.sh"
       ],
-      "outputs": ["src/generated/**"]
+      "outputs": ["src/generated/**", "src/app/icon.svg"]
     },
     "build": {
       "dependsOn": ["mascot", "^build"],

@@ -7,7 +7,7 @@
 
 marmot (`mm`) cleans up after coding agents on Debian and Ubuntu and shows what they are running. It never deletes what an agent or tool still uses.
 
-[Commands](#commands) · [What marmot deletes](#what-marmot-deletes) · [Configuration](#configuration) · [Changelog](CHANGELOG.md)
+[Website](https://marmot.oscartrev.io) · [Commands](#commands) · [What marmot deletes](#what-marmot-deletes) · [Configuration](#configuration) · [Changelog](CHANGELOG.md)
 
 ## Install
 

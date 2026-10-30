@@ -22,6 +22,7 @@ const mono = JetBrains_Mono({
 export const metadata: Metadata = {
   description:
     "marmot (mm) cleans up after coding agents on Debian and Ubuntu. It never deletes what an agent or tool still uses.",
+  metadataBase: new URL("https://marmot.oscartrev.io"),
   title: "marmot",
 };
 
