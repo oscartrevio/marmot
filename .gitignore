@@ -1,0 +1,9 @@
+# The website (apps/web): dependencies, build output, generated art
+node_modules/
+.next/
+out/
+.turbo/
+next-env.d.ts
+*.tsbuildinfo
+apps/web/src/generated/
+.env*.local

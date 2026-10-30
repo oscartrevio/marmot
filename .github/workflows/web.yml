@@ -1,0 +1,35 @@
+name: web
+
+# The website (apps/web): lint and format (ultracite: oxlint + oxfmt), types, and a static build.
+# The build draws the marmot with lib/mascot.sh, so a change there runs this too.
+on:
+  pull_request:
+    paths:
+      - "apps/**"
+      - "lib/mascot.sh"
+      - "package.json"
+      - "bun.lock"
+      - "turbo.json"
+      - "oxlint.config.ts"
+      - "oxfmt.config.ts"
+      - ".github/workflows/web.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run check-types
+      - run: bun run build
