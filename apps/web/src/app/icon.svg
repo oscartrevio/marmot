@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- The marmot's head from lib/mascot.sh: ears, the face, its happy ^ ^ eyes. The first copy
+       of the head, stroked, is its outline; the second covers the seams inside it. -->
+  <defs>
+    <g id="head">
+      <circle cx="7" cy="9" r="4.5"/>
+      <circle cx="25" cy="9" r="4.5"/>
+      <rect x="2.5" y="6.5" width="27" height="23" rx="10.5"/>
+    </g>
+  </defs>
+  <use href="#head" fill="#1c1c1c" stroke="#3a3a3a" stroke-width="2"/>
+  <use href="#head" fill="#1c1c1c"/>
+  <path d="M8.5 20.5 11.5 16 14.5 20.5M17.5 20.5 20.5 16 23.5 20.5" fill="none" stroke="#4ade80" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
