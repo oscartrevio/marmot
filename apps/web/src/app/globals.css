@@ -1,0 +1,78 @@
+@import "tailwindcss";
+@import "@radix-ui/colors/gray-alpha.css";
+@import "@radix-ui/colors/green-alpha.css";
+
+@theme inline {
+  --font-sans: var(--font-open-runde), ui-sans-serif, system-ui, sans-serif;
+  --font-mono:
+    var(--font-jetbrains), ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+@layer base {
+  html {
+    background: #fff;
+    color: var(--gray-a12);
+    scrollbar-gutter: stable;
+    @media (pointer: fine) {
+      overscroll-behavior: none;
+    }
+  }
+}
+
+/* The transparent border is invisible until forced-colors mode drops the
+   box-shadow, where it becomes the surface's only edge. */
+@utility border-shadow {
+  border: 1px solid transparent;
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.06),
+    0 1px 2px -1px rgb(0 0 0 / 0.06),
+    0 2px 4px 0 rgb(0 0 0 / 0.04);
+}
+
+@utility hover-border-shadow {
+  box-shadow:
+    0 0 0 1px rgb(0 0 0 / 0.08),
+    0 1px 2px -1px rgb(0 0 0 / 0.08),
+    0 2px 4px 0 rgb(0 0 0 / 0.06);
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/* The page's column: as wide as the marmot (--cols cells of 0.6em at 14px), or the screen.
+   .mono sizes the marmot and the command's card so --cols cells fill the column, so the rule
+   under the marmot and the card end at the same edge. Under 10.5px the type stops shrinking:
+   the rule is cut at the column's edge and the command scrolls behind a fade. */
+.col {
+  width: min(100%, calc(var(--cols) * 0.6 * 14px));
+  container-type: inline-size;
+}
+
+.mono {
+  font-size: clamp(10.5px, calc(100cqi / var(--cols) / 0.6), 14px);
+}
+
+@property --fade {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+/* The command ends in two blank columns under a fade: when it fits, the fade covers nothing;
+   when the column cuts it short, the fade marks the cut and goes once it is scrolled to its end. */
+.command {
+  --fade: 1.2em;
+  mask-image: linear-gradient(to left, transparent, #000 var(--fade));
+  animation: unfade linear both;
+  animation-timeline: scroll(self inline);
+}
+
+@keyframes unfade {
+  to {
+    --fade: 0px;
+  }
+}

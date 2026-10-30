@@ -16,7 +16,7 @@ fi
 command -v shellcheck >/dev/null || { echo "shellcheck is not installed: sudo apt-get install shellcheck" >&2; exit 1; }
 
 sources=()
-for f in marmot install.sh lib/*.sh cmd/*.sh completion/*.bash tests/run.sh tests/e2e/*.sh; do
+for f in marmot install.sh lib/*.sh cmd/*.sh completion/*.bash tests/run.sh tests/e2e/*.sh apps/web/scripts/*.sh; do
   [[ -f "$f" ]] && sources+=("$f")
 done
 shellcheck -x "${sources[@]}"

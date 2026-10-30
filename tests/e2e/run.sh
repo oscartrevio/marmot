@@ -24,12 +24,14 @@ while (( $# )); do
 done
 command -v docker >/dev/null || { echo "run.sh: docker is not installed" >&2; exit 1; }
 
-# The checkout is mounted read-only; the scenario runs from a copy the user under test can read.
+# The checkout is mounted read-only; the scenario runs from a copy the user under test can read,
+# without the website's dependencies and build output.
 docker run --rm -v "$PWD:/src:ro" \
   --tmpfs /home:rw,exec,size=2g,mode=755 --tmpfs /root:rw,exec,size=2g,mode=700 \
   "$image" bash -c '
   set -e
   /src/tests/e2e/setup.sh '"$minimal"' --user e2e
-  cp -r /src /opt/marmot && chown -R e2e /opt/marmot
+  mkdir /opt/marmot && tar -C /src --exclude=node_modules --exclude=.next --exclude=.turbo -cf - . | tar -C /opt/marmot -xf -
+  chown -R e2e /opt/marmot
   if [ '"$as"' = root ]; then exec env MM_E2E=1 HOME=/root /opt/marmot/tests/e2e/agent-vm.sh; fi
   exec runuser -u e2e -- env MM_E2E=1 HOME=/home/e2e USER=e2e /opt/marmot/tests/e2e/agent-vm.sh'

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "ui": "tui",
+  "tasks": {
+    "mascot": {
+      "inputs": [
+        "scripts/**",
+        "$TURBO_ROOT$/lib/mascot.sh",
+        "$TURBO_ROOT$/lib/core.sh"
+      ],
+      "outputs": ["src/generated/**"]
+    },
+    "build": {
+      "dependsOn": ["mascot", "^build"],
+      "outputs": [".next/**", "!.next/cache/**", "out/**"]
+    },
+    "check-types": {
+      "dependsOn": ["mascot"]
+    },
+    "dev": {
+      "dependsOn": ["mascot"],
+      "passThroughEnv": ["PORTLESS*"],
+      "cache": false,
+      "persistent": true
+    }
+  }
+}
