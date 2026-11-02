@@ -93,7 +93,7 @@ proud (a cleanup freed 1GB or more in the last 24 hours), ^ ^ agents at work on 
 machine, - - z Z no agent session busy. It wears a hard hat while a marmot cleanup runs, and
 blinks now and then in the live view. On a holiday, in a season or on its anniversary it
 dresses for the day (a party hat and fireworks at New Year, a Santa hat, snow all winter, fangs
-in Halloween week and a jack-o'-lantern on the 31st, papel picado and marigolds on Dia de
+and a web in Halloween week (candy and a witch hat building up to the 31st), papel picado and marigolds on Dia de
 Muertos, a lightsaber on May 4, a tree on Earth Day, and more) and greets you; the face always says what
 the machine is. \`festive = off\` in $MM_CONFIG_FILE turns the calendar off. Short terminals
 drop the marmot first.

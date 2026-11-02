@@ -28,6 +28,7 @@ declare -gA MM_FACES=(
 # mood's own eyes (and blink); the rest is drawn in INK (see MM_PARTS).
 declare -gA MM_EYES=(
   [groucho]='.| (L)--(R) ' [pirate]='.|  #    R  ' [jack]='y|  ∆    ∆  ' [calavera]='y| (*)  (*) '
+  [witch]='y| *L    R* '
 )
 # Everything else drawn, one part per line: "NAME|ROW|COL|INK|TEXT", in drawing order (a later
 # part covers an earlier one, spaces too). NAME is SLOT:NAME (the slots of mm_marmot_draw).
@@ -62,6 +63,10 @@ MM_PARTS=(
   'hat:santa|2|4|w|{~~~~~~~~}'
   'hat:hardhat|0|6|y|.-||-.'
   'hat:hardhat|1|4|y|_/__||__\_'
+  # A witch's hat: a purple cone over the head, a brim and a yellow buckle.
+  'hat:witch|0|8|m|/\'
+  'hat:witch|1|3|m|_.--/  \--._'
+  'hat:witch|1|8|y|[]'
   # Marks: before the head, in the sky, over the title.
   'mark:heart|1|0|r|<3'
   'mark:pi|1|0|c|3.14'
@@ -81,16 +86,18 @@ MM_PARTS=(
   'mark:picado|0|9|c|[#]'
   'mark:picado|0|13|r|[#]'
   'mark:picado|0|17|g|[#]'
-  # A jack-o'-lantern beside the head: ribbed and round, a green stem, triangle eyes, a toothy
-  # grin; clear of the face's marks (they end by column 21).
-  'mark:pumpkin|0|23|y|_.--)--._'
-  'mark:pumpkin|0|27|g|)'
-  'mark:pumpkin|1|22|y|(( ^vVv^ ))'
   # On the rule, by place (MM_RULE_AT): all of it first, then its ends and beside the right paw.
   'rule:snow|5|23+17|d|*'
   'rule:snow|5|26+11|d|.'
   'rule:marigolds|5|18+5|g|,@,'
   'rule:marigolds|5|19+5|y|@'
+  # Wrapped candy along the rule, counted from its right end so the web never cuts one.
+  'rule:candy|5|-15|y|>o<'
+  'rule:candy|5|-21|m|>o<'
+  'rule:candy|5|-27|y|>o<'
+  'rule:candy|5|-33|m|>o<'
+  'rule:candy|5|-39|y|>o<'
+  'rule:candy|5|-45|m|>o<'
   'rule:web|5|-9|d|/\oo/\'
   'rule:cat|5|-8|d|=^.^='
   'rule:saber|5|16|w|[|||]'
@@ -116,7 +123,7 @@ MM_PARTS=(
 )
 # Rule props → their place: bg (along the whole rule), right (its right end) or paw (beside the
 # right paw). One prop per place.
-declare -gA MM_RULE_AT=([snow]=bg [marigolds]=bg [web]=right [cat]=right [saber]=paw [tree]=paw)
+declare -gA MM_RULE_AT=([snow]=bg [marigolds]=bg [candy]=bg [web]=right [cat]=right [saber]=paw [tree]=paw)
 
 # The calendar: one occasion per row, "id|when|hat|mark|rule|eyes|teeth|greeting", in priority
 # order: when two occasions want the same slot (a hat, a mark, the eyes, the teeth, one place on
@@ -128,7 +135,8 @@ declare -gA MM_RULE_AT=([snow]=bg [marigolds]=bg [web]=right [cat]=right [saber]
 #             Unix time passes a multiple of 100 million seconds; anniv, the day marmot first ran
 #             here (mm_occasions' SINCE), every year after.
 #   hat, mark, rule, teeth
-#             part names in MM_PARTS (hat:NAME, ...); rule may name several, one per place.
+#             part names in MM_PARTS (hat:NAME, ...); mark may name several (they all draw), rule
+#             several too, one per place.
 #   eyes      a name in MM_EYES, worn by a calm face only (happy, sleepy, proud); a problem face
 #             keeps its own.
 #   greeting  a line beside the paws; "@" has _mm_greeting word it.
@@ -153,8 +161,14 @@ MM_CALENDAR=(
   'mexico|09-15~09-16||||||Viva Mexico!'
   'pirate|09-19||||pirate||Arr, it be Talk Like a Pirate Day'
   "ada|nth:10:2:2||||||Ada Lovelace Day: she programmed a machine nobody had built yet"
-  'halloween|10-31||pumpkin|web|jack|fangs|Happy Halloween'
-  'spooky|10-24~10-30|||web||fangs|'
+  # Halloween week builds up around the marmot, nothing in the sky: fangs and a spider on its web
+  # along the rule (24), candy (29), the witch hat and sparkling eyes (30), then everything
+  # together, in ∆ eyes (31).
+  'halloween|10-31|witch||web candy|jack|fangs|Happy Halloween: the only ghosts here are old node_modules'
+  'halloweve|10-30|witch||web candy|witch|fangs|One more sleep until Halloween'
+  'spooky3|10-29|||web candy||fangs|Halloween in two days'
+  'spooky2|10-27~10-28|||web||fangs|'
+  'spooky|10-24~10-26|||web||fangs|'
   'muertos|11-01~11-02||picado|marigolds|calavera||@'
   'thanksgiving|nth:11:4:4||||||@'
   'friday13|dow:5:13|||cat|||Friday the 13th: marmot checks twice, as always'
@@ -282,7 +296,7 @@ _mm_greeting() {
 
 # mm_marmot_dress MOOD ATWORK ID... — the decorations of occasions ID... (mm_occasions' MM_OCC) on
 # a marmot with face MOOD into MM_LOOK_HAT, MM_LOOK_MARK, MM_LOOK_EYES, MM_LOOK_TEETH,
-# MM_LOOK_RULE (names, space-separated) and MM_LOOK_GREETS (lines). Slots go by calendar order,
+# MM_LOOK_RULE (names; MARK and RULE space-separated lists) and MM_LOOK_GREETS (lines). Slots go by calendar order,
 # whatever the order of ID...; festive eyes only on a calm face (happy, sleepy, proud). ATWORK 1
 # (a marmot cleanup is running) wears the hard hat over any other hat.
 mm_marmot_dress() {
@@ -340,14 +354,17 @@ mm_marmot_draw() {
   local -A want=()
   # Here-strings cost a pipe each: the tables are split with expansions instead.
   t=${MM_FACES[$mood]:-o o 1} && l=${t%% *} && t=${t#* } && r=${t%% *} && open=${t#* }
-  for t in marmot: "hat:${MM_LOOK_HAT:-}" "mark:${MM_LOOK_MARK:-}" "teeth:${MM_LOOK_TEETH:-}" \
+  for t in marmot: "hat:${MM_LOOK_HAT:-}" "teeth:${MM_LOOK_TEETH:-}" \
     "face:$mood" "wave:${MM_LOOK_WAVE:-0}"; do
     want[$t]=1
   done
-  t=${MM_LOOK_RULE:-}
-  while [[ -n "$t" ]]; do
-    want[rule:${t%% *}]=1
-    if [[ "$t" == *" "* ]]; then t=${t#* }; else t=""; fi
+  # Marks and rule props may be several, space-separated.
+  for t in "mark:${MM_LOOK_MARK:-}" "rule:${MM_LOOK_RULE:-}"; do
+    i=${t#*:}
+    while [[ -n "$i" ]]; do
+      want[${t%%:*}:${i%% *}]=1
+      if [[ "$i" == *" "* ]]; then i=${i#* }; else i=""; fi
+    done
   done
   ((${MM_LOOK_CHEEKS:-0})) && want[face:cheeks]=1
   printf -v blank '%*s' $((w > 21 ? w : 21)) ''

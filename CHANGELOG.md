@@ -132,8 +132,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 - The marmot keeps a calendar (`lib/mascot.sh`): a party hat (a pointed, starred cone on the top of
   its head) and fireworks at New Year, a Santa hat (a solid red cap whose tip curls over and drops
   its pom-pom just under the crease, on a fur band between the ears) at Christmas, snow on the rule
-  all winter, vampire fangs and a spider's web in Halloween week (on the 31st a jack-o'-lantern
-  beside its head and `∆ ∆` eyes), papel picado, marigolds and calavera eyes on Día de Muertos
+  all winter, vampire fangs and a spider's web in Halloween week (candy, then a witch hat and
+  sparkling eyes, build up to the 31st, with `∆ ∆` eyes), papel picado, marigolds and calavera eyes on Día de Muertos
   remembering the biggest item it ever freed, a lightsaber in its paw on May 4, a tree on Earth Day,
   Thanksgiving's total, last year's review in the first week of January, the anniversary of its
   first run here, and about twenty more (Pi Day, Towel Day, Sysadmin Day, the 256th day, Debian Day,
