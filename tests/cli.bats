@@ -57,7 +57,8 @@ teardown() { mm_test_teardown; }
       grep '^history '"
     MM_TTY=1 run mm
     [ "$status" -eq 0 ]
-    [[ "$output" == "No operations recorded yet"* ]] || { echo "fzf $v: menu did not run history"; false; }
+    mm_flat
+    [[ "$FLAT" == *"No operations recorded yet"* ]] || { echo "fzf $v: menu did not run history"; false; }
   done
 }
 
@@ -95,7 +96,8 @@ teardown() { mm_test_teardown; }
 @test "history with no log says so; --json prints an empty array, even without jq" {
   run mm history
   [ "$status" -eq 0 ]
-  [[ "$output" == "No operations recorded yet"* ]]
+  mm_flat
+  [[ "$FLAT" == *"No operations recorded yet"* ]]
   mkdir -p "$SB/bin"
   local d f
   for d in /usr/local/bin /usr/bin /bin; do
@@ -148,7 +150,7 @@ teardown() { mm_test_teardown; }
   run mm history
   [ "$status" -eq 0 ]
   [ "$(grep -c '^2026-' <<<"$output")" -eq 3 ]   # old1+old2, old3 (2 hours later), R1
-  grep -qx '2026-10-13 10:00:00+00:00  purge · 1 removed 2KB · 1 to Trash 4KB · 1 refused' <<<"$output"
+  grep -qx '2026-10-13 10:00  purge · 1 removed 2KB · 1 to Trash 4KB · 1 refused' <<<"$output"
 }
 
 @test "history prints 1000-1023 bytes as 1KB, like the rest of marmot" {
@@ -156,7 +158,8 @@ teardown() { mm_test_teardown; }
   printf '%s\n' $'2026-10-13T10:00:00+00:00\tclean\tremove\t/tmp/k\t1000\t\tR1' >"$XDG_STATE_HOME/marmot/operations.log"
   run mm history
   [ "$status" -eq 0 ]
-  [[ "$output" == *"/tmp/k 1KB"* ]]
+  mm_flat
+  [[ "$FLAT" == *"/tmp/k 1KB"* ]]
   [[ "$output" != *"0KB"* ]]
 }
 
@@ -168,8 +171,9 @@ teardown() { mm_test_teardown; }
     $'2026-10-14T10:00:00+00:00\tpurge\tworktree\t/w\t4096\tfeat\tR2' >"$XDG_STATE_HOME/marmot/operations.log"
   run mm history
   [ "$status" -eq 0 ]
-  grep -qx '2026-10-13 10:00:00+00:00  clean · 2 ran 2KB · 1 removed 2KB' <<<"$output"
-  [[ "$output" == *"Since 2026-10-13: 2 runs · 8KB freed"* ]]
+  grep -qx '2026-10-13 10:00  clean · 2 ran 2KB · 1 removed 2KB' <<<"$output"
+  mm_flat
+  [[ "$FLAT" == *"Since 2026-10-13 runs 2 freed 8KB"* ]]
 }
 
 @test "history ends with the story so far: since when, runs, freed, Trash, refused, biggest wins" {
@@ -181,8 +185,8 @@ teardown() { mm_test_teardown; }
     $'2026-10-14T10:00:00+00:00\tpurge\tremove\t/tmp/small\t1024\t\tR3' >"$XDG_STATE_HOME/marmot/operations.log"
   run mm history
   [ "$status" -eq 0 ]
-  grep -qx 'Since 2026-10-12: 3 runs · 4.0MB freed · 2.0MB to Trash (restore: trash-restore) · 1 refused (each with its reason above)' <<<"$output"
-  grep -qx 'Biggest wins: ~/.cache/big 3.0MB, /tmp/doc 2.0MB, npm cache 1.0MB' <<<"$output"
+  mm_flat
+  [[ "$FLAT" == *"Since 2026-10-12 runs 3 freed 4.0MB to Trash 2.0MB (restore: trash-restore) refused 1 biggest ~/.cache/big 3.0MB, /tmp/doc 2.0MB, npm cache 1.0MB"* ]]
 }
 
 @test "history reads the rotated operations.log.old before the current log" {
@@ -247,7 +251,8 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   run mm purge "$SB/empty"                                      # no terminal: the same
   [ ! -e "$stamp" ]
   MM_TTY=1 run mm purge "$SB/empty"
-  grep -qx 'While you were away: 2 scheduled runs freed 3.0MB, moved 1.0MB to the Trash, 1 failed (mm schedule status)' <<<"$output"
+  mm_flat
+  [[ "$FLAT" == *"While you were away: 2 scheduled runs freed 3.0MB, moved 1.0MB to the Trash, 1 failed (mm schedule status)"* ]]
   [ -s "$stamp" ]
   MM_TTY=1 run mm purge "$SB/empty"
   [[ "$output" != *"While you were away"* ]]                    # said once
@@ -261,7 +266,7 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
   [[ "$output" != *"has now freed"* ]]                           # never from a dry run
   MM_TTY=1 run mm purge --yes "$SB"
   [ ! -e "$SB/p/node_modules" ]
-  grep -qx 'marmot has now freed 10GB on this machine' <<<"$output"
+  grep -qE '^ +marmot has now freed 10GB on this machine$' <<<"$output"
   mkdir -p "$SB/p/node_modules"; head -c 4096 /dev/urandom >"$SB/p/node_modules/blob"; mm_age "$SB" 30
   MM_TTY=1 run mm purge --yes "$SB"
   [ ! -e "$SB/p/node_modules" ]
@@ -271,22 +276,22 @@ log_rows() { mkdir -p "$XDG_STATE_HOME/marmot"; printf '%s\n' "$@" >>"$XDG_STATE
 @test "on an occasion mm --version on a terminal and a run with nothing to do add the day's greeting" {
   command -v script >/dev/null || skip "needs script (util-linux)"
   mkdir -p "$SB/empty"
-  local ordinary
   mm_test_now '2026-06-10 12:00'
   run script -qec "mm --version" /dev/null
   [ "$(tr -d '\r' <<<"$output" | wc -l)" -eq 1 ]
   MM_TTY=1 run mm purge "$SB/empty"
-  ordinary=$(grep '✓' <<<"$output")
-  [ -n "$ordinary" ]
+  mm_flat
+  [[ "$FLAT" == *"Nothing to purge"* && "$FLAT" != *"Merry Christmas"* ]]
   mm_test_now '2026-12-25 12:00'
   run script -qec "mm --version" /dev/null
   [ "$(tr -d '\r' <<<"$output" | wc -l)" -eq 2 ]
   run mm --version                                              # for a script: the version alone
   [ "${#lines[@]}" -eq 1 ]
   MM_TTY=1 run mm purge "$SB/empty"
-  [[ "$(grep '✓' <<<"$output")" == "$ordinary  "?* ]]
+  mm_flat
+  [[ "$FLAT" == *"Nothing to purge"*"Merry Christmas"* ]]
   run mm purge "$SB/empty"                                      # no terminal: no greeting
-  [ "$(grep '✓' <<<"$output")" = "$ordinary" ]
+  [[ "$output" == *"Nothing to purge"* && "$output" != *"Merry Christmas"* ]]
 }
 
 # artifact — a stale node_modules (4 KB) under $SB/p for mm purge --yes to remove.

@@ -699,9 +699,6 @@ _purge_ask() {
   printf '%s' "$reply"
 }
 
-# _purge_kept LABEL REASON — "◎ label · kept (reason)": items deliberately left alone.
-_purge_kept() { printf '  %s◎%s %s · %skept (%s)%s\n' "$C_DIM" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"; }
-
 # _purge_to_trash ARTIFACT — 0 if ARTIFACT goes to the Trash instead of a permanent delete: a
 # virtualenv (pyvenv.cfg), whatever it is called, can hold hand-installed or patched packages.
 _purge_to_trash() {
@@ -1409,9 +1406,7 @@ _purge_run() {
       printf '%s\t%s\t%s\n' "${frees[${arts[$i]}]:-0}" "${size[${arts[$i]}]:-0}" "$i"
     done | sort -t$'\t' -k1,1nr -k2,2nr | cut -f3)
 
-  mm_section "Artifacts (${#order[@]})"
-  printf '  %s  %9s  %9s  %5s  %s\n' " " "SIZE" "FREES" "IDLE" "PROJECT/ARTIFACT"
-  local mark row hidden_n=0 hidden_bytes=0 sz fr
+  local row hidden_n=0 hidden_bytes=0 sz fr
   local -a shown=()
   local -A row_of=()
   for i in "${order[@]}"; do
@@ -1432,18 +1427,8 @@ _purge_run() {
       hidden_n=$((hidden_n + 1)) hidden_bytes=$((hidden_bytes + fr)); continue
     fi
     shown[i]=1
-    if [[ "${kind[i]}" == pick ]]; then mark="${C_DIM}◎${C_RESET}"
-    elif (( stale[i] )); then mark="${C_YELLOW}●${C_RESET}"
-    else mark="${C_DIM}○${C_RESET}"; fi
-    printf '  %s  %s\n' "$mark" "$row"
   done
-  (( hidden_n )) && printf '  %s○  %9s  %9s         … %d more recent artifacts freeing under 1MB%s\n' \
-    "$C_DIM" "" "$(mm_human "$hidden_bytes")" "$hidden_n" "$C_RESET"
-  printf '\n'
-  (( shared )) && mm_info "${C_DIM}FREES is what deleting releases: files also hard-linked elsewhere (the pnpm store, other copies) stay on disk.${C_RESET}"
-  mm_info "${C_YELLOW}●${C_RESET} stale (idle > ${days}d): $stale_n artifacts, frees $(mm_human "$stale_bytes")"
-  mm_info "${C_DIM}○${C_RESET} recent:               $recent_n artifacts, frees $(mm_human "$recent_bytes")"
-  (( pick_n )) && mm_info "${C_DIM}◎${C_RESET} pick only:            $pick_n artifacts, frees $(mm_human "$pick_bytes"); never selected for you"
+  _purge_show_table
 
   # ---- selection: dry-run previews the default; --yes is stale only; otherwise ask on the terminal
   local mode=stale; (( all )) && mode=all
@@ -1523,6 +1508,7 @@ _purge_run() {
     _purge_activity_load "${pair_of[@]}"
     _purge_tracked_load "${sel_arts[@]}"
   fi
+  _purge_begin_delete
   local scan_now=$now; now=$(date +%s)
   local -a how=()
   local keep_state freed0=$MM_FREED
@@ -1563,6 +1549,7 @@ _purge_run() {
       MM_SKIPPED=$((MM_SKIPPED + 1))
       continue
     fi
+    _purge_item_start "$art"
     how=(); _purge_to_trash "$art" && how=(--trash)
     keep_state=1; [[ -n "$g" && -n "${agent_wt[$g]:-}" ]] && keep_state=0
     rc=0; MM_KEEP_AGENT_STATE=$keep_state mm_rm "${how[@]}" "$art" "$proj" || rc=$?

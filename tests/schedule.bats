@@ -139,10 +139,11 @@ profile_home() {
   exist "$XDG_DATA_HOME/Trash/files/old31" "$HOME/.cache/pip/wheels/w.whl" "$HOME/work/old/node_modules"
   gone "$LAST" "$XDG_STATE_HOME/marmot/operations.log"
   none grep -qx 'yarn cache clean' "$CALLS"
-  local would; would=$(grep -oE 'Would free: [^|]+' <<<"$output")
+  local would; would=$(grep -oE 'would free +[0-9.]+[KMGT]?B' <<<"$output" | awk '{print $NF}')
   run mm schedule run
   [ "$status" -eq 0 ]
-  [ "${would#Would free: }" = "$(grep -oE 'Space freed: [^|]+' <<<"$output" | sed 's/^Space freed: //')" ]
+  [ -n "$would" ]
+  [ "$would" = "$(grep -oE ' freed +[0-9.]+[KMGT]?B' <<<"$output" | awk '{print $NF}')" ]
 }
 
 @test "run: agent sessions move to the Trash only when sessions_keep_days is configured" {
@@ -396,12 +397,12 @@ exit 0'
   [[ "$output" != *XDG_CONFIG_HOME* ]]
   XDG_CONFIG_HOME="$SB/cfg" run mm schedule status
   [ "$status" -eq 0 ]
-  [[ "$output" == *XDG_CONFIG_HOME*"mm schedule enable"* ]]
+  mm_flat; [[ "$FLAT" == *XDG_CONFIG_HOME*"mm schedule enable"* ]]
   XDG_CONFIG_HOME="$SB/cfg" run mm schedule enable
   XDG_CONFIG_HOME="$SB/cfg" run mm schedule status
   [[ "$output" != *XDG_CONFIG_HOME* ]]
   run mm schedule status                   # back in a shell with the default folders
-  [[ "$output" == *XDG_CONFIG_HOME*"mm schedule enable"* ]]
+  mm_flat; [[ "$FLAT" == *XDG_CONFIG_HOME*"mm schedule enable"* ]]
   run mm schedule disable
   fake_systemd yes                         # the same for the systemd unit
   run mm schedule enable
@@ -421,8 +422,9 @@ exit 0'
   done
   PATH="$BATS_TEST_TMPDIR/stubs:$SB/bin" run mm schedule enable
   [ "$status" -ne 0 ]
-  [[ "$output" == *"crontab is not installed"* ]]
-  [[ "$output" == *"schedule run"* ]]
+  mm_flat
+  [[ "$FLAT" == *"crontab is not installed"* ]]
+  [[ "$FLAT" == *"schedule run"* ]]
   gone "$UNITS" "$XDG_STATE_HOME/marmot/schedule"
 }
 
@@ -489,7 +491,7 @@ status_fakes() {
   run mm status --json
   [ "$(jq -r '.system.scheduled_cleanup | [.scheduled, .backend, .frequency, .last_run.freed_bytes] | join(",")' <<<"$output")" = "true,systemd,weekly,$freed" ]
   run mm status --once
-  grep -qE "^CLEAN +weekly \(systemd\) · last run just now, freed " <<<"$output"
+  mm_flat; [[ "$FLAT" == *"cleanup weekly (systemd) · last run just now, freed "* ]]
   run mm status --once --view full
   grep -qE "Cleanup +weekly \(systemd\)" <<<"$output"
 }

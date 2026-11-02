@@ -605,10 +605,10 @@ _clean_catalog_caches() {
 # Rows only print when they find something, so output is buffered and the section is shown only
 # when non-empty (no row here prompts). A folder named by several rows is handled once.
 _clean_builds() {
-  local i buf real
+  local i real
   local -A seen=()
-  buf=$(mktemp -t marmot-clean.XXXXXX) || return 0
-  _CLEAN_CAT_NAME="Old builds and versions" _CLEAN_CAT_MARK=$((MM_FREED + MM_TRASHED + _CLEAN_TOOL_BYTES))
+  # The heading comes with the first row, so a section with nothing to say prints nothing.
+  _clean_cat "Old builds and versions"
   for i in "${!MM_CAT_KIND[@]}"; do
     [[ "${MM_CAT_KIND[$i]}" == revisions || "${MM_CAT_KIND[$i]}" == versions ]] || continue
     real=$(realpath -e -- "${MM_CAT_PATH[$i]}" 2>/dev/null) || continue
@@ -618,9 +618,7 @@ _clean_builds() {
       revisions) _clean_revisions_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_BUSY[$i]}" "${MM_CAT_SPEC[$i]}" ;;
       versions) _clean_versions_row "${MM_CAT_LABEL[$i]}" "${MM_CAT_PATH[$i]}" "${MM_CAT_SPEC[$i]}" ;;
     esac
-  done >"$buf"
-  if [[ -s "$buf" ]]; then mm_section "Old builds and versions"; cat -- "$buf"; fi
-  rm -f -- "$buf" # SAFE: the mktemp output buffer created above
+  done
   _clean_cat_end
 }
 
@@ -2141,8 +2139,7 @@ _clean_review_print() {
   local row label detail hint
   for row in "${_CLEAN_REVIEW[@]}"; do
     IFS=$'\t' read -r label detail hint <<<"$row"
-    printf '  %s◎%s %s · %s\n' "$C_DIM" "$C_RESET" "$label" "$detail"   # ◎: left alone, like mm_skip
-    [[ -n "$hint" ]] && printf '    %s%s%s\n' "$C_DIM" "$hint" "$C_RESET"
+    _clean_review_row "$label" "$detail" "$hint"
   done
   return 0
 }
@@ -2188,15 +2185,16 @@ mm_cmd_main() {
   local free0 pct0 total items
   free0=$(mm_free_bytes /) pct0=$(mm_disk_pct)
 
-  _clean_user "$_CLEAN_TRASH_DAYS"
-  _clean_dev
-  _clean_builds
-  _clean_agent_logs
+  mm_prog_plan 9
+  mm_prog_step "Trash and thumbnails"; _clean_user "$_CLEAN_TRASH_DAYS"
+  mm_prog_step "Developer caches"; _clean_dev
+  mm_prog_step "Old builds and versions"; _clean_builds
+  mm_prog_step "Agent logs"; _clean_agent_logs
   [[ -n "$sessions" ]] && _clean_sessions "$sessions" "$from"
-  _clean_browsers
-  _clean_system
-  _clean_docker
-  _clean_editors
+  mm_prog_step "Automation browsers"; _clean_browsers
+  mm_prog_step "System"; _clean_system
+  mm_prog_step "Docker"; _clean_docker
+  mm_prog_step "Editors"; _clean_editors
   _clean_review_print
 
   total=$((MM_FREED + _CLEAN_TOOL_BYTES)) items=$((MM_COUNT + _CLEAN_TOOL_ITEMS))

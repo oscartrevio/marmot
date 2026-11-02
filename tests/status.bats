@@ -254,7 +254,7 @@ EOF
     and (.system.agents.orphan_count >= 1)
     and (.health_reasons | any(test("orphan")))' <<<"$JSON"
   run mm status --once
-  grep -E "orphan +codex $pid in deleted " <<<"$output"
+  mm_flat; [[ "$FLAT" == *"orphan codex $pid in deleted $SB/gone"* ]]
 }
 
 @test "a dev server in a deleted directory past the linger age is a lingering orphan" {
@@ -359,7 +359,7 @@ fake_omp_helpers() {
   grep -E '^agent helpers: omp [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
   [[ "$output" != *"(pid $TSC)"* ]]
   run env MM_STATUS_LINGER_AGE=0 mm status --once
-  grep -E '^  omp helpers · [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
+  grep -E '^ +omp helpers · [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
   [[ "$output" != *"tsc $TSC"* ]]
   run env MM_STATUS_LINGER_AGE=0 COLUMNS=120 mm status --once --view full
   grep -E '^omp helpers · [0-9]+ · [0-9.]+[KMG]B$' <<<"$output"
@@ -542,7 +542,7 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
   fake_ss "$LISTEN_SSH" "$(conn 10.0.0.5:22 203.0.113.7:51234 'rtt:435.2/30 lastrcv:5 minrtt:21')"
   run env "${NO_SSH[@]}" mm status --once
   # On the title's line, wherever the marmot puts it (a hat adds a row above its head).
-  [[ "$(grep -m1 -F 'mm status' <<<"$output")" == *"link to you is laggy"* ]]
+  mm_flat; [[ "$FLAT" == *"link to you is laggy"* ]]
 }
 
 @test "client: SSH_CONNECTION's address wins over more recent peers, even without TCP stats" {
@@ -570,7 +570,7 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
     and .last_input_seconds == null and (.laggy | not)' <<<"$JSON"
   fake_ss "$LISTEN_SSH" ""
   run env "${NO_SSH[@]}" mm status --once
-  grep -E '^YOU +no terminal \(run from a script\)$' <<<"$output"
+  grep -E '^  ✓ you +no terminal \(run from a script\)$' <<<"$output"
   [[ "$output" != *"no remote session"* ]]
   run env "${NO_SSH[@]}" mm status --agent
   grep -xF 'client: none (no terminal: run from a script)' <<<"$output"
@@ -586,7 +586,7 @@ end=\$((SECONDS + 2)); while ((SECONDS < end)); do :; done"
     and (.last_input_seconds | type == "number" and . >= 0) and .address == null and .rtt_ms == null
     and (.laggy | not)' <<<"$out"
   out=$(script -qfec "env -u MM_TEST_NO_TTY COLUMNS=100 mm status --once" /dev/null | tr -d '\r')
-  grep -E '^YOU +local terminal \(script\)$' <<<"$out"
+  grep -E '✓ you +local terminal \(script\)$' <<<"$out"
   out=$(script -qfec "env -u MM_TEST_NO_TTY mm status --agent" /dev/null | tr -d '\r')
   grep -E '^client: local terminal \(script\) · last input (<10s|[0-9]+s)$' <<<"$out"
 }
@@ -720,7 +720,7 @@ exit 0'
   [[ "$output" != *AGENTS* && "$output" != *$'\e'* ]]
   # --once stays the human snapshot.
   run mm status --once </dev/null
-  [[ "$output" == *AGENTS* && "$output" == *CHECKS* && "$output" != *"problems:"* ]]
+  [[ "$output" == *"Agents"* && "$output" == *"Checks"* && "$output" != *"problems:"* ]]
 }
 
 @test "--agent: plain text, problems first with their command, under 60 lines" {
@@ -750,8 +750,8 @@ exit 0'
   run env COLUMNS=80 mm status --once
   [ "$status" -eq 0 ]
   local labels line
-  labels=$(grep -oE '^(AGENTS|YOU|CPU|MEM|DISK|NET|CHECKS|TOP) ' <<<"$output" | tr -d ' ' | paste -sd' ')
-  [ "$labels" = "AGENTS YOU CPU MEM DISK NET CHECKS TOP" ]
+  labels=$(grep -E '^  [✓◎!] (sessions|you|cpu|memory|disk|network|checks|cleanup|top mem)' <<<"$output" | awk '{ print ($2 == "top" ? "top mem" : $2) }' | paste -sd,)
+  [ "$labels" = "sessions,you,cpu,memory,disk,network,checks,cleanup,top mem" ]
   while IFS= read -r line; do ((${#line} <= 80)) || { echo "too wide: $line"; false; }; done <<<"$output"
   run env COLUMNS=80 mm status --once --view full
   [[ "$output" == *"⚙ CPU"* && "$output" == *"◆ System"* && "$output" != *"CHECKS "* ]]

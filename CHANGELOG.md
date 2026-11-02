@@ -152,6 +152,18 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 
 ### Changed
 
+- One output for every command. Titles are bold, each step is a row (`✓ done`, `◎ left alone`,
+  `→ moved to Trash`, `! warning`, `✗ failed`) with its size right-aligned, and every command
+  closes with a bordered card: green for what changed, yellow for a dry run, and red on stderr for
+  an error that stopped it (with a `next` row). Nothing to do is a green card of its own. On a
+  terminal a live bar (by bytes, then items, then steps) follows the work; in a pipe, with
+  `NO_COLOR` or `TERM=dumb` the same text prints plain, with no escapes, and it fits 50 columns.
+  `mm status --once`, `mm history`, `mm analyze`, `mm uninstall --list` and `mm purge`'s table use
+  the same rows. `--json`, `--agent`, `mm status --view full` and the live dashboard are
+  unchanged. The `➤` headings and `====` banners are gone.
+  The renderer is `lib/out.sh` (primitives), `lib/out_common.sh` and `lib/out_cmds.sh` (the
+  commands that print by hand), so a command only calls `mm_section`, `mm_ok`, `mm_banner`,
+  `mm_result` and the `mm_prog_*` hooks.
 - Times read like speech, the same everywhere: `mm schedule status` says the next run as `in 9h
   (03:27)` instead of systemd's timestamp, a weekly crontab line runs `on Sunday` (not `day 0`),
   durations read `12m 34s` (not `754s`), and anything under a minute ago is `just now` (not

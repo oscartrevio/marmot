@@ -90,7 +90,7 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   mm_age "$SB" 30
   run mm purge --yes "$SB"
   [ -f "$SB/r/node_modules/blob" ]
-  [[ "$output" == *"kept (could not verify git state)"* ]]
+  mm_flat; [[ "$FLAT" == *"could not verify git state"* ]]
 }
 
 @test "git probe failure on dist/ check-ignore keeps it" {
@@ -140,7 +140,7 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   mm_age "$SB" 30
   run mm purge --yes "$SB"
   [ -f "$SB/prog/target/deploy/prog-keypair.json" ]
-  [[ "$output" == *"kept (holds a deploy keypair)"* ]]
+  mm_flat; [[ "$FLAT" == *"holds a deploy keypair"* ]]
   [ ! -e "$SB/plain/target" ]
 }
 
@@ -152,7 +152,7 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   mm_size_frees() { [[ "$1" == */a/node_modules ]] && return 124; _real_size_frees "$@"; }
   run mm_cmd_main --yes "$SB"
   [ -f "$SB/a/node_modules/blob" ]
-  [[ "$output" == *"kept (size unknown)"* ]]
+  mm_flat; [[ "$FLAT" == *"size unknown"* ]]
   [ ! -e "$SB/b/node_modules" ]
 }
 
@@ -193,7 +193,7 @@ trash_files() { ls -A "$XDG_DATA_HOME/Trash/files" 2>/dev/null; }
   run mm purge --yes "$SB"
   [ -d "$SB/busy/node_modules" ]
   [ ! -e "$SB/idle/node_modules" ]
-  [[ "$output" == *"skipped (in use)"* ]]
+  mm_flat; [[ "$FLAT" == *"in use"* ]]
 }
 
 @test "a project an MCP server config runs from is kept and says which config uses it" {
@@ -629,7 +629,7 @@ log_bytes() { awk -F'\t' -v a="$1" '$3 == a { print $5 }' "$XDG_STATE_HOME/marmo
   mm_age "$SB/p" 30
   run mm purge --dry-run --yes "$SB/p"
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Would free: $(mm_human "$own") "* ]]
+  mm_flat; [[ "$FLAT" == *"would free $(mm_human "$own")"* ]]
   [[ "$output" == *"~$(mm_human "$pkg") more"* ]]
   [ -f "$SB/p/node_modules/.pnpm/own" ]
   [[ "$(pnpm_calls)" != *prune* ]]
@@ -659,8 +659,8 @@ log_bytes() { awk -F'\t' -v a="$1" '$3 == a { print $5 }' "$XDG_STATE_HOME/marmo
   after=$(du -sxB1 "$SB" | cut -f1)
   [ ! -e "$SB/a/node_modules" ]
   [ ! -e "$SB/b/node_modules" ]
-  [[ "$dry" == *"Would free: $(mm_human $(( before - after ))) "* ]]
-  [[ "$output" == *"Space freed: $(mm_human $(( before - after ))) "* ]]
+  mm_flat "$dry"; [[ "$FLAT" == *"would free $(mm_human $(( before - after )))"* ]]
+  mm_flat; [[ "$FLAT" == *"freed $(mm_human $(( before - after )))"* ]]
 }
 
 @test "the pnpm store is left alone while pnpm runs, and when nothing pnpm installed was removed" {
@@ -1315,7 +1315,7 @@ manifest() { local d="$1"; shift; mkdir -p "$d"; for f; do echo '{}' >"$d/$f"; d
   [ "$status" -eq 0 ]
   [[ "$output" != *"======"* ]]
   [ -d "$SB/fresh/node_modules" ]
-  grep -qE '^  ✓ ' <<<"$(tail -2 <<<"$output")"
+  [[ "$output" == *"╭─ Nothing to do"* ]]
   mkdir -p "$SB/empty"
   run mm purge "$SB/empty"
   [ "$status" -eq 0 ]

@@ -149,6 +149,8 @@ _schedule_run() {
   local free0 pct0 total items
   free0=$(mm_free_bytes /) pct0=$(mm_disk_pct)
 
+  mm_prog_plan 8
+  mm_prog_step "Trash and thumbnails"
   if _schedule_trash_days; then
     _clean_user --yes "$_SCHEDULE_TRASH_KEEP"
   else
@@ -158,9 +160,10 @@ _schedule_run() {
     _clean_contents "Thumbnails" "$(mm_catalog_expand %CACHE%/thumbnails)"
     _clean_cat_end
   fi
-  _clean_dev
-  _clean_builds
-  _clean_agent_logs
+  mm_prog_step "Developer caches"; _clean_dev
+  mm_prog_step "Old builds and versions"; _clean_builds
+  mm_prog_step "Agent logs"; _clean_agent_logs
+  mm_prog_step "Agent sessions"
   if _clean_config_sessions; then
     _clean_sessions "$_CLEAN_KEEP_DAYS" config
   else
@@ -168,8 +171,9 @@ _schedule_run() {
     mm_tilde "$MM_CONFIG_FILE"
     mm_skip "Agent sessions" "kept: no sessions_keep_days in $REPLY"
   fi
-  _clean_browsers
-  _clean_editors
+  mm_prog_step "Automation browsers"; _clean_browsers
+  mm_prog_step "Editors"; _clean_editors
+  mm_prog_step "Stale build artifacts"
   _purge_run scheduled "$_SCHEDULE_PURGE_DAYS"
 
   total=$((MM_FREED + _CLEAN_TOOL_BYTES + _PURGE_STORE_BYTES)) items=$((MM_COUNT + _CLEAN_TOOL_ITEMS))
@@ -468,6 +472,7 @@ _schedule_disable() {
   fi
   [[ "$MM_DRY_RUN" == 1 ]] || rm -f -- "$MM_SCHEDULE_NOTE" # SAFE: marmot's own note of what enable installed
   (( any )) || mm_ok "Nothing scheduled" "nothing to remove"
+  mm_result "$([[ "$MM_DRY_RUN" == 1 ]] && echo dry || echo ok)" "Schedule off" "*state" "$( (( any )) && echo "$what" || echo "nothing was scheduled")"
   return 0
 }
 
@@ -525,11 +530,14 @@ _schedule_status() {
     done < <(printf '%s' "$_SCHEDULE_CRONTAB" | grep -E "$_SCHEDULE_CRON_RE")
   fi
   (( any )) || mm_info "Not scheduled. Turn it on with: mm schedule enable (or --weekly)"
+  local last="none yet"
   if mm_schedule_last; then
     mm_info "Last run: $(_schedule_last_line)"
+    last=$(_schedule_last_line)
   else
     mm_info "Last run: none yet"
   fi
+  mm_result info "Scheduled cleanup" "*state" "$( (( any )) && echo on || echo "off: mm schedule enable")" "last run" "$last"
 }
 
 # _schedule_weekday N — cron's day of the week as a name (0 and 7 are Sunday); N itself otherwise.
@@ -567,6 +575,7 @@ mm_cmd_main() {
   done
   # Finds the unit folder systemd reads (_schedule_systemd_ok) before anything looks there.
   [[ "$sub" == run ]] || _schedule_systemd_ok || :
+  [[ "$sub" == run ]] || mm_header "Schedule $sub"
   case "$sub" in
     run) _schedule_run ;;
     status) _schedule_status ;;

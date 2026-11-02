@@ -21,13 +21,13 @@ Each marmot run gets one line (time, command, totals), followed by its rows.
 EOF
 }
 
-# _history_awk LIMIT JSON FILE... — the rows of the newest LIMIT runs (0 = all) in FILEs: as
-# 7-field TSV when JSON=1, else as the text listing closed by the story so far: since when, how
-# many runs, what was freed (MM_AWK_FREED rows), moved to the Trash and refused, and the three
-# biggest single wins.
+# _history_awk LIMIT MODE FILE... — the newest LIMIT runs (0 = all) in FILEs. MODE 1: the rows, as
+# 7-field TSV (for --json). MODE 2: tab-separated records for lib/out_cmds.sh's _out_history, one
+# kind per line: H (a run: time, command, totals), R (a row: action, target, size, note), S (the
+# story so far: since when, how many runs, what was freed (MM_AWK_FREED rows), moved to the Trash
+# and refused) and W (the three biggest single wins). Empty fields are "-".
 _history_awk() {
-  awk -F'\t' -v limit="$1" -v json="$2" -v dim="$C_DIM" -v red="$C_RED" -v yellow="$C_YELLOW" \
-    -v bold="$C_BOLD" -v reset="$C_RESET" -v home="$HOME" "$MM_AWK_HUMAN"$'\n'"$MM_AWK_FREED"'
+  awk -F'\t' -v limit="$1" -v mode="$2" -v home="$HOME" "$MM_AWK_HUMAN"$'\n'"$MM_AWK_FREED"'
     function tilde(p) { return index(p, home "/") == 1 ? "~" substr(p, length(home) + 1) : p }
     # minute(ISO time) — minutes since a fixed epoch (days from the civil date), offset ignored.
     function minute(t, y, m) {
@@ -44,7 +44,8 @@ _history_awk() {
         s = s " · " cnt[k, a[i]] " " lbl ((bytes[k, a[i]] > 0) ? " " human(bytes[k, a[i]]) : "")
       }
       t = gtime[k]; sub(/T/, " ", t)
-      printf "%s%s%s%s  %s%s%s%s\n", (k > first ? "\n" : ""), dim, t, reset, bold, gcmd[k], reset, s
+      sub(/^ [^ ]+ /, "", s)
+      printf "H\t%s\t%s\t%s\n", t, gcmd[k], s
     }
     NF < 3 { next }
     {
@@ -68,26 +69,18 @@ _history_awk() {
       for (i = 1; i <= n; i++) {
         if (grp[i] < first) continue
         split(row[i], f, "\t")
-        if (json) { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", f[1], f[2], f[3], f[4], f[5], f[6], f[7]; continue }
+        if (mode == 1) { printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", f[1], f[2], f[3], f[4], f[5], f[6], f[7]; continue }
         if (grp[i] != shown) { shown = grp[i]; header(shown) }
-        color = ""
-        if (f[3] == "refused") color = dim; else if (f[3] == "failed") color = red; else if (f[3] == "trash") color = yellow
         note = ""
         if (f[3] == "refused" || f[3] == "failed") note = " (" f[6] ")"; else if (f[3] == "trash") note = " → Trash"
         size = (f[5] ~ /^[0-9]+$/ && f[5] + 0 > 0) ? " " human(f[5] + 0) : ""
-        printf "  %s%-7s %s%s%s%s%s%s\n", color, f[3], f[4], reset, dim, size, note, reset
+        sub(/^ /, "", size); sub(/^ /, "", note)
+        printf "R\t%s\t%s\t%s\t%s\n", f[3], tilde(f[4]), (size == "" ? "-" : size), (note == "" ? "-" : note)
         if (f[3] == "refused") shown_refused = 1
       }
-      if (json || n == 0) exit
-      s = sprintf("Since %s: %d run%s · %s freed", substr(row[1], 1, 10), g, (g == 1 ? "" : "s"), human(all_f))
-      if (all_t > 0) s = s " · " human(all_t) " to Trash (restore: trash-restore)"
-      if (refused > 0) s = s " · " refused " refused" (shown_refused ? " (each with its reason above)" : "")
-      printf "\n%s%s%s\n", bold, s, reset
-      if (wb[1] > 0) {
-        s = "Biggest wins: " tilde(wt[1]) " " human(wb[1])
-        for (i = 2; i <= 3; i++) if (wb[i] > 0) s = s ", " tilde(wt[i]) " " human(wb[i])
-        print s
-      }
+      if (mode == 1 || n == 0) exit
+      printf "S\t%s\t%d\t%s\t%s\t%d\t%d\n", substr(row[1], 1, 10), g, human(all_f), (all_t > 0 ? human(all_t) : "-"), refused, shown_refused
+      for (i = 1; i <= 3; i++) if (wb[i] > 0) printf "W\t%s\t%s\n", tilde(wt[i]), human(wb[i])
     }' "${@:3}"
 }
 
@@ -106,7 +99,8 @@ mm_cmd_main() {
   local f; local -a logs=()
   for f in "$MM_LOG_FILE.old" "$MM_LOG_FILE"; do [[ -s "$f" ]] && logs+=("$f"); done
   if (( ${#logs[@]} == 0 )); then
-    if (( json )); then echo '[]'; else echo "No operations recorded yet ($MM_LOG_FILE)."; fi
+    if (( json )); then echo '[]'
+    else mm_header "History"; mm_result info "History" "*" "No operations recorded yet." "~" "$MM_LOG_FILE"; fi
     return 0
   fi
   (( json )) && ! command -v jq >/dev/null && mm_die "jq is required for --json"
@@ -117,5 +111,5 @@ mm_cmd_main() {
          detail: (.[5] // ""), run: (if (.[6] // "") == "" then null else .[6] end)})'
     return
   fi
-  _history_awk "$limit" 0 "${logs[@]}"
+  _out_history "$limit" "${logs[@]}"
 }

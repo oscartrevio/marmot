@@ -243,7 +243,7 @@ unchanged() {
   run "$MARMOT_BIN/mm" update --check
   [ "$status" -ne 0 ]
   [ "$status" -ne 10 ]
-  [[ "$output" == *"$tarball"*"not a git checkout"* ]]
+  mm_flat; [[ "$FLAT" == *"$tarball"*"not a git checkout"* ]]
   run "$MARMOT_BIN/mm" --version
   [[ "$output" =~ ^marmot\ [0-9.]+$ ]]
 }

@@ -559,16 +559,6 @@ _uninstall_sorted() { # IDX... → indices sorted by size desc
   local i; for i in "$@"; do printf '%s\t%s\n' "${_UN_BYTES[i]}" "$i"; done | sort -t$'\t' -k1,1nr | cut -f2
 }
 
-_uninstall_table() { # IDX...
-  printf '\n%s%-34s %-6s %9s  %-8s%s\n' "$C_DIM" "NAME" "SOURCE" "SIZE" "INSTALLED/LAST-USED" "$C_RESET"
-  local i row
-  for i in "$@"; do
-    row=$(_uninstall_row "$i")
-    [[ -n "${_UN_NOTE[i]}" ]] && row="${row%%!*}$C_YELLOW!${row#*!}$C_RESET"
-    printf '%s\n' "$row"
-  done
-}
-
 # _uninstall_by_name NAME... — sets _UN_SEL to every item whose name matches exactly.
 _uninstall_by_name() {
   local n i found status
@@ -635,6 +625,7 @@ mm_cmd_main() {
     printf '\n'
     (( hidden )) && mm_info "${C_DIM}$hidden more hidden (shared libraries: --all; remote access/VPN: name them); NAMEs always match${C_RESET}"
     mm_info "${C_DIM}Preview a removal: mm uninstall --dry-run NAME...   Remove: mm uninstall [NAME...]${C_RESET}"
+    mm_result info "Removable packages" "*total" "$sz" "listed" "${#visible[@]}" "hidden" "$hidden" "next" "mm uninstall --dry-run NAME..."
     return 0
   fi
 
@@ -905,6 +896,7 @@ _uninstall_execute() {
   free_before=$(mm_free_bytes /)
   mm_inuse_refresh   # prompts may have taken a while
   mm_section "Removing"
+  mm_prog_items "$#"
 
   for i in "$@"; do [[ "${_UN_SRC[i]}" == apt ]] && { apt_idx+=("$i"); apt_sel+=("${_UN_NAME[i]}"); }; done
   if (( ${#apt_sel[@]} )); then

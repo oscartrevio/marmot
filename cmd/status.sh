@@ -2812,9 +2812,11 @@ mm_cmd_main() {
         _status_json
       elif [[ "$mode" == agent ]]; then
         _status_agent_text
+      elif [[ "$ST_VIEW" == compact ]]; then
+        _out_status_once
       else
         _status_cols
-        if [[ "$ST_VIEW" == compact ]]; then _status_frame_compact "$REPLY"; else _status_frame_full "$REPLY"; fi
+        _status_frame_full "$REPLY"
         printf '\n'
         printf '%s\n' "${ST_FRAME[@]}"
         printf '\n'
