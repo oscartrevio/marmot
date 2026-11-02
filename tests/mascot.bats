@@ -42,6 +42,10 @@ dress() {
   [ "$(occ 2027-02-02)" = winter ]
   [ "$(occ 2026-10-23)" = - ]
   [ "$(occ 2026-10-24)" = spooky ]
+  [ "$(occ 2026-10-26)" = spooky ]
+  [ "$(occ 2026-10-27)" = spooky2 ]
+  [ "$(occ 2026-10-29)" = spooky3 ]
+  [ "$(occ 2026-10-30)" = halloweve ]
   [ "$(occ 2026-10-31)" = halloween ]
   [ "$(occ 2026-11-01)" = muertos ]
   [ "$(occ 2026-09-16)" = mexico ]
@@ -79,15 +83,20 @@ dress() {
 
 @test "dress: a problem face keeps its eyes and still wears the day's hat, mark, teeth and rule" {
   [ "$(dress dizzy 0 christmas winter)" = "santa||||snow|Merry Christmas" ]
-  [ "$(dress happy 0 halloween)" = "|pumpkin|jack|fangs|web|Happy Halloween" ]
-  # Spooky week: fangs and the web, no jack-o'-lantern; that is Halloween's own.
+  [ "$(dress happy 0 halloween)" = "witch||jack|fangs|web candy|Happy Halloween: the only ghosts here are old node_modules" ]
+  # Spooky week builds up to Halloween around the marmot, nothing in the sky (no mark): fangs and
+  # the spider's web on the rule all week, candy on the 29th, the witch hat and sparkling eyes on
+  # the 30th; on the 31st all of it together, with the ∆ eyes.
   [ "$(dress happy 0 spooky)" = "|||fangs|web|" ]
-  [ "$(dress happy 0 halloween | cut -d'|' -f2)" = pumpkin ]
+  [ "$(dress happy 0 spooky2)" = "|||fangs|web|" ]
+  [ "$(dress happy 0 spooky3)" = "|||fangs|web candy|Halloween in two days" ]
+  [ "$(dress happy 0 halloweve)" = "witch||witch|fangs|web candy|One more sleep until Halloween" ]
+  [ "$(dress happy 0 halloween | cut -d'|' -f2)" = "" ]
   [ "$(dress sleepy 0 halloween | cut -d'|' -f3)" = jack ]
   [ "$(dress proud 0 halloween | cut -d'|' -f3)" = jack ]
   local mood
   for mood in alert dizzy squint neutral night tired; do
-    [ "$(dress "$mood" 0 halloween)" = "|pumpkin||fangs|web|Happy Halloween" ] || { echo "$mood"; false; }
+    [ "$(dress "$mood" 0 halloween)" = "witch|||fangs|web candy|Happy Halloween: the only ghosts here are old node_modules" ] || { echo "$mood"; false; }
   done
   [ "$(dress dizzy 0 aprilfools | cut -d'|' -f3)" = "" ]
   [ "$(dress happy 0 aprilfools | cut -d'|' -f3)" = groucho ]
@@ -204,8 +213,8 @@ draw_all() {
   mapfile -t teeth < <(echo; names teeth)
   eyes=("" "${!MM_EYES[@]}")
   overs=("" CHEEKS=1 BLINK=1 BLINK=2 WAVE=1)
-  [ "${#hats[@]}" -eq 4 ] && [ "${#marks[@]}" -eq 6 ] && [ "${#rules[@]}" -eq 8 ] && [ "${#teeth[@]}" -eq 2 ]
-  # One process per mood, 2304 drawings each, without bats' per-command trap (it would take the
+  [ "${#hats[@]}" -eq 5 ] && [ "${#marks[@]}" -eq 8 ] && [ "${#rules[@]}" -eq 9 ] && [ "${#teeth[@]}" -eq 2 ]
+  # One process per mood, 4320 drawings each, without bats' per-command trap (it would take the
   # loop from seconds to an hour).
   for mood in "${!MM_FACES[@]}"; do
     (trap - DEBUG ERR && set +eET && draw_all "$mood") >"$BATS_TEST_TMPDIR/broken.$mood" &
@@ -257,6 +266,25 @@ emoji() {
   MM_LOOK_MARK=fireworks
   mm_marmot_draw happy 30 title
   [ "${#MM_ART[@]}" -eq 6 ] && [ "${#MM_ART[0]}" -le 30 ] && [ "${#MM_ART[1]}" -le 30 ]
+}
+
+@test "draw: a mark may name several parts and all of them draw; the sky and the rule stay inside the width" {
+  # Two marks on the sky rows, at columns 30 and 60 (test parts).
+  local MM_PARTS=("${MM_PARTS[@]}" 'mark:t1|0|30|.|AA' 'mark:t2|1|60|.|BB')
+  local MM_LOOK_GREET=hi MM_LOOK_HAT="" MM_LOOK_EYES="" MM_LOOK_RULE="" MM_LOOK_TEETH="" MM_LOOK_MARK="t1 t2"
+  local a b
+  mm_marmot_draw happy 80 title facts
+  [ "${#MM_ART[@]}" -eq 6 ]
+  [[ "${MM_ART[0]}" == *"AA"* && "${MM_ART[1]}" == *"BB"* ]]
+  # Narrow: what does not fit is left out, and nothing passes the width.
+  mm_marmot_draw happy 45 title facts
+  for a in 0 1; do [ "${#MM_ART[a]}" -le 45 ]; done
+  [[ "${MM_ART[0]}" == *"AA"* && "${MM_ART[1]}" != *"BB"* ]]
+  # Candy along the rule, counted from its right end: the web is never cut.
+  MM_LOOK_MARK="" MM_LOOK_RULE="web candy"
+  mm_marmot_draw happy 80 title
+  b=${MM_ART[${#MM_ART[@]} - 1]}
+  [[ "$b" == "--(mm)--UU--(mm)--"* && "$b" == *">o<"* && "$b" == *"/\\oo/\\---" && ${#b} -eq 80 ]]
 }
 
 @test "draw: open eyes blink through a half lid; closed ones and festive eyes stay as they are" {
