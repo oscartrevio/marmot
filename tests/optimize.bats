@@ -489,11 +489,11 @@ exec 4> >(exec "$0" -c "read -r" "$0" --type=renderer); read -t 600 -u 3'
   mm_test_fake dpkg-query "printf 'install ok installed\tlinux-image-99.0.0-1-generic\n'"
   export MM_DRY_RUN=1 MM_CONTAINER=1
   run _optimize_swap
-  [[ "$output" == *"Swap reset · skipped (in a container: swap belongs to the host)"* ]]
+  mm_flat; [[ "$FLAT" == *"Swap reset in a container: swap belongs to the host"* ]]
   run _optimize_disk
-  [[ "$output" == *"SSD TRIM · skipped (in a container: the disk belongs to the host)"* ]]
+  mm_flat; [[ "$FLAT" == *"SSD TRIM in a container: the disk belongs to the host"* ]]
   run _optimize_reboot
-  [[ "$output" == *"Reboot · skipped (in a container: the kernel belongs to the host)"* ]]
+  mm_flat; [[ "$FLAT" == *"Reboot in a container: the kernel belongs to the host"* ]]
   [[ "$output" != *"Reboot pending"* ]]
   # The same machine outside a container: TRIM and the pending reboot come back.
   MM_CONTAINER=0
@@ -513,7 +513,7 @@ exec 4> >(exec "$0" -c "read -r" "$0" --type=renderer); read -t 600 -u 3'
   export MM_TEST_CGROUP_FS=$cg MM_CONTAINER=1
   run _optimize_diagnose
   [[ "$output" == *"Load (host) "* && "$output" != *"! Load"* && "$output" != *"! Swap"* ]]
-  [[ "$output" == *"Memory · 312.0MB available of 512.0MB (container limit)"* ]]
+  mm_flat; [[ "$FLAT" == *"Memory 312.0MB available of 512.0MB (container limit)"* ]]
   MM_CONTAINER=0 run _optimize_diagnose
   [[ "$output" != *"(host)"* && "$output" != *"container limit"* ]]
 }

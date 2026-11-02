@@ -121,6 +121,13 @@ mm_core() {
   . "$MM_SRC/lib/core.sh"
 }
 
+# mm_flat [TEXT] — TEXT (default $output) as one line in FLAT, for tests that read what was said and
+# not how it is laid out: card borders and the padding of aligned rows are gone, wrapped lines are
+# joined, runs of blanks are one space.
+mm_flat() {
+  FLAT=$(printf '%s\n' "${1-$output}" | sed 's/[╭╮╰╯│─]//g' | tr '\n' ' ' | tr -s ' ')
+}
+
 # mm_log_rows ACTION — operations-log rows (target<TAB>detail) with that action.
 mm_log_rows() {
   local log="$XDG_STATE_HOME/marmot/operations.log"

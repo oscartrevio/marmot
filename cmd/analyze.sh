@@ -115,34 +115,6 @@ _analyze_overview_rows() {
   [[ "$dir" == "${TMPDIR:-/tmp}"/marmot-analyze.* ]] && rm -rf -- "$dir" # SAFE: this function's own mktemp -d scratch dir
 }
 
-# _analyze_bar BYTES MAX — 24-wide bar scaled to the largest row.
-_analyze_bar() {
-  local fill=0 i bar=""
-  (( $2 > 0 )) && fill=$(( ($1 * 24 + $2 / 2) / $2 ))
-  for ((i = 0; i < 24; i++)); do if (( i < fill )); then bar+="█"; else bar+=" "; fi; done
-  printf '%s%s%s' "$C_CYAN" "$bar" "$C_RESET"
-}
-
-# _analyze_render USED ROWS... — numbered lines with a usage bar; percent is of used disk space.
-_analyze_render() {
-  local used=$1; shift
-  local max=0 row label bytes status target access n=0 size pct mark note
-  (( $# )) && { IFS=$'\t' read -r _ max _ <<<"$1"; }
-  for row in "$@"; do
-    IFS=$'\t' read -r label bytes status target access <<<"$row"
-    n=$((n + 1))
-    pct=$(awk -v b="$bytes" -v u="$used" 'BEGIN { printf "%.1f", (u > 0 ? b * 100 / u : 0) }')
-    size=$(mm_human "$bytes"); [[ "$status" == partial ]] && size+="+"
-    mark="  "; (( n == 1 )) && mark="${C_GREEN}▶${C_RESET} "
-    note=""
-    [[ "$label" == Old\ Downloads* ]] && note="  ${C_DIM}>3mo${C_RESET}"
-    [[ "$access" == keep ]] && note="  ${C_DIM}report only${C_RESET}"
-    mm_tilde "$target"
-    printf ' %s%2d. %s %5s%%  |  %-22s %9s  %s%s%s%s\n' "$mark" "$n" "$(_analyze_bar "$bytes" "$max")" \
-      "$pct" "$label" "$size" "$C_DIM" "$REPLY" "$C_RESET" "$note"
-  done
-}
-
 # _analyze_launch PATH [ACCESS] — explore PATH: ncdu, always read-only (ncdu's own delete would
 # bypass marmot's checks), or a largest-entries list when ncdu is missing or there is no terminal
 # for it. ACCESS root opens as root when sudo is available. Afterwards, on a terminal, a
@@ -168,12 +140,14 @@ _analyze_launch() {
   else
     local why="install ncdu for an interactive browser"
     [[ "$MM_TTY" == 1 ]] || why="no terminal: the ncdu explorer needs one"
-    printf '\n%sLargest entries under %s%s  %s(%s)%s\n\n' "$C_BOLD" "$path" "$C_RESET" "$C_DIM" "$why" "$C_RESET"
-    local line as=""
+    _analyze_entries_head "$path" "$why"
+    local line as="" shown=0
     (( ${#pre[@]} )) && as=sudo
     while IFS= read -r line; do
-      printf '  %9s  %s\n' "$(mm_human "${line%%$'\t'*}")" "${line#*$'\t'}"
+      _analyze_entry "${line%%$'\t'*}" "${line#*$'\t'}"
+      shown=$((shown + 1))
     done < <(_analyze_candidates "$path" "$as" | head -25)
+    mm_result info "Largest entries" "*under" "$path" "listed" "$shown"
   fi
   (( offer )) && _analyze_trash_offer "$path"
   return 0
@@ -292,14 +266,15 @@ mm_cmd_main() {
       --height=$(( ${#rows[@]} + 4 )) --prompt='filter> ' \
       --header="$header · Enter: open in ncdu · Esc: quit (% of used disk)")
     if [[ -z "$pick" ]]; then
-      printf '\n%s%s%s\n\n' "$C_BOLD" "$header" "$C_RESET"
+      _analyze_head "$(mm_human "$free")"
       _analyze_render "$used" "${rows[@]}"
       return 0
     fi
     [[ "$pick" =~ ([0-9]+)\. ]] || return 0
   else
-    printf '\n%s%s%s\nSelect a location to explore (%% of used disk):\n\n' "$C_BOLD" "$header" "$C_RESET"
+    _analyze_head "$(mm_human "$free")" "Select a location to explore (% of used disk):"
     _analyze_render "$used" "${rows[@]}"
+    mm_result info "Disk overview" "*free" "$(mm_human "$free")" "used" "$(mm_human "$used")" "largest" "${rows[0]%%$'\t'*}"
     [[ "$MM_TTY" == 1 && -t 1 ]] && (( ${#rows[@]} )) || return 0
     local reply
     printf '\n%s?%s Explore which? [1-%d, Enter to quit] ' "$C_YELLOW" "$C_RESET" "${#rows[@]}"

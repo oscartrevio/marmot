@@ -24,42 +24,38 @@ Coding agents leave a lot behind: `node_modules` in every worktree, browser buil
 ```text
 $ mm purge --dry-run --yes ~/code
 
-Purge project artifacts  (dry run: nothing will change)
-
-⚙ Ubuntu 24.04.5 LTS · 2 cores · 4GB RAM | Free: 89.2GB | Up 2d 16h 33m
+Purge project artifacts  dry run: nothing will change
+Ubuntu 24.04.5 LTS · 2 cores · 4GB RAM · Free: 89.2GB · Up 2d 16h 33m
   Scanned ~/code in 0.0s · artifacts idle > 14d are stale
 
-➤ In use
-  ◎ ~/code/mcp-server · 1 artifact (node_modules) · skipped (used by ~/.cursor/mcp.json)
+Left alone
+  ◎ ~/code/mcp-server · 1 artifact (node_modules)     used by ~/.cursor/mcp.json
+  ◎ ~/code/vault/target                                   holds a deploy keypair
 
-➤ Kept
-  ◎ ~/code/vault/target · kept (holds a deploy keypair)
+Found 3 artifacts
+  ● ~/code/web/node_modules                                        362.0MB   40d
+  ● ~/code/api/node_modules                                        200.0MB   40d
+  ● ~/code/web/.next                                                86.0MB   40d
 
-➤ Artifacts (3)
-          SIZE      FREES   IDLE  PROJECT/ARTIFACT
-  ●    362.0MB    362.0MB    40d  ~/code/web/node_modules
-  ●    200.0MB    200.0MB    40d  ~/code/api/node_modules
-  ●     86.0MB     86.0MB    40d  ~/code/web/.next
+  ● 648.0MB stale (idle > 14d)   ○ 0B recent, kept by default
 
-  ● stale (idle > 14d): 3 artifacts, frees 648.0MB
-  ○ recent:               0 artifacts, frees 0B
+Would remove
+  ✓ ~/code/web/node_modules                                              362.0MB
+  ✓ ~/code/api/node_modules                                              200.0MB
+  ✓ ~/code/web/.next                                                      86.0MB
 
-➤ Would remove
-  ✓ ~/code/web/node_modules · 362.0MB
-  ✓ ~/code/api/node_modules · 200.0MB
-  ✓ ~/code/web/.next · 86.0MB
-
-======================================================================
-Dry run complete
-Would free: 648.0MB | Artifacts: 3 | Projects: 2
-Free space: 89.2GB now, ~89.8GB after
-Run without --dry-run to apply.
-======================================================================
+╭─ Dry run complete ───────────────────────────────────────────╮
+│ would free  648.0MB                                          │
+│ items       3 artifacts · 2 projects                         │
+│ free space  89.2GB now, ~89.8GB after                        │
+╰──────────────────────────────────────────────────────────────╯
+  Run without --dry-run to apply.
 ```
 
-- **In use**: Cursor's MCP config names `~/code/mcp-server`, so its `node_modules` stays.
-- **Kept**: the Solana program's `target/` holds its deploy keypair, so it stays too.
-- **Artifacts**: build output next to the file that rebuilds it. `FREES` is what deleting releases; files hard-linked elsewhere, like pnpm's store, stay on disk. `●` marks stale ones, from projects idle longer than `--days` (14).
+Every command prints the same way: a bold title with a dim line about the machine, rows with a mark each (`✓` done, `◎` left alone, `→` moved to the Trash, `!` needs a look, `✗` failed) and the numbers flush right, then a bordered card with what matters (green after a change, yellow in a dry run). On a terminal a bar under the last row shows how far a long run is (bytes, items or steps). In a pipe, a log or with `NO_COLOR` it is the same text with no color, no bar and no cursor tricks, and it fits narrow terminals (50 columns). `--json` and `--agent` output is untouched.
+
+- **Left alone**: Cursor's MCP config names `~/code/mcp-server`, so its `node_modules` stays; the Solana program's `target/` holds its deploy keypair, so it stays too.
+- **Found**: build output next to the file that rebuilds it, biggest first, with how long its project has been idle. Sizes are what deleting releases; files hard-linked elsewhere, like pnpm's store, stay on disk. `●` marks stale ones, from projects idle longer than `--days` (14).
 - **Would remove**: the stale artifacts, which `--yes` removes without asking. Without `--yes`, a terminal asks: stale only, all, pick, or none.
 
 With no folder and no `purge_paths` file, `mm purge` scans your home, your folders in `/workspaces` and `/workspace`, and every worktree of the repositories it finds there or in an agent's worktree folder. `mm purge --paths` sets your own roots.
@@ -94,7 +90,7 @@ Its cheeks are stuffed when an `x x` or `O O` face comes with a root disk 90% fu
 
 It also knows what day it is: a party hat and fireworks at New Year, a Santa hat at Christmas, snow on the rule all winter, fangs and a web in Halloween week, a jack-o'-lantern and `∆ ∆` eyes on Halloween itself, papel picado, marigolds and calavera eyes on Día de Muertos, a lightsaber on May 4, a tree on Earth Day, its anniversary on this machine, and more (`MM_CALENDAR` in `lib/mascot.sh`). It is all printable ASCII but the `∆` eyes, one column wide, so no terminal shows an emoji. The day never changes the eyes of a face that reports a problem, and `festive = off` in the config turns the calendar off.
 
-On those days `mm --version` and a run with nothing to do greet you too. The closing banner of a real run celebrates firsts, round run counts, records and anniversaries, each once.
+On those days `mm --version` and a run with nothing to do greet you too. The closing card of a real run celebrates firsts, round run counts, records and anniversaries, each once.
 
 ## Clean up on a schedule
 

@@ -47,7 +47,7 @@ _optimize_cpu_ticks() {
 }
 
 _optimize_diagnose() {
-  printf '\n%sPERFORMANCE DIAGNOSIS%s\n' "$C_BOLD" "$C_RESET"
+  mm_section "Performance diagnosis"
   # In a container load, pressure and swap are the whole host's: reported as such, never flagged.
   local cores l1 l5 l15 _ host="" ctr=0
   mm_in_container && ctr=1 host=" (host)"
@@ -174,6 +174,7 @@ _optimize_apt_upgrade() {
   done
   mm_info "$# upgradable: $(_optimize_list "$@")"
   for why in "${!impact[@]}"; do
+    mm_live_pause
     printf '  %s! %s · %s%s\n' "$C_RED" "${impact[$why]# }" "$why" "$C_RESET"
   done
 
@@ -486,6 +487,7 @@ _optimize_orphan_task() {
       continue
     fi
     cands+=("$row")
+    mm_live_pause
     printf '  %s•%s %s\n' "$C_YELLOW" "$C_RESET" "$(_optimize_orphan_line "$row")"
   done
   (( ${#cands[@]} )) || return 0
@@ -523,6 +525,7 @@ _optimize_orphan_task() {
   # Enter with nothing marked makes fzf return the highlighted row: list what the picker returned
   # and ask before any signal.
   if (( ! asked )); then
+    mm_live_pause
     printf '\n'
     for row in "${chosen[@]}"; do mm_info "$(_optimize_orphan_line "$row")"; done
     mm_confirm "Send SIGTERM to ${#chosen[@]} process$( (( ${#chosen[@]} == 1 )) && printf '' || printf es)?" ||
@@ -699,6 +702,7 @@ _optimize_browser_task() {
   fi
   for row in "${rows[@]}"; do
     IFS=$'\t' read -r _ _ _ bytes _ <<<"$row"; total=$((total + bytes))
+    mm_live_pause
     printf '  %s•%s %s\n' "$C_YELLOW" "$C_RESET" "$(_optimize_browser_line "$row")"
   done
   if [[ "$MM_DRY_RUN" == 1 ]]; then
@@ -729,6 +733,7 @@ _optimize_browser_task() {
   fi
   # As above: what the picker returned is listed and confirmed before any signal.
   if (( ! asked )); then
+    mm_live_pause
     printf '\n'
     for row in "${chosen[@]}"; do mm_info "$(_optimize_browser_line "$row")"; done
     mm_confirm "Stop ${#chosen[@]} browser$( (( ${#chosen[@]} == 1 )) || printf s) (SIGTERM, then SIGKILL)?" ||
@@ -887,6 +892,7 @@ mm_cmd_main() {
   done
 
   mm_header "Optimize"
+  mm_prog_plan 9 auto
   [[ "$MM_DRY_RUN" == 1 ]] || mm_sudo_ask "package upgrades, the swap reset, TRIM and the DNS cache flush"
   _optimize_diagnose
   _optimize_updates

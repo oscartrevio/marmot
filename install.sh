@@ -26,7 +26,7 @@ PAYLOAD=(marmot install.sh lib cmd completion)
 # left these folders since): such a copy is replaced or removed only when it holds nothing else.
 LEGACY_DIRS=(lib cmd completion)
 LEGACY_FILES=(marmot install.sh .install-source lib/agents.sh lib/catalog.sh lib/core.sh lib/mascot.sh
-  lib/schedule.sh cmd/analyze.sh cmd/clean.sh cmd/history.sh cmd/optimize.sh cmd/purge.sh cmd/schedule.sh
+  lib/schedule.sh lib/out.sh lib/out_common.sh lib/out_cmds.sh cmd/analyze.sh cmd/clean.sh cmd/history.sh cmd/optimize.sh cmd/purge.sh cmd/schedule.sh
   cmd/status.sh cmd/uninstall.sh cmd/update.sh completion/_mm completion/mm.bash)
 
 # Lines look like marmot's own (lib/core.sh mm_ok/mm_warn/mm_err), which this does not source: it

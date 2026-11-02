@@ -261,7 +261,7 @@ _trashed() { [[ -e "$XDG_DATA_HOME/Trash/files/$1" && -f "$XDG_DATA_HOME/Trash/i
   [ "$(cat "$CALLS")" = "npm rm -g fakenpm" ]
   # its history row carries what left its folder
   [ "$(awk -F'\t' '$3 == "run" && $4 == "npm rm -g fakenpm" { print $5 }' "$XDG_STATE_HOME/marmot/operations.log")" = "$want" ]
-  [[ "$output" == *"Moved to Trash"*"trash-restore"* ]]
+  mm_flat; [[ "$FLAT" == *"to Trash"*"trash-restore"* ]]
 }
 
 @test "declining the running-process confirmation keeps the item" {
@@ -274,7 +274,7 @@ _trashed() { [[ -e "$XDG_DATA_HOME/Trash/files/$1" && -f "$XDG_DATA_HOME/Trash/i
   _uninstall_add bin fakerun 4096 0 "$HOME/.local/bin/fakerun" "" 0
   run _uninstall_apply 0
   [ -f "$HOME/.local/bin/fakerun" ]
-  [[ "$output" == *"fakerun · skipped (running)"* ]]
+  mm_flat; [[ "$FLAT" == *"fakerun running"* ]]
 }
 
 @test "cloud/hypervisor guest agents are never offered or removable (apt and snap)" {
@@ -286,7 +286,7 @@ _trashed() { [[ -e "$XDG_DATA_HOME/Trash/files/$1" && -f "$XDG_DATA_HOME/Trash/i
   [[ "$output" != *amazon-ssm-agent* && "$output" != *walinuxagent* && "$output" != *qemu-guest-agent* ]]
   run mm uninstall --dry-run amazon-ssm-agent walinuxagent qemu-guest-agent
   [ "$status" -eq 0 ]
-  [ "$(grep -c 'skipped (base system' <<<"$output")" -eq 3 ]
+  mm_flat; [ "$(grep -o 'base system' <<<"$FLAT" | wc -l)" -eq 3 ]
   [[ "$output" != *"Files to be removed"* ]]
   [ ! -s "$CALLS" ]
 }
@@ -501,13 +501,14 @@ fake_global_tools() {
   mkdir -p "$SB/proj"; echo 'prefix=/tmp/evil' >"$SB/proj/.npmrc"; printf '[install]\nglobalDir = "/tmp/evil"\n' >"$SB/proj/bunfig.toml"
   cd "$SB/proj"
   MM_DRY_RUN=1 run _uninstall_apply 0 1 2 3
-  local would; would=$(grep -oE 'Would free: [0-9.]+[KMGT]?B' <<<"$output")
+  local would; would=$(grep -oE 'would free +[0-9.]+[KMGT]?B' <<<"$output" | awk '{print $NF}')
   [ ! -s "$CALLS" ]
   MM_TTY=1
   mm_confirm() { return 0; }
   run _uninstall_apply 0 1 2 3
   [ "$status" -eq 0 ]
-  [ "${would#Would free: }" = "$(grep -oE 'Space freed: [0-9.]+[KMGT]?B' <<<"$output" | sed 's/^Space freed: //')" ]
+  [ -n "$would" ]
+  [ "$would" = "$(grep -oE ' freed +[0-9.]+[KMGT]?B' <<<"$output" | awk '{print $NF}')" ]
   [ "$(cut -d' ' -f1 "$CALLS" | sort -u)" = / ]
   [ "$(wc -l <"$CALLS")" -eq 4 ]
   local want=$(( _UN_BYTES[0] + _UN_BYTES[1] + _UN_BYTES[2] + _UN_BYTES[3] ))
@@ -521,7 +522,7 @@ fake_global_tools() {
   mm_confirm() { return 0; }
   run _uninstall_apply 0
   [ -d "$HOME/pkgs/npm" ]
-  [[ "$output" == *"Space freed: 0B"* ]]
+  mm_flat; [[ "$FLAT" == *"freed 0B"* ]]
   [ "$(mm_log_rows failed | grep -c $'\texit 243: ')" -eq 1 ]
   [ -z "$(mm_log_rows run)" ]
 }

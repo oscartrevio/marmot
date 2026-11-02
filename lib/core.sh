@@ -62,61 +62,20 @@ if _mm_color_ok 2; then
 else
   CE_DIM="" CE_RED="" CE_YELLOW="" CE_CYAN="" CE_RESET=""
 fi
-MM_RULE="======================================================================"
 
-# mm_header TITLE — command title plus a one-line system summary, and on the first terminal run
-# after scheduled cleanups what they did (mm_away_line).
-mm_header() {
-  local away
-  printf '\n%s%s%s' "$C_BOLD" "$1" "$C_RESET"
-  [[ "$MM_DRY_RUN" == 1 ]] && printf '  %s(dry run: nothing will change)%s' "$C_YELLOW" "$C_RESET"
-  printf '\n\n%s⚙%s %s\n' "$C_CYAN" "$C_RESET" "$(mm_sysline)"
-  away=$(mm_away_line)
-  [[ -n "$away" ]] && printf '%s%s%s\n' "$C_DIM" "$away" "$C_RESET"
-  return 0
-}
-mm_section() { _MM_PENDING=""; printf '\n%s➤ %s%s\n' "$C_BOLD$C_BLUE" "$1" "$C_RESET"; }
 # mm_section_lazy TITLE — a heading printed only once a line goes under it (mm_ok, mm_skip,
 # mm_act, mm_warn, mm_info, mm_err): a section with nothing to say prints nothing. An empty TITLE
 # (the section is over) or the next mm_section drops a heading still waiting.
 _MM_PENDING=""
 mm_section_lazy() { _MM_PENDING=$1; }
 _mm_flush() { [[ -n "$_MM_PENDING" ]] && mm_section "$_MM_PENDING"; return 0; }
-# mm_ok LABEL [DETAIL]
-mm_ok()   { _mm_flush; printf '  %s✓%s %s%s\n' "$C_GREEN" "$C_RESET" "$1" "${2:+ · $2}"; }
-# mm_skip LABEL REASON — also recorded in MM_SKIPS.
-mm_skip() {
-  _mm_flush
-  MM_SKIPS+=("$1"$'\t'"$2")
-  printf '  %s◎%s %s · %sskipped (%s)%s\n' "$C_DIM" "$C_RESET" "$1" "$C_DIM" "$2" "$C_RESET"
-}
-mm_act()  { _mm_flush; printf '  %s→%s %s\n' "$C_CYAN" "$C_RESET" "$1"; }
-mm_warn() { _mm_flush; printf '  %s!%s %s\n' "$C_YELLOW" "$C_RESET" "$1"; }
-mm_err()  { _mm_flush; MM_ERRORS+=("$1"); printf '  %s✗%s %s\n' "$CE_RED" "$CE_RESET" "$1" >&2; }
-mm_info() { _mm_flush; printf '  %s\n' "$1"; }
-
-# mm_done_empty MESSAGE — close a run that had nothing to do as the success it is: "✓ MESSAGE",
-# on a terminal with the day's greeting (mm_greeting), then when the next scheduled cleanup is
-# due, or how to schedule one.
-mm_done_empty() {
-  local g=""
-  _MM_PENDING=""
-  if [[ "$MM_TTY" == 1 ]]; then mm_greeting; g=$REPLY; fi
-  printf '\n  %s✓%s %s%s\n  %s%s%s\n' "$C_GREEN" "$C_RESET" "$1" "${g:+  $C_DIM$g$C_RESET}" \
-    "$C_DIM" "$(mm_schedule_hint)" "$C_RESET"
-}
+# The output primitives (mm_header, mm_section, mm_ok, mm_skip, mm_act, mm_warn, mm_info, mm_err,
+# mm_banner, mm_result, mm_done_empty, mm_die and the progress calls) are in lib/out.sh, loaded at
+# the end of this file.
 mm_debug() { [[ "$MM_DEBUG" == 1 ]] && printf '  %s[debug] %s%s\n' "$CE_DIM" "$1" "$CE_RESET" >&2; return 0; }
-mm_die()  { mm_err "$1"; exit "${2:-1}"; }
 
-# mm_banner TITLE LINE... — closing summary block; empty LINEs are left out, so callers can pass
-# optional lines as they are.
-mm_banner() {
-  local title="$1"; shift
-  printf '\n%s\n%s%s%s\n' "$MM_RULE" "$C_BOLD" "$title" "$C_RESET"
-  local line; for line in "$@"; do [[ -n "$line" ]] && printf '%s\n' "$line"; done
-  printf '%s\n' "$MM_RULE"
-}
-
+# mm_banner TITLE LINE... (lib/out.sh) — the card that closes a run; empty LINEs are left out, so
+# callers can pass optional lines as they are.
 # Every banner is built the same way: what was freed (or would be) first, then " | Moved to
 # Trash: ..." when something went there, then the command's own counts; then the free space.
 
@@ -163,6 +122,7 @@ mm_banner_disk() {
 
 # mm_confirm QUESTION — y/N prompt on the terminal. There is no auto-accept: without a terminal
 # (cron, pipes, scripts) every confirmation declines, so unattended runs never escalate.
+# shellcheck disable=SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
 mm_confirm() {
   [[ "$MM_TTY" == 1 ]] || return 1
   local reply
@@ -434,6 +394,7 @@ mm_cg_cores() {
 # that nothing will be deleted) and let sudo ask for the password once (`sudo -v`). Refused,
 # failed or not allowed: the rest of the run is MM_NO_SUDO=1, with no more prompts and every root
 # step skipped. Without a terminal nothing is asked. A usable session starts the keepalive.
+# shellcheck disable=SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
 mm_sudo_ask() {
   (( EUID == 0 )) && return 0
   [[ "$MM_NO_SUDO" == 1 || "$MM_TTY" != 1 ]] && return 0
@@ -1757,6 +1718,7 @@ mm_apt_busy() {
 
 # mm_pick HEADER < lines — fzf multi-select on the terminal (TAB marks). Prints selected lines.
 # No terminal or no fzf selects nothing; there is no way to select everything unattended.
+# shellcheck disable=SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
 mm_pick() {
   if [[ "$MM_TTY" != 1 ]] || ! command -v fzf >/dev/null; then
     cat >/dev/null
@@ -1777,3 +1739,7 @@ mm_fzf_height() {
     printf '~%s%%' "$1"
   fi
 }
+
+# The output primitives, last: lib/out.sh wraps mm_confirm, mm_pick and mm_sudo_ask above.
+# shellcheck source=out.sh
+. "$MM_HOME/lib/out.sh"

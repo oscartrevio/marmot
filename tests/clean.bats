@@ -188,9 +188,9 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   _clean_tmpfiles_runs() { return 0; }
   run _clean_review_print
   [ "$status" -eq 0 ]
-  [[ "$output" == *"Shared temp /tmp · "*"7d ($SB/etc/tmp.conf)"* ]]
-  [[ "$output" == *"Shared temp /var/tmp · "*"never aged"* ]]
-  grep -qF "echo 'q /var/tmp 1777 root root 30d' | sudo tee /etc/tmpfiles.d/" <<<"$output"
+  mm_flat; [[ "$FLAT" == *"Shared temp /tmp "*"7d ($SB/etc/tmp.conf)"* ]]
+  mm_flat; [[ "$FLAT" == *"Shared temp /var/tmp "*"never aged"* ]]
+  [[ "$FLAT" == *"echo 'q /var/tmp 1777 root root 30d' | sudo tee /etc/tmpfiles.d/"* ]]
 }
 
 @test "a tmpfiles.d line without an age points at the file to override" {
@@ -198,8 +198,8 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   tmpfiles_src
   _clean_tmpfiles_runs() { return 0; }
   run _clean_review_print
-  [[ "$output" == *"Shared temp /tmp · "*"never aged"* ]]
-  grep -qF "sudo cp $SB/usrlib/tmp.conf /etc/tmpfiles.d/" <<<"$output"
+  mm_flat; [[ "$FLAT" == *"Shared temp /tmp "*"never aged"* ]]
+  [[ "$FLAT" == *"sudo cp $SB/usrlib/tmp.conf /etc/tmpfiles.d/"* ]]
 }
 
 @test "without systemd nothing ages temp folders, and no tmpfiles.d fix is offered" {
@@ -207,7 +207,7 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   tmpfiles_src
   _clean_tmpfiles_runs() { return 1; }
   run _clean_review_print
-  [[ "$output" == *"Shared temp /tmp · "*"systemd-tmpfiles does not run"* ]]
+  mm_flat; [[ "$FLAT" == *"Shared temp /tmp "*"systemd-tmpfiles does not run"* ]]
   none grep -F 'tmpfiles.d/' <<<"$output"
 }
 
@@ -275,9 +275,9 @@ tmpfiles_src() { src; _CLEAN_TMPFILES_DIRS=("$SB/etc" "$SB/run" "$SB/usrlib"); }
   mm_test_bg "$SB" "$SB/bin/npx"; mm_test_bg "$SB" "$SB/bin/pnpm"; mm_test_bg "$SB" "$SB/bin/yarn"
   src
   run _clean_dev
-  [[ "$output" == *"npm cache · skipped (npx busy)"* ]]
-  [[ "$output" == *"pnpm store · skipped (pnpm busy)"* ]]
-  [[ "$output" == *"yarn cache · skipped (yarn busy)"* ]]
+  mm_flat; [[ "$FLAT" == *"npm cache npx busy"* ]]
+  mm_flat; [[ "$FLAT" == *"pnpm store pnpm busy"* ]]
+  mm_flat; [[ "$FLAT" == *"yarn cache yarn busy"* ]]
   none grep -E 'npm cache clean|store prune|yarn cache clean' "$CALLS"
   exist "$HOME/.npm/_cacache/blob" "$SB/store/blob" "$SB/yarncache/blob"
 }
@@ -387,7 +387,7 @@ esac'
   mm_confirm() { return 0; }
   run _clean_docker_images
   none grep -E ' docker image (rm|inspect) ' "$CALLS"
-  [[ "$output" == *"Unused images · skipped"* ]]
+  mm_flat; [[ "$FLAT" == *"Unused images cannot list containers"* ]]
 }
 
 @test "docker: untagged images are listed and asked about, never pruned unattended" {
@@ -441,7 +441,7 @@ unix_socket() {
   _clean_dockerd_here() { return 1; }   # whatever dockerd runs on the machine running the tests
   export MM_CONTAINER=1 DOCKER_HOST="unix://$SB/docker.sock"
   run _clean_docker
-  [[ "$output" == *"Docker · skipped (in a container: DOCKER_HOST reaches a daemon outside it; MM_DOCKER_PRUNE=1 cleans it anyway)"* ]]
+  mm_flat; [[ "$FLAT" == *"Docker in a container: DOCKER_HOST reaches a daemon outside it; MM_DOCKER_PRUNE=1 cleans it anyway"* ]]
   none grep -E ' docker (info|ps|rm|images?|builder|system|volume) ' "$CALLS"
   MM_DOCKER_PRUNE=1 run _clean_docker
   grep -qE ' docker rm c-old c-never-old$' "$CALLS"
@@ -463,12 +463,12 @@ unix_socket() {
   src
   export DOCKER_HOST=tcp://10.0.0.5:2376
   run _clean_docker
-  [[ "$output" == *"Docker · skipped (the daemon at tcp://10.0.0.5:2376 is another machine's"* ]]
+  mm_flat; [[ "$FLAT" == *"Docker the daemon at tcp://10.0.0.5:2376 is another machine's"* ]]
   unset DOCKER_HOST
   mm_test_fake docker "echo \"\$(pwd) docker \$*\" >>\"\$CALLS\"
 [[ \"\$1 \$2\" == 'context inspect' ]] && echo ssh://me@build-box"
   run _clean_docker
-  [[ "$output" == *"Docker · skipped (the daemon at ssh://me@build-box is another machine's"* ]]
+  mm_flat; [[ "$FLAT" == *"Docker the daemon at ssh://me@build-box is another machine's"* ]]
   none grep -E ' docker (info|ps) ' "$CALLS"
 }
 
@@ -480,7 +480,7 @@ unix_socket() {
   # apt-get stays a fail-loud stub: nothing may simulate or purge.
   mm_test_fake dpkg-query "printf 'ii\tlinux-image-1.0.0-1-generic\nii\tlinux-image-99.0.0-1-generic\n'"
   MM_CONTAINER=1 run _clean_kernels
-  [[ "$output" == *"Old kernels · skipped (in a container: the running kernel is the host's)"* ]]
+  mm_flat; [[ "$FLAT" == *"Old kernels in a container: the running kernel is the host's"* ]]
 }
 
 # ---------------------------------------------------------------- apt
@@ -652,7 +652,7 @@ npx_entry() {
   [ "$status" -eq 0 ]
   gone "$x/plain"
   exist "$m/memory.jsonl" "$m/index.js" "$x/partial/node_modules/x/index.js"
-  [[ "$output" == *"files written after install"*"memory.jsonl"* ]]
+  mm_flat; [[ "${FLAT// /}" == *"fileswrittenafterinstall"*"memory.jsonl"* ]]
   [ -z "$(mm_log_rows remove | grep -E "^$x/(mem|partial)")" ]
 }
 
@@ -698,7 +698,7 @@ npx_entry() {
   [ "$status" -eq 0 ]
   exist "$HOME/.cache/mytool/blobs/b" "$HOME/.cache/tiny/t"
   [[ "$output" == *"Other cache folders"*"mytool 5"*"MB"* ]]
-  [[ "$output" == *"/catalog (cache|"* ]]
+  mm_flat; [[ "$FLAT" == *"/catalog (cache|"* ]]
   none grep -E 'Other cache folders.*(tiny|pip)' <<<"$output"
 }
 
@@ -708,7 +708,7 @@ npx_entry() {
   catalog
   run _clean_catalog_caches
   [ -e "$HOME/.cache/pip/wheels/w" ]
-  [[ "$output" == *"pip cache · skipped (pip busy)"* ]]
+  mm_flat; [[ "$FLAT" == *"pip cache pip busy"* ]]
 }
 
 @test "a whitelisted catalog cache is skipped" {
@@ -907,7 +907,7 @@ EOF
     MM_TTY=1 run setsid -w mm clean $mode
     [ "$status" -eq 0 ]
     [ "$(cat "$BATS_TEST_TMPDIR/sudo.calls")" = $'-n true\n-v' ] || { echo "mm clean $mode:"; cat "$BATS_TEST_TMPDIR/sudo.calls"; false; }
-    [[ "$output" == *"System cleanup · skipped (needs sudo)"* ]]
+    mm_flat; [[ "$FLAT" == *"System cleanup needs sudo"* ]]
   done
 }
 
@@ -928,13 +928,13 @@ EOF
   [ "$(jq -r 'map(select(.action == "run" and .target == "npm cache")) | .[0].bytes' <<<"$output")" -eq "$want" ]
   run mm history
   [[ "$output" == *"clean · 1 ran $(mm_human "$want")"* ]]
-  [[ "$output" == *": 1 run · $(mm_human "$want") freed"* ]]
+  mm_flat; [[ "$FLAT" == *"runs 1 freed $(mm_human "$want")"* ]]
 }
 
 @test "the closing banner names the category that freed the most" {
   full_run --dry-run
   [ "$status" -eq 0 ]
-  grep -qE '^Biggest win: Docker, [0-9.]+[KMG]B$' <<<"$output"   # its images and build cache
+  mm_flat; [[ "$FLAT" =~ Docker,\ [0-9.]+[KMG]B ]]   # its images and build cache
 }
 
 # no_bare_headings — every "➤" heading in $output has a line under it.
@@ -949,8 +949,9 @@ no_bare_headings() {
   run mm clean
   [ "$status" -eq 0 ]
   [[ "$output" != *"======"* ]]                                 # no closing banner
-  grep -qE '^  ✓ ' <<<"$(tail -2 <<<"$output")"                  # it ends on a success
-  [[ "$(tail -1 <<<"$output")" == *"mm schedule enable"* ]]       # and how to keep it that way
+  [[ "$(tail -1 <<<"$output")" == "╰"* ]]                          # it ends on a card, not a banner of zeros
+  [[ "$output" == *"╭─ Nothing to do"* ]]                         # a success
+  mm_flat; [[ "$FLAT" == *"mm schedule enable " ]]                  # and how to keep it that way
   no_bare_headings
   run mm clean --dry-run
   [[ "$output" != *"======"* ]]
@@ -1478,7 +1479,7 @@ exec '$ROOT_FIND' \"\$@\""
   _CLEAN_LOG_ROOT="$SB/var/log"; _CLEAN_CRASH_ROOTS=("$SB/coredump")
   mm_confirm() { return 0; }
   run _clean_system
-  [[ "$output" == *"skipped (needs sudo)"* ]]
+  mm_flat; [[ "$FLAT" == *"needs sudo"* ]]
   exist "$SB/var/log/syslog.1" "$SB/coredump/core.node.1000.zst"
 }
 

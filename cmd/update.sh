@@ -211,6 +211,7 @@ mm_cmd_main() {
   (( ! _UP_INPLACE )) && [[ "$_UP_INSTALLED" != "$head" ]] && stale=1
   if (( behind == 0 && ! stale )); then
     mm_ok "marmot is up to date" "${head:0:7}"
+    mm_result good "Up to date" "*version" "${head:0:7}" "branch" "$branch" "tracking" "$upstream"
     return 0
   fi
   (( behind == 0 )) && mm_info "The installed copy is not the checkout's ${head:0:7}: a reinstall brings it there"
@@ -237,10 +238,12 @@ mm_cmd_main() {
       "no terminal") mm_warn "Update available; not applied without a terminal (run mm update in one)" ;;
       *) mm_warn "Update available: run mm update" ;;
     esac
+    mm_result warn "Update available" "*installed" "${head:0:7}" "latest" "${want:0:7}" "behind" "$behind commit(s)" "next" "mm update"
     return "$_UPDATE_AVAILABLE"
   fi
   if ! mm_confirm "Update marmot to ${want:0:7}?"; then
     mm_info "Nothing changed."
+    mm_result warn "Not updated" "*you said" "no" "next" "mm update"
     return 0
   fi
 
@@ -252,6 +255,7 @@ mm_cmd_main() {
   fi
   if (( _UP_INPLACE )); then
     mm_ok "marmot updated in place" "${want:0:7}"
+    mm_result ok "Updated" "*version" "${head:0:7} → ${want:0:7}" "branch" "$branch"
     return 0
   fi
   local env=(MARMOT_PREFIX="$MM_HOME"); [[ -n "$_UP_BIN" ]] && env+=(MARMOT_BIN="$_UP_BIN")
@@ -260,4 +264,5 @@ mm_cmd_main() {
   local now; now=$(_update_field commit)
   [[ "$now" == "$want" ]] || mm_die "reinstall recorded ${now:-no commit}, expected ${want:0:7}: run $_UP_SRC/install.sh yourself"
   mm_ok "marmot updated" "${_UP_INSTALLED:0:7} → ${want:0:7}"
+  mm_result ok "Updated" "*version" "${_UP_INSTALLED:0:7} → ${want:0:7}" "branch" "$branch"
 }
