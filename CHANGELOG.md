@@ -70,6 +70,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 ### Added
 
 - MIT license.
+- pi, Factory Droid, Kilo Code, Continue (`cn`), Mistral Vibe, Hermes, Happy, Grok CLI and Auggie
+  are known agents: their state is protected and their sessions show in `mm status`. `mm purge`
+  no longer offers pi's installed releases (`~/.pi/agent/install/releases/*/node_modules`) as
+  stale build artifacts.
 - `mm status`: a marmot peeks over the dashboard, its face summing up the health score, a busy
   CPU and whether an agent is at work; a short terminal drops it first.
 - `mm status` names the command for a full disk, full inodes or swap in its compact and full views,

@@ -52,7 +52,8 @@
 # Logs dirs are listed only where the tool documents them (default locations; sources below), and
 # never at, inside or above a session dir. Left out: Claude Code (~/.claude/debug holds .txt files
 # and Claude Code sweeps it itself), Crush (logs per project in ./.crush/logs), Gemini CLI, Qwen
-# Code, Cursor Agent, Amp, Aider and OpenHands (no documented logs dir in the home folder).
+# Code, Cursor Agent, Amp, Aider, OpenHands, pi, Factory Droid, Hermes, Happy, Grok CLI and Auggie
+# (no documented logs dir in the home folder), and Mistral Vibe (one vibe.log it keeps writing).
 #   Codex CLI   ~/.codex/log: codex-tui.log of earlier releases (current ones log only with log_dir)
 #               https://github.com/openai/codex/blob/ae110493973d5b72f60d42efe2fae91d51ca9c0e/codex-rs/tui/src/lib.rs#L414-L418
 #   Copilot CLI ~/.copilot/logs: process-<timestamp>-<pid>.log, plus logs/extensions/
@@ -69,6 +70,17 @@
 #               a session's own log stays inside its session folder)
 #               https://github.com/MoonshotAI/kimi-cli/blob/main/docs/en/configuration/data-locations.md
 #               https://github.com/MoonshotAI/kimi-code/blob/main/docs/en/configuration/data-locations.md
+#   Kilo Code   ~/.local/share/kilo/log (Global.Path.log = <xdgData>/kilo/log, opencode's layout)
+#               https://github.com/Kilo-Org/kilocode/blob/main/packages/opencode/src/global/index.ts
+#   Continue    ~/.continue/logs: core.log (sessions in ~/.continue/sessions)
+#               https://github.com/continuedev/continue/blob/main/extensions/cli/src/session.ts
+#
+# State and worktree dirs of the newer rows, from each tool's docs or source: pi ~/.pi/agent,
+# sessions ~/.pi/agent/sessions, its installed releases (with their node_modules) inside it
+# (pi-coding-agent docs/configuration.md, docs/sessions.md); Factory Droid ~/.factory, worktrees
+# ~/.factory/worktrees (docs/cli/configuration/settings.mdx); Mistral Vibe ~/.vibe (README);
+# Hermes ~/.hermes (README); Happy ~/.happy, its agent.key inside (happy-cli/src/persistence.ts);
+# Grok CLI ~/.grok (README); Auggie ~/.augment (README).
 MM_AGENTS_TABLE='
 Claude Code|claude|~/.claude ~/.claude.json|~/.claude/projects ~/.claude/sessions|~/.local/share/claude/versions|~/.local/bin/claude||||*.jsonl
 Codex CLI|codex|~/.codex|~/.codex/sessions|||~/.codex/worktrees|~/.codex/log
@@ -91,6 +103,15 @@ Container Use|container-use cu|~/.config/container-use||||~/.config/container-us
 uzi|uzi|~/.local/share/uzi||||~/.local/share/uzi/worktrees
 Kimi CLI|kimi|~/.kimi ~/.kimi-code|~/.kimi/sessions ~/.kimi/imported_sessions ~/.kimi-code/sessions||||~/.kimi/logs ~/.kimi-code/logs
 OpenHands|openhands|~/.openhands|~/.openhands/conversations
+pi|pi|~/.pi/agent|~/.pi/agent/sessions
+Factory Droid|droid|~/.factory||||~/.factory/worktrees
+Kilo Code|kilo|~/.local/share/kilo ~/.config/kilo ~/.local/state/kilo|||||~/.local/share/kilo/log
+Continue|cn|~/.continue|~/.continue/sessions||||~/.continue/logs
+Mistral Vibe|vibe|~/.vibe||||
+Hermes|hermes hermes-agent|~/.hermes||||
+Happy|happy|~/.happy||||
+Grok CLI|grok|~/.grok||||
+Auggie|auggie|~/.augment||||
 '
 
 MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
