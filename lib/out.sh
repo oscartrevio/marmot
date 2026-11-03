@@ -101,7 +101,7 @@ _out_draw_live() {
 _out_draw_summary() {
   local kind=ok free_key=freed
   local -a rows=()
-  if ((OUT_DRY)); then kind=dry free_key="would free"; fi
+  if ((OUT_DRY)); then kind=dry free_key="would free"; else _out_draw_marmot; fi
   [[ -n "$OUT_FREED" ]] && rows+=("*$free_key" "$OUT_FREED")
   [[ -n "$OUT_HEAD" ]] && rows+=("*result" "$OUT_HEAD")
   [[ -n "$OUT_COUNTS" ]] && rows+=(items "$OUT_COUNTS")
@@ -111,6 +111,25 @@ _out_draw_summary() {
   _out_card "$kind" "$OUT_TITLE" "${rows[@]}"
   for r in "${OUT_NOTES[@]}"; do _out_wrap "$r" 2 "$C_DIM"; done
   return 0
+}
+
+# _out_draw_marmot — the marmot over the card that closes a real run on a terminal: proud when the
+# run freed 1GB or more, happy otherwise, dressed for the day (lib/mascot.sh) but saying nothing:
+# the card says the day's greetings and milestones, once. Its rule is as wide as the card. Only when marmot runs from a terminal (MM_TTY), like the day's greeting: not in a dry
+# run, cron or a script, where the card stays the whole closing.
+_out_draw_marmot() {
+  [[ "$MM_TTY" == 1 ]] || return 0
+  local mood=happy w=64 line
+  ((${MM_FREED:-0} >= 1073741824)) && mood=proud
+  ((w > OUT_W - 2)) && w=$((OUT_W - 2))
+  ((w >= 32)) || return 0
+  mm_now
+  mm_occasions_now "$REPLY"
+  mm_marmot_dress "$mood" 0 "${MM_OCC[@]}"
+  MM_LOOK_GREET=""
+  mm_marmot_draw "$mood" "$w" "" "" "$C_GREEN"
+  printf '\n'
+  for line in "${MM_ART[@]}"; do printf '%s\n' "$line"; done
 }
 
 # _out_draw_result KIND TITLE [KEY VALUE]... — the card that closes a report (KIND info) or a change.

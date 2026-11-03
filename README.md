@@ -247,6 +247,6 @@ Debian 12+ or Ubuntu 22.04+ (WSL2 and containers included), bash 5, coreutils, f
 
 In a container, `mm status` follows the cgroup CPU and memory limits, and `mm clean` and `mm optimize` leave kernels, swap, and TRIM to the host. marmot cleans Docker only when the daemon belongs to the container. Safety checks read `/proc` directly and need neither procps nor psmisc.
 
-Thanks to [Mole](https://github.com/tw93/Mole) by tw93, the cleanup tool for macOS.
+Thanks to [Mole](https://github.com/tw93/Mole) by tw93, which inspired marmot. On a Linux desktop, use [Mole for Linux](https://github.com/tw93/Mole/tree/linux).
 
 [Contributing](CONTRIBUTING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE)

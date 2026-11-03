@@ -156,6 +156,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 
 ### Changed
 
+- A real run on a terminal closes with the marmot over its card, proud when it freed 1GB or more
+  and dressed for the day. Dry runs, cron and scripts still close with the card alone.
 - One output for every command. Titles are bold, each step is a row (`✓ done`, `◎ left alone`,
   `→ moved to Trash`, `! warning`, `✗ failed`) with its size right-aligned, and every command
   closes with a bordered card: green for what changed, yellow for a dry run, and red on stderr for
