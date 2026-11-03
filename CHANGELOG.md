@@ -70,6 +70,10 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 ### Added
 
 - MIT license.
+- pi, Factory Droid, Kilo Code, Continue (`cn`), Mistral Vibe, Hermes, Happy, Grok CLI and Auggie
+  are known agents: their state is protected and their sessions show in `mm status`. `mm purge`
+  no longer offers pi's installed releases (`~/.pi/agent/install/releases/*/node_modules`) as
+  stale build artifacts.
 - `mm status`: a marmot peeks over the dashboard, its face summing up the health score, a busy
   CPU and whether an agent is at work; a short terminal drops it first.
 - `mm status` names the command for a full disk, full inodes or swap in its compact and full views,
@@ -152,6 +156,8 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 
 ### Changed
 
+- A real run on a terminal closes with the marmot over its card, proud when it freed 1GB or more
+  and dressed for the day. Dry runs, cron and scripts still close with the card alone.
 - One output for every command. Titles are bold, each step is a row (`✓ done`, `◎ left alone`,
   `→ moved to Trash`, `! warning`, `✗ failed`) with its size right-aligned, and every command
   closes with a bordered card: green for what changed, yellow for a dry run, and red on stderr for

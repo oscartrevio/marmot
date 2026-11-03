@@ -79,6 +79,47 @@ prims() {
   [[ "$output" == *"mm clean --help"* ]]
 }
 
+# closing BYTES DRY — the closing card of a run that freed BYTES (a dry run when DRY is 1), on a
+# terminal (MM_TTY=1), with the festive calendar off so no greeting slips in.
+closing() {
+  MM_TTY=1 COLUMNS=80 MM_HOME="$MM_SRC" MM_CMD=clean MM_DRY_RUN=$2 FREED=$1 bash -c '
+    . "$MM_HOME/lib/core.sh"
+    mm_festive() { return 1; }
+    MM_FREED=$FREED
+    if [[ "$MM_DRY_RUN" == 1 ]]; then mm_banner "Dry run complete" "Would free: 2.0GB | Items to clean: 3"
+    else mm_banner "Cleanup complete" "Space freed: 2.0GB | Items cleaned: 3"; fi
+  ' 2>&1
+}
+
+@test "a real run on a terminal closes with the marmot over its card, proud from 1GB freed" {
+  run closing 2147483648 0
+  [[ "$output" == *"(mm)--UU--(mm)"* ]]
+  [[ "$output" == *"^    ^"* ]]
+  [[ "$output" == *"+*"* ]]
+  # the marmot comes before the card
+  [[ "${output%%╭─*}" == *"(mm)--UU--(mm)"* ]]
+  run closing 1048576 0
+  [[ "$output" == *"^    ^"* && "$output" != *"+*"* ]]
+}
+
+@test "the marmot over the card says nothing: the day's greeting is the card's, once" {
+  mm_test_now '2026-12-25 12:00'
+  MM_TTY=1 COLUMNS=80 MM_HOME="$MM_SRC" MM_CMD=clean MM_DRY_RUN=0 run bash -c '
+    . "$MM_HOME/lib/core.sh"
+    MM_FREED=1048576
+    mm_banner "Cleanup complete" "Space freed: 1.0MB | Items cleaned: 1" "$(MM_RUN_ID=X mm_greeting; echo "$REPLY")"
+  '
+  [[ "$output" == *"(mm)--UU--(mm)"* ]]
+  [ "$(grep -cF "Merry Christmas" <<<"$output")" -eq 1 ]
+}
+
+@test "a dry run, a pipe and a failed run close without the marmot" {
+  run closing 2147483648 1
+  [[ "$output" == *"╭─ Dry run complete"* && "$output" != *"(mm)"* ]]
+  run prims 84
+  [[ "$output" == *"╭─ Cleanup complete"* && "$output" != *"(mm)"* ]]
+}
+
 @test "mm clean --dry-run: the totals, as a card, without escape codes" {
   mkdir -p "$HOME/.cache/pip"; head -c 3000000 /dev/zero >"$HOME/.cache/pip/blob"
   mm_age "$HOME/.cache" 60

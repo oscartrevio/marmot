@@ -45,6 +45,27 @@ teardown() { mm_test_teardown; }
   [ -e "$HOME/.openhands/conversations/c1/events/event-0.json" ]
 }
 
+@test "pi, Droid, Kilo and the other harnesses are known, so their state is protected" {
+  mm_core
+  # pi keeps its installed releases (with their node_modules) inside its agent dir, next to a
+  # package.json: purge must not take a release for a stale build artifact.
+  mkdir -p "$HOME/.pi/agent/install/releases/1.4.0/node_modules/x" "$HOME/.pi/agent/sessions/s1" \
+    "$HOME/.factory/worktrees" "$HOME/.local/share/kilo/log" "$HOME/.continue/sessions" \
+    "$HOME/.vibe" "$HOME/.hermes" "$HOME/.happy" "$HOME/.grok" "$HOME/.augment"
+  echo '{}' >"$HOME/.pi/agent/install/releases/1.4.0/package.json"
+  echo '{}' >"$HOME/.pi/agent/auth.json"
+  echo '{}' >"$HOME/.happy/agent.key"
+  mm_inuse_refresh
+  local p
+  for p in "$HOME/.pi/agent/install/releases/1.4.0/node_modules" "$HOME/.pi/agent/auth.json" \
+    "$HOME/.pi/agent/sessions/s1" "$HOME/.factory" "$HOME/.local/share/kilo" "$HOME/.continue/sessions" \
+    "$HOME/.vibe" "$HOME/.hermes" "$HOME/.happy/agent.key" "$HOME/.grok" "$HOME/.augment"; do
+    MM_DRY_RUN=1 run mm_rm "$p" "$HOME"
+    [ "$status" -eq 1 ] || { echo "not refused: $p"; false; }
+  done
+  [ -e "$HOME/.pi/agent/install/releases/1.4.0/node_modules/x" ]
+}
+
 @test "every agent has a process name and at least one state path, all under HOME" {
   local i p
   for i in "${!MM_AGENT_NAME[@]}"; do
