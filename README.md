@@ -92,6 +92,39 @@ It also knows what day it is: a party hat and fireworks at New Year, a Santa hat
 
 On those days `mm --version` and a run with nothing to do greet you too. The closing card of a real run celebrates firsts, round run counts, records and anniversaries, each once.
 
+## Keep it patched
+
+Coding agents run with your credentials and execute what they read, and exploits and fixes for
+them ship every week. A session keeps the code it started with until you restart it. marmot watches
+that, offline:
+
+- `mm status` flags apt's pending **security updates**, package lists older than 7 days (too old
+  to know newer fixes), **agent CLIs installed over 30 days ago** with the command that updates
+  each (`claude update`, `npm install -g @openai/codex@latest`, ...), node and python runtimes of a
+  version manager **past their end of life**, and **agent sessions still running code an update
+  replaced** (`omp (pid 4127) runs a replaced build: restart it`). `--json` lists everything
+  installed outside apt and snap.
+- `mm optimize` names the security updates in apt's upgrade, offers every agent CLI's update in
+  one confirmation that names each command, and global npm, bun, pnpm, pipx, uv, cargo, go and
+  Homebrew packages in a picker with nothing marked. It runs each tool's own update as you, never
+  with sudo.
+- `mm agents` lists the MCP servers your agents start and flags the ones that fetch whatever was
+  published last at every start (`npx -y pkg` with no version, an image with no tag) or talk plain
+  http to a remote host.
+
+Age is all marmot can tell without asking a registry: "installed 40 days ago" is a reminder, not
+a claim that a newer release exists.
+
+## See what agents leave behind
+
+`mm agents` shows, for every agent and harness marmot knows (and your rows), what it installed,
+keeps and leaves behind: its install and version, running processes, state (with its largest
+folders), sessions (count, size, oldest), logs, old versions, worktrees, folders named after it in
+`~/.cache`, `~/.local/share`, `~/.local/state` and `/tmp`, then what agents leave around them: the
+npx and uvx caches MCP servers run from, browser builds and automation profiles, and your files in
+`/tmp`. Each row names the marmot command that cleans it, or says that none does. It changes
+nothing.
+
 ## Clean up on a schedule
 
 ```sh
@@ -112,9 +145,10 @@ A run **never asks, never uses sudo, and never touches Docker, worktrees, packag
 | --- | --- |
 | `mm clean` | Caches, old browser and agent CLI builds, logs, the Trash, apt, journal, snaps, kernels, Docker |
 | `mm purge` | Finished git worktrees, then build artifacts of idle projects |
-| `mm status` | Live dashboard: agent sessions, CPU, memory, disk, network, lingering dev servers |
+| `mm status` | Live dashboard: agent sessions, CPU, memory, disk, network, lingering dev servers, security updates |
+| `mm agents` | What each coding agent installed, keeps and leaves behind, and its MCP servers (read-only) |
 | `mm analyze` | Disk overview, then a read-only explorer. Moves what you pick to the Trash |
-| `mm optimize` | Upgrades, swap reset, stranded processes, orphaned headless browsers, TRIM, DNS |
+| `mm optimize` | Upgrades (system, agent CLIs, global packages), swap reset, stranded processes, orphaned headless browsers, TRIM, DNS |
 | `mm uninstall` | apt, snap, npm, bun, pipx, uv and `~/.local/bin` packages, with their caches |
 | `mm schedule` | The safe part of clean and purge, daily or weekly |
 | `mm history` | What marmot removed, moved to the Trash or refused, run by run |
@@ -227,6 +261,7 @@ marmot sends **no telemetry**. It uses the network only here:
 - `mm update` runs `git fetch` on the checkout marmot was installed from.
 - `mm purge` asks `gh` about the pull requests of worktree branches, when `gh` is installed and logged in. This sends branch names to GitHub.
 - `mm optimize` runs `snap refresh --list`. On a terminal with sudo, and not in a dry run, it also runs `apt-get update` and downloads the upgrades you confirm.
+- `mm optimize`, on a terminal and not in a dry run, runs the update commands you confirm (`claude update`, `npm install -g PKG@latest`, `pipx upgrade PKG`, ...), which download from those tools' registries.
 - `mm clean` runs tools' own clean commands, such as npm, yarn through Corepack, and Homebrew, which may contact their registries.
 
 ## Requirements

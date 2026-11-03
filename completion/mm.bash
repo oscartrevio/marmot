@@ -1,7 +1,7 @@
 # bash completion for marmot (mm). Source from ~/.bashrc.
 # Option lists follow each command's usage in cmd/*.sh; keep them in step with it.
 
-_mm_commands="clean status analyze optimize purge uninstall schedule history update"
+_mm_commands="clean status agents analyze optimize purge uninstall schedule history update"
 
 # _mm_find_command — sets _mm_cmd (analyse becomes analyze) and _mm_pos, the word index of the
 # command: the first word after mm that is not a global flag. Empty when no command is typed yet.
@@ -54,6 +54,7 @@ _mm() {
       [[ "$sub" == enable ]] && opts+=" --daily --weekly" ;;
     update)    opts+=" --check" ;;
     optimize)  ;;
+    agents)    opts+=" --json" ;;
     *)         return ;;
   esac
 

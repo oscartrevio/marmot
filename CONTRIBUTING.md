@@ -10,6 +10,8 @@ promises.
   22.04 ships 1.2, so install a release: `tests/run.sh` prints the commands.
 - shellcheck, jq and python3. Tests that need jq or python3 skip without them, so install them to
   run the whole suite.
+- GNU parallel (`apt-get install parallel`): with it `tests/run.sh` runs the tests side by side,
+  one job per core; without it the suite is several times slower.
 - docker, for the end-to-end scenario only.
 
 ## Running the checks
@@ -21,10 +23,12 @@ tests/e2e/run.sh [IMAGE] [--root] [--minimal]   # a real run in a throwaway cont
 ```
 
 Tests run in a throwaway `HOME` under `$BATS_TEST_TMPDIR`. Commands that change the machine (sudo,
-apt, docker, npm, systemctl, ...) are replaced by stubs that fail the test when called; a test
-that needs one installs a fake with `mm_test_fake` (`tests/helpers/common.bash`). Run the e2e
-scenario before changing what gets deleted: it needs network access and touches nothing outside
-the container.
+apt, docker, npm, systemctl, ...) are replaced by stubs that fail the test when called; a test that
+needs one installs a fake with `mm_test_fake` (`tests/helpers/common.bash`). The host's `/tmp`,
+`PATH` programs, `/usr/local`, Homebrew and apt lists are swapped for sandbox stand-ins too, and
+busy checks see only the test's own processes, so a test passes the same with agents running on your
+machine as on CI. Run the e2e scenario before changing what gets deleted: it needs network access
+and touches nothing outside the container.
 
 ## Deletion rules
 

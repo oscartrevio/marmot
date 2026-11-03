@@ -255,3 +255,71 @@ user_agents() {
   [[ " ${MM_AGENT_PROCS[*]} " == *" my-claude "* ]]
   [[ " ${MM_AGENT_PROCS[*]} " != *" claude "* ]]
 }
+
+# ---------------------------------------------------------------- mm agents
+
+# tree_sums — a checksum of every file and folder name under the sandbox (what mm agents must
+# leave as it was).
+tree_sums() { find "$HOME" "$TMPDIR" -printf '%p %s %T@\n' 2>/dev/null | sort | sha256sum; }
+
+@test "mm agents shows what an agent keeps and leaves behind, and which command cleans each, read-only" {
+  mkdir -p "$HOME/.claude/projects/-p" "$HOME/.claude/plugins/big" "$HOME/.cache/claude-cli-nodejs/x"
+  head -c 300000 /dev/zero >"$HOME/.claude/plugins/big/blob"
+  echo '{}' >"$HOME/.claude/projects/-p/s1.jsonl"
+  echo '{}' >"$HOME/.claude/projects/-p/s2.jsonl"
+  echo note >"$HOME/.claude/projects/-p/notes.md"              # not a transcript
+  touch -d "@$(($(date +%s) - 40 * 86400 - 60))" "$HOME/.claude/projects/-p/s1.jsonl"
+  echo log >"$HOME/.cache/claude-cli-nodejs/x/mcp.log"
+  mkdir -p "$TMPDIR/claude-$(id -u)/t1" && echo x >"$TMPDIR/claude-$(id -u)/t1/out"
+  echo x >"$TMPDIR/random-scratch"
+  local before
+  before=$(tree_sums)
+  run mm agents
+  [ "$status" -eq 0 ]
+  mm_flat
+  [[ "$FLAT" == *"Claude Code"*"state ~/.claude"*"largest: plugins"*"kept: agent state"* ]]
+  [[ "$FLAT" == *"sessions ~/.claude/projects"*"2 files · oldest 40d"*"mm clean --sessions N"* ]] || { echo "$FLAT"; false; }
+  [[ "$FLAT" == *"other ~/.cache/claude-cli-nodejs"*"not cleaned by marmot"* ]]
+  [[ "$FLAT" == *"temp $TMPDIR"*"1 entry: claude-$(id -u)"* ]]
+  [[ "$FLAT" == *"Around the agents"*"your files in $TMPDIR"*"2 entries"* ]]
+  [[ "$FLAT" == *"Agent footprint"* ]]
+  [ "$(tree_sums)" = "$before" ]
+  [ ! -e "$XDG_STATE_HOME/marmot/operations.log" ]
+}
+
+@test "mm agents lists MCP servers and flags unpinned packages, untagged images and plain-http remotes" {
+  command -v jq >/dev/null || skip "jq not installed"
+  cat >"$HOME/.claude.json" <<'JSON'
+{"mcpServers": {
+  "fs": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]},
+  "pinned": {"command": "npx", "args": ["-y", "@acme/mcp@1.4.2"]},
+  "gh": {"command": "docker", "args": ["run", "-i", "--rm", "-e", "TOKEN", "ghcr.io/github/github-mcp-server"]},
+  "web": {"url": "http://mcp.example.com/sse"},
+  "local": {"url": "http://127.0.0.1:8080/mcp"}},
+ "projects": {"/p": {"mcpServers": {"py": {"command": "uvx", "args": ["mcp-server-git==2025.1.14"]}}}}}
+JSON
+  mkdir -p "$HOME/.codex"
+  printf '[mcp_servers.fetch]\ncommand = "uvx"\nargs = ["mcp-server-fetch"]\n\n[other]\nx = 1\n' >"$HOME/.codex/config.toml"
+  run mm agents --json
+  [ "$status" -eq 0 ]
+  risk() { jq -r --arg n "$1" '.mcp_servers[] | select(.name == $n) | .risk // "none"' <<<"$output"; }
+  [[ "$(risk fs)" == *"no version"* ]]
+  [[ "$(risk gh)" == *"no fixed tag"* ]]
+  [[ "$(risk web)" == *"plain http"* ]]
+  [[ "$(risk fetch)" == *"no version"* ]]
+  [ "$(risk pinned)" = none ] && [ "$(risk local)" = none ] && [ "$(risk py)" = none ]
+  jq -e '.mcp_servers | map(select(.name == "fetch")) | .[0].config | endswith("/.codex/config.toml")' <<<"$output"
+  run mm agents
+  mm_flat; [[ "$FLAT" == *"MCP servers"*"fs: ~/.claude.json · npx -y @modelcontextprotocol/server-filesystem /tmp"* ]]
+}
+
+@test "mm agents --json: each agent's parts, with bytes and the action" {
+  command -v jq >/dev/null || skip "jq not installed"
+  mkdir -p "$HOME/.codex/sessions/2026" "$HOME/.codex/log"
+  echo '{}' >"$HOME/.codex/sessions/2026/r.jsonl"
+  echo x >"$HOME/.codex/log/codex-tui.log"
+  run mm agents --json
+  [ "$status" -eq 0 ]
+  jq -e '.agents[] | select(.name == "Codex CLI") | .parts | map(.part) | index("state") and index("sessions") and index("logs")' <<<"$output"
+  jq -e '.agents[] | select(.name == "Codex CLI") | .parts[] | select(.part == "logs") | .action == "mm clean (older than 7 days)" and .bytes > 0' <<<"$output"
+}

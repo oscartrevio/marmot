@@ -27,6 +27,8 @@ the time they take; we will tell you what we found and agree on disclosure once 
 - Running anything with sudo beyond what the README documents.
 - `install.sh` or `mm schedule` writing, removing or running more than documented.
 - Outbound network access beyond the list in the README's "Network access" section.
+- `mm optimize` running an update command you did not confirm, one that is not the tool's own
+  (an agent row's update command must start with one of its process names), or any with sudo.
 
 ## What does not
 
@@ -70,7 +72,9 @@ The lines it does not cross (`lib/core.sh`, `mm_rm`):
   items, logs, crash dumps, sessions) state the count and the size. `mm schedule run` never uses
   sudo, and it touches the Trash and agent sessions only with their config opt-ins
   (`trash_keep_days`, `sessions_keep_days`).
-- No environment variable switches a protection off.
+- No environment variable switches a protection off. The test suite's `MM_TEST_*` seams are
+  honored only inside bats' per-test folder (`BATS_TEST_TMPDIR`); `MM_TEST_PROC_SCOPE` limits busy
+  checks to the test's own processes there, and never the in-use snapshot that protects files.
 
 Outside `mm_rm`, system state changes only through the owning tool (`apt-get`, `journalctl`,
 `snap`, `docker`, `git worktree remove`, package managers' clean commands) via `mm_run`, never

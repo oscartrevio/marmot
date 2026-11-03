@@ -55,6 +55,10 @@ mm_test_setup() {
   # override only inside $BATS_TEST_TMPDIR).
   export MM_TEST_TMP_ROOT="$SB/tmp"
   mkdir -p "$MM_TEST_TMP_ROOT"
+  # What lib/updates.sh inventories (apt's lists, programs on PATH, /usr/local, Homebrew) comes
+  # from the sandbox, never from the host: a host's old CLI or stale lists would change a score.
+  export MM_TEST_APT_DIR="$SB/apt" MM_TEST_USR_LOCAL="$SB/usr-local" MM_TEST_BREW_PREFIX="$SB/linuxbrew"
+  export MM_TEST_TOOL_PATH="$HOME/.local/bin:$SB/path-bin"
   # Busy checks count only this test's processes (lib/core.sh mm_proc_match), so tests run side by
   # side and the host's own npm or apt never makes a step skip.
   export MM_TEST_PROC_SCOPE="$BATS_TEST_TMPDIR"

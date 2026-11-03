@@ -13,6 +13,8 @@ MM_VERSION="0.2.0"
 MM_HOME="${MM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck source=agents.sh
 . "$MM_HOME/lib/agents.sh"
+# shellcheck source=updates.sh
+. "$MM_HOME/lib/updates.sh"
 MM_CONFIG_DIR="${MM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/marmot}"
 MM_STATE_DIR="${MM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/marmot}"
 MM_WHITELIST_FILE="${MM_WHITELIST_FILE:-$MM_CONFIG_DIR/whitelist}"
