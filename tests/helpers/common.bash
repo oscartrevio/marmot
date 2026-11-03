@@ -39,7 +39,8 @@ mm_test_setup() {
   # point outside the sandbox (lib/core.sh carve-outs).
   unset UV_CACHE_DIR GOPATH GOMODCACHE GOFLAGS GOPROXY GOTOOLCHAIN CLOUDSDK_CONFIG AZURE_CONFIG_DIR \
     MISE_CACHE_DIR PYENV_ROOT RBENV_ROOT COMPOSER_CACHE_DIR HEX_HOME OPAMROOT \
-    FIREBASE_EMULATORS_PATH PUB_CACHE TORCH_HOME WANDB_CACHE_DIR WANDB_DATA_DIR TF_PLUGIN_CACHE_DIR
+    FIREBASE_EMULATORS_PATH PUB_CACHE TORCH_HOME WANDB_CACHE_DIR WANDB_DATA_DIR TF_PLUGIN_CACHE_DIR \
+    UV_TOOL_DIR PIPX_HOME CARGO_HOME GOBIN BUN_INSTALL PNPM_HOME HOMEBREW_PREFIX FNM_DIR NVM_DIR VOLTA_HOME
   export MM_TTY=0 NO_COLOR=1 LC_ALL=C.UTF-8
   # Tests run on hosts and inside CI containers alike: container awareness is off unless a test
   # turns it on (MM_CONTAINER=1), and no outside Docker daemon setting leaks in.
@@ -54,8 +55,22 @@ mm_test_setup() {
   # override only inside $BATS_TEST_TMPDIR).
   export MM_TEST_TMP_ROOT="$SB/tmp"
   mkdir -p "$MM_TEST_TMP_ROOT"
+  # Busy checks count only this test's processes (lib/core.sh mm_proc_match), so tests run side by
+  # side and the host's own npm or apt never makes a step skip.
+  export MM_TEST_PROC_SCOPE="$BATS_TEST_TMPDIR"
+  # Temp files (mktemp, bun x's unpacked packages) go to the sandbox too, not the host's /tmp.
+  export TMPDIR="$sandbox/tmpdir"
+  mkdir -p "$TMPDIR"
   mm_test_guard_host
   MM_TEST_PIDS=()
+  # Tests that source marmot and call its functions run every line of it in the test shell, where
+  # bats' DEBUG trap records a stack trace per command: most of such a test's time. Excluded (bats'
+  # own mechanism), marmot's lines skip the recording; a failure still names the test's line.
+  # (Turning functrace off would be faster, but bats then loses the failing line after any call.)
+  if declare -F bats_add_debug_exclude_path >/dev/null; then
+    bats_add_debug_exclude_path "$MM_SRC/lib"
+    bats_add_debug_exclude_path "$MM_SRC/cmd"
+  fi
 }
 
 # mm_test_guard_host — put the guard (see the header) first on PATH, plus `mm` for this checkout.

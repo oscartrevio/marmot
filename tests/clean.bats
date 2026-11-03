@@ -1,9 +1,8 @@
 #!/usr/bin/env bats
 # cmd/clean.sh: shared temp report, Trash retention sweep, tool cleans, Docker, dry-run.
 
-# Busy-tool tests start processes named after real tools (pip, pnpm, npx, uv, go); clean's busy
-# check sees the whole machine, so tests in this file must not run concurrently with each other.
-setup_file() { export BATS_NO_PARALLELIZE_WITHIN_FILE=true; }
+# Busy-tool tests start processes named after real tools (pip, pnpm, npx, uv, go); the busy check
+# counts only the current test's processes (MM_TEST_PROC_SCOPE), so tests run side by side.
 
 setup() {
   load helpers/common

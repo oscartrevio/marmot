@@ -85,8 +85,10 @@ coding agents. It must never delete what an agent or tool still uses.
 | what gets deleted | the above, then `tests/run.sh tests/personal.bats` and `tests/e2e/run.sh` (needs docker) |
 
 `tests/run.sh` always runs shellcheck on every shell source first. Run the whole suite
-(`tests/run.sh`) before you hand a change back. Tests assert behavior (files left, history rows,
-exit codes, JSON fields), not wording. A new rule needs a test that fails without it.
+(`tests/run.sh`) before you hand a change back. Tests run side by side (GNU parallel): keep each one
+inside its sandbox (no host paths, no shared files, processes through `mm_test_bg`), poll instead of
+sleeping a fixed time, and never mark a file serial. Tests assert behavior (files left, history
+rows, exit codes, JSON fields), not wording. A new rule needs a test that fails without it.
 
 CI runs `tests/run.sh` once per pull request (`.github/workflows/test.yml`); Markdown-only changes
 skip it. It does not run the e2e scenario.

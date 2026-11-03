@@ -156,6 +156,12 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 
 ### Changed
 
+- The test suite runs in about a quarter of the time: every test runs side by side (busy checks
+  see only the test's own processes), tests that call marmot's functions no longer pay bats'
+  per-command stack trace for marmot's own lines, and nothing reads the host's `/tmp`, programs or
+  version managers. A test now passes the same with agents running on the machine.
+- `mm optimize` waits for stranded processes to exit for at most 5 seconds instead of always 5.
+
 - A real run on a terminal closes with the marmot over its card, proud when it freed 1GB or more
   and dressed for the day. Dry runs, cron and scripts still close with the card alone.
 - One output for every command. Titles are bold, each step is a row (`✓ done`, `◎ left alone`,

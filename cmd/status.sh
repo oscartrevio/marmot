@@ -607,6 +607,7 @@ _status_procs() {
   # own helper processes (lib/agents.sh) are marked: they head a helper tree, not a session.
   for e in "${cands[@]}"; do
     IFS=$'\t' read -r kind pid ppid kb comm age <<<"$e"
+    _mm_proc_in_scope "/proc/$pid" || continue
     proc=""
     if [[ "$kind" == A ]]; then
       proc=${ST_AGENT_COMM[$comm]:-}
@@ -848,7 +849,11 @@ _status_ports() {
     ino=${link#socket:\[} ino=${ino%\]}
     [[ -n "${sock[$ino]:-}" ]] || continue
     pid=${dir#/proc/} pid=${pid%/fd}
-    if [[ -z "${pidage[$pid]:-}" ]]; then _status_page "$pid" || continue; pidage[$pid]=$REPLY; fi
+    if [[ -z "${pidage[$pid]:-}" ]]; then
+      _mm_proc_in_scope "/proc/$pid" || continue
+      _status_page "$pid" || continue
+      pidage[$pid]=$REPLY
+    fi
     age=${pidage[$pid]}
     # Forked workers share the socket; it belongs to the oldest of them (the server's parent).
     if [[ -z "${owner[$ino]:-}" ]] || ((age > ${owner[$ino]#* })); then owner[$ino]="$pid $age"; fi

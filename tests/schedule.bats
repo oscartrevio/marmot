@@ -2,10 +2,6 @@
 # cmd/schedule.sh: the unattended profile (`mm schedule run`) in a sandbox home, its lock and
 # summary, and enable/disable/status against fake systemctl, crontab and loginctl.
 
-# The profile's busy checks see the whole machine (processes named after tools), and runs share
-# nothing else: keep this file's tests sequential, like clean.bats.
-setup_file() { export BATS_NO_PARALLELIZE_WITHIN_FILE=true; }
-
 setup() {
   load helpers/common
   mm_test_setup

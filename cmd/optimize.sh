@@ -388,6 +388,7 @@ _optimize_orphans() {
     [[ -n "${mine[$pid]:-}" ]] && continue
     [[ -O "$p" ]] || continue
     _optimize_cwd_deleted "$pid" || continue
+    _mm_proc_in_scope "$p" || continue
     age=$(mm_proc_age "$pid") || continue
     (( age >= min_age )) || continue
     bytes=$(awk '/^(VmRSS|VmSwap):/ { kb += $2 } END { printf "%.0f\n", kb * 1024 }' "$p/status" 2>/dev/null)
@@ -545,9 +546,15 @@ _optimize_orphan_task() {
     fi
   done
   (( ${#sent[@]} )) || { _optimize_skipped "Orphaned processes" "already gone or changed"; return; }
-  sleep 5
-  local i
-  for i in "${!sent[@]}"; do _optimize_alive "${sent[$i]}" "${starts[$i]}" && survivors+=("${sent[$i]}"); done
+  # Up to 5s for them to exit, done as soon as every one has (a zombie has exited).
+  local i t left
+  for (( t = 0; t < 25; t++ )); do
+    left=0
+    for i in "${!sent[@]}"; do _optimize_running "${sent[$i]}" "${starts[$i]}" && { left=1; break; }; done
+    (( left )) || break
+    sleep 0.2
+  done
+  for i in "${!sent[@]}"; do _optimize_running "${sent[$i]}" "${starts[$i]}" && survivors+=("${sent[$i]}"); done
   _optimize_applied "Sent SIGTERM to ${#sent[@]} orphaned processes ($(mm_human "$freed") RAM+swap)" ""
   if (( ${#survivors[@]} )); then
     _optimize_attention "${#survivors[@]} still running after 5s · force: kill -9 ${survivors[*]}"
@@ -662,6 +669,7 @@ _optimize_browsers() {
   for pid in "${!start[@]}"; do
     [[ -z "${mine[$pid]:-}" && -O "/proc/$pid" ]] || continue
     info=$(_optimize_browser_root "$pid") || continue
+    _mm_proc_in_scope "/proc/$pid" || continue
     _optimize_browser_orphaned "$pid" || continue
     age=$(mm_proc_age "$pid") || continue
     (( age >= min_age )) || continue
