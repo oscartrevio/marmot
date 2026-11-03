@@ -122,7 +122,7 @@ mm_banner_disk() {
 
 # mm_confirm QUESTION — y/N prompt on the terminal. There is no auto-accept: without a terminal
 # (cron, pipes, scripts) every confirmation declines, so unattended runs never escalate.
-# shellcheck disable=SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
+# shellcheck disable=SC2317,SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
 mm_confirm() {
   [[ "$MM_TTY" == 1 ]] || return 1
   local reply
@@ -394,7 +394,7 @@ mm_cg_cores() {
 # that nothing will be deleted) and let sudo ask for the password once (`sudo -v`). Refused,
 # failed or not allowed: the rest of the run is MM_NO_SUDO=1, with no more prompts and every root
 # step skipped. Without a terminal nothing is asked. A usable session starts the keepalive.
-# shellcheck disable=SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
+# shellcheck disable=SC2317,SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
 mm_sudo_ask() {
   (( EUID == 0 )) && return 0
   [[ "$MM_NO_SUDO" == 1 || "$MM_TTY" != 1 ]] && return 0
@@ -1718,7 +1718,7 @@ mm_apt_busy() {
 
 # mm_pick HEADER < lines — fzf multi-select on the terminal (TAB marks). Prints selected lines.
 # No terminal or no fzf selects nothing; there is no way to select everything unattended.
-# shellcheck disable=SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
+# shellcheck disable=SC2317,SC2329 # lib/out.sh copies this body, then redefines it to clear the live line first
 mm_pick() {
   if [[ "$MM_TTY" != 1 ]] || ! command -v fzf >/dev/null; then
     cat >/dev/null
