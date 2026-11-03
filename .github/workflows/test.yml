@@ -1,9 +1,9 @@
 name: test
 
 # One job on pull requests: shellcheck + the bats suite. tests/run.sh adds --jobs $(nproc) when GNU
-# parallel is installed, as on the runner, so files run side by side; files that set
-# BATS_NO_PARALLELIZE_WITHIN_FILE stay serial inside. Docs-only and website-only changes skip it
-# (web.yml checks the website), and a new push cancels the run it replaces. The end-to-end scenario (tests/e2e/run.sh) runs locally, not here.
+# parallel is installed (installed below), so tests run side by side, within files too.
+# Docs-only and website-only changes skip it (web.yml checks the website), and a new push cancels
+# the run it replaces. The end-to-end scenario (tests/e2e/run.sh) runs locally, not here.
 on:
   pull_request:
     paths-ignore:
@@ -30,8 +30,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends bats shellcheck
+      - run: sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends bats shellcheck parallel
       - run: tests/run.sh

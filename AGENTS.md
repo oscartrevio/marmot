@@ -15,13 +15,16 @@ coding agents. It must never delete what an agent or tool still uses.
 - `lib/agents.sh`: known agents (state, sessions, versions, worktrees, logs, helpers); format in
   its header.
 - `lib/schedule.sh`: shared facts of `mm schedule` for `mm status`.
+- `lib/updates.sh`: what is installed outside apt and snap and when, the command that updates
+  each, runtimes past end of life, apt's security updates and list age, sessions on replaced code.
 - `lib/mascot.sh`: the marmot (faces, the calendar of occasions, drawing); no side effects, so
   `install.sh` sources it too.
-- `cmd/*.sh`: one file per command (clean, purge, status, analyze, optimize, uninstall, schedule,
-  history, update).
+- `cmd/*.sh`: one file per command (clean, purge, status, agents, analyze, optimize, uninstall,
+  schedule, history, update).
 - `install.sh`, `completion/`: installer and bash/zsh completion.
-- `tests/*.bats`: one file per command plus `core`, `references`, `agents`, `mascot`, `audit`,
-  `cli`, `harness`, `install`, `personal` (the unattended-safety corpus);
+- `tests/*.bats`: one file per command plus `core`, `references`, `agents` (also `mm agents`),
+  `updates`, `mascot`, `audit`, `cli`, `harness`, `install`, `personal` (the unattended-safety
+  corpus);
   `tests/helpers/common.bash` is the sandbox; `tests/e2e/` the container run.
 
 ## Safety rules
@@ -78,15 +81,18 @@ coding agents. It must never delete what an agent or tool still uses.
 | `cmd/<command>.sh` | `tests/run.sh tests/<command>.bats` (`history` is in `tests/cli.bats`) |
 | `lib/core.sh` gate, whitelist, sizing | `tests/run.sh tests/core.bats tests/references.bats` |
 | `lib/catalog.sh` | `tests/run.sh tests/clean.bats` |
-| `lib/agents.sh` | `tests/run.sh tests/agents.bats tests/status.bats` |
+| `lib/agents.sh`, `cmd/agents.sh` | `tests/run.sh tests/agents.bats tests/status.bats` |
+| `lib/updates.sh` | `tests/run.sh tests/updates.bats tests/status.bats tests/optimize.bats` |
 | `lib/mascot.sh` | `tests/run.sh tests/mascot.bats tests/status.bats` |
 | `install.sh` | `tests/run.sh tests/install.bats` |
 | a raw deletion or process call | `tests/run.sh tests/audit.bats` |
 | what gets deleted | the above, then `tests/run.sh tests/personal.bats` and `tests/e2e/run.sh` (needs docker) |
 
 `tests/run.sh` always runs shellcheck on every shell source first. Run the whole suite
-(`tests/run.sh`) before you hand a change back. Tests assert behavior (files left, history rows,
-exit codes, JSON fields), not wording. A new rule needs a test that fails without it.
+(`tests/run.sh`) before you hand a change back. Tests run side by side (GNU parallel): keep each one
+inside its sandbox (no host paths, no shared files, processes through `mm_test_bg`), poll instead of
+sleeping a fixed time, and never mark a file serial. Tests assert behavior (files left, history
+rows, exit codes, JSON fields), not wording. A new rule needs a test that fails without it.
 
 CI runs `tests/run.sh` once per pull request (`.github/workflows/test.yml`); Markdown-only changes
 skip it. It does not run the e2e scenario.

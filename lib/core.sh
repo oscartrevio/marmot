@@ -13,6 +13,8 @@ MM_VERSION="0.2.0"
 MM_HOME="${MM_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 # shellcheck source=agents.sh
 . "$MM_HOME/lib/agents.sh"
+# shellcheck source=updates.sh
+. "$MM_HOME/lib/updates.sh"
 MM_CONFIG_DIR="${MM_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/marmot}"
 MM_STATE_DIR="${MM_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/marmot}"
 MM_WHITELIST_FILE="${MM_WHITELIST_FILE:-$MM_CONFIG_DIR/whitelist}"
@@ -1668,15 +1670,36 @@ mm_proc_match() {
   local p comm IFS=' ' argv=()
   for p in /proc/[0-9]*; do
     [[ "${p#/proc/}" == "$$" || "${p#/proc/}" == "$BASHPID" ]] && continue
-    if [[ -n "$1" ]] && { IFS= read -r comm <"$p/comm"; } 2>/dev/null && [[ "$comm" =~ ^($1)$ ]]; then
+    if [[ -n "$1" ]] && { IFS= read -r comm <"$p/comm"; } 2>/dev/null && [[ "$comm" =~ ^($1)$ ]] &&
+       _mm_proc_in_scope "$p"; then
       return 0
     fi
     if [[ -n "${2:-}" ]] && { mapfile -d '' -t argv <"$p/cmdline"; } 2>/dev/null &&
-       (( ${#argv[@]} )) && [[ "${argv[*]}" =~ $2 ]]; then
+       (( ${#argv[@]} )) && [[ "${argv[*]}" =~ $2 ]] && _mm_proc_in_scope "$p"; then
       return 0
     fi
   done
   return 1
+}
+
+# The test suite runs tests side by side on one machine, and busy checks see every process: a
+# test's fake `npx` would make another test's npm step skip, and so would the host's real one.
+# mm_test_setup exports MM_TEST_PROC_SCOPE as the test's own bats directory; busy checks, the
+# agent sessions, lingering servers and listening ports of mm status, and the orphans mm optimize
+# offers then count only processes started under that test (they inherit the variable). Honored
+# only when it names BATS_TEST_TMPDIR exactly, like the other MM_TEST_* seams; outside the suite
+# every process counts. The in-use snapshot (mm_inuse_refresh), which protects files, is never
+# scoped.
+_MM_PROC_SCOPE=""
+if [[ -n "${MM_TEST_PROC_SCOPE:-}" && -n "${BATS_TEST_TMPDIR:-}" &&
+      "$(realpath -e -- "$MM_TEST_PROC_SCOPE" 2>/dev/null)" == "$(realpath -e -- "$BATS_TEST_TMPDIR" 2>/dev/null)" ]]; then
+  _MM_PROC_SCOPE=$MM_TEST_PROC_SCOPE
+fi
+
+# _mm_proc_in_scope /proc/PID — 0 unless a test scope is set and PID was not started under it.
+_mm_proc_in_scope() {
+  [[ -z "$_MM_PROC_SCOPE" ]] && return 0
+  grep -qzxF -- "MM_TEST_PROC_SCOPE=$_MM_PROC_SCOPE" "$1/environ" 2>/dev/null
 }
 
 # mm_proc_running NAME — 0 if NAME runs: exact comm, or a script whose argv names it (node-shebang

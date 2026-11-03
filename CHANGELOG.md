@@ -69,6 +69,22 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
 
 ### Added
 
+- Keeping agent machines patched: `mm status` flags apt's pending security updates, package lists
+  older than 7 days, agent CLIs installed over 30 days ago (with the command that updates each),
+  node and python runtimes past their end of life, and agent sessions still running code an
+  update replaced; `--json` lists everything installed outside apt and snap (agent CLIs, global
+  npm, bun, pnpm, pipx, uv, cargo, go and Homebrew packages, loose binaries, runtimes).
+- `mm optimize` names security updates in apt's upgrade, offers agent CLI updates in one
+  confirmation naming each command (`claude update`, `npm install -g @openai/codex@latest`, ...),
+  global packages in a picker with nothing marked, and reports runtimes past end of life and
+  sessions on replaced code. Updates run as you, never with sudo.
+- `mm agents`: what every agent and harness installed, keeps and leaves behind (state, sessions,
+  logs, old versions, worktrees, its folders in `~/.cache`, `~/.local/share`, `~/.local/state` and
+  `/tmp`), what agents leave around them (npx and uvx caches, browser builds and profiles, your
+  files in `/tmp`), and the MCP servers they start, flagging unpinned packages, untagged images and
+  plain-http remotes. Each row names the command that cleans it, or says none does. Read-only.
+- Agent rows take an update command (an 11th field), which must start with one of the row's
+  process names.
 - MIT license.
 - pi, Factory Droid, Kilo Code, Continue (`cn`), Mistral Vibe, Hermes, Happy, Grok CLI and Auggie
   are known agents: their state is protected and their sessions show in `mm status`. `mm purge`
@@ -155,6 +171,12 @@ regression corpus is `tests/personal.bats`; the promises are in SECURITY.md.
   and the live `mm status` raises a paw beside its face on `w`.
 
 ### Changed
+
+- The test suite runs in about a quarter of the time: every test runs side by side (busy checks
+  see only the test's own processes), tests that call marmot's functions no longer pay bats'
+  per-command stack trace for marmot's own lines, and nothing reads the host's `/tmp`, programs or
+  version managers. A test now passes the same with agents running on the machine.
+- `mm optimize` waits for stranded processes to exit for at most 5 seconds instead of always 5.
 
 - A real run on a terminal closes with the marmot over its card, proud when it freed 1GB or more
   and dressed for the day. Dry runs, cron and scripts still close with the card alone.

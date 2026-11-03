@@ -9,7 +9,9 @@
 #     processes (see helpers below);
 #   - tools that keep every installed version get old versions pruned by `mm clean`
 #     (the active one, resolved through its launcher symlink, plus one previous are kept);
-#   - `mm purge` looks for git worktrees in their worktree dirs.
+#   - `mm purge` looks for git worktrees in their worktree dirs;
+#   - `mm status` and `mm optimize` say how long ago each CLI was installed, which sessions still
+#     run code an update replaced, and `mm optimize` offers their update commands (lib/updates.sh).
 # Paths that do not exist on a machine are simply ignored. Add an agent by adding a row.
 #
 # Any other tool: add rows in the same format to $MM_CONFIG_DIR/agents (default
@@ -23,8 +25,19 @@
 #
 # Row fields, separated by '|':
 #   name | process names | state dirs/files | session dirs | versions dir | active-version symlink
-#   | worktree dirs | logs dirs | helpers | session file globs
+#   | worktree dirs | logs dirs | helpers | session file globs | update command
 # Trailing fields may be left out: a shorter row loads with them empty.
+#
+# The update command is the tool's own documented self-update (`claude update`), for installs no
+# package manager owns; an npm, bun, pnpm, pipx, uv or Homebrew install updates through its
+# manager instead (lib/updates.sh). It must start with one of the row's process names: marmot
+# runs it, split into words and never through a shell, only after you confirm it by name.
+#   Claude Code   claude update (`claude --help`: "update|upgrade  Check for updates and install")
+#   Cursor Agent  cursor-agent update (cursor.com/docs/cli/installation, "Updates")
+#   opencode      opencode upgrade (opencode.ai/docs/cli, "upgrade")
+#   Goose         goose update (block.github.io/goose/docs/guides/updating-goose)
+#   oh-my-pi      omp update (`omp --help`: "update  Check for and install updates")
+#   pi            pi update (its launcher ~/.pi/agent/bin/pi: "npm in pi update")
 #
 # Session file globs name the files that are this tool's transcripts, for the opt-in retention
 # sweep (`mm clean --sessions DAYS`): with them set, nothing else in a session dir is touched.
@@ -82,19 +95,19 @@
 # Hermes ~/.hermes (README); Happy ~/.happy, its agent.key inside (happy-cli/src/persistence.ts);
 # Grok CLI ~/.grok (README); Auggie ~/.augment (README).
 MM_AGENTS_TABLE='
-Claude Code|claude|~/.claude ~/.claude.json|~/.claude/projects ~/.claude/sessions|~/.local/share/claude/versions|~/.local/bin/claude||||*.jsonl
+Claude Code|claude|~/.claude ~/.claude.json|~/.claude/projects ~/.claude/sessions|~/.local/share/claude/versions|~/.local/bin/claude||||*.jsonl|claude update
 Codex CLI|codex|~/.codex|~/.codex/sessions|||~/.codex/worktrees|~/.codex/log
 Gemini CLI|gemini|~/.gemini|~/.gemini/tmp|||
-Cursor Agent|cursor-agent|~/.cursor|~/.cursor/chats ~/.cursor/projects|~/.local/share/cursor-agent/versions|~/.local/bin/cursor-agent|~/.cursor/worktrees
+Cursor Agent|cursor-agent|~/.cursor|~/.cursor/chats ~/.cursor/projects|~/.local/share/cursor-agent/versions|~/.local/bin/cursor-agent|~/.cursor/worktrees||||cursor-agent update
 GitHub Copilot CLI|copilot|~/.copilot/session-state ~/.copilot/config.json|~/.copilot/session-state|~/.copilot/pkg/universal|~/.local/bin/copilot||~/.copilot/logs
 Aider|aider|~/.aider ~/.aider.conf.yml||||
-opencode|opencode|~/.local/share/opencode ~/.config/opencode|~/.local/share/opencode/project||||~/.local/share/opencode/log
+opencode|opencode|~/.local/share/opencode ~/.config/opencode|~/.local/share/opencode/project||||~/.local/share/opencode/log|||opencode upgrade
 Amp|amp|~/.amp ~/.local/share/amp ~/.config/amp|~/.local/share/amp|||
-Goose|goose|~/.local/share/goose ~/.config/goose ~/.local/state/goose|~/.local/share/goose/sessions||||~/.local/state/goose/logs
+Goose|goose|~/.local/share/goose ~/.config/goose ~/.local/state/goose|~/.local/share/goose/sessions||||~/.local/state/goose/logs|||goose update
 Crush|crush|~/.local/share/crush ~/.config/crush||||
 Qwen Code|qwen|~/.qwen|~/.qwen/tmp ~/.qwen/projects|||
 Cline|cline|~/.cline|||||~/.cline/data/logs
-oh-my-pi|omp|~/.omp|~/.omp/agent/sessions||||~/.omp/logs|__omp_worker_* ~/.omp/run/daemons/
+oh-my-pi|omp|~/.omp|~/.omp/agent/sessions||||~/.omp/logs|__omp_worker_* ~/.omp/run/daemons/||omp update
 Paseo|paseo|~/.paseo|~/.paseo/agents|||~/.paseo/worktrees
 T3 Code|t3|~/.t3||||~/.t3/worktrees
 Claude Squad|cs claude-squad|~/.claude-squad||||~/.claude-squad/worktrees
@@ -103,7 +116,7 @@ Container Use|container-use cu|~/.config/container-use||||~/.config/container-us
 uzi|uzi|~/.local/share/uzi||||~/.local/share/uzi/worktrees
 Kimi CLI|kimi|~/.kimi ~/.kimi-code|~/.kimi/sessions ~/.kimi/imported_sessions ~/.kimi-code/sessions||||~/.kimi/logs ~/.kimi-code/logs
 OpenHands|openhands|~/.openhands|~/.openhands/conversations
-pi|pi|~/.pi/agent|~/.pi/agent/sessions
+pi|pi|~/.pi/agent|~/.pi/agent/sessions|||||||pi update
 Factory Droid|droid|~/.factory||||~/.factory/worktrees
 Kilo Code|kilo|~/.local/share/kilo ~/.config/kilo ~/.local/state/kilo|||||~/.local/share/kilo/log
 Continue|cn|~/.continue|~/.continue/sessions||||~/.continue/logs
@@ -115,7 +128,7 @@ Auggie|auggie|~/.augment||||
 '
 
 MM_AGENT_NAME=() MM_AGENT_PROCS=() MM_AGENT_STATE=() MM_AGENT_SESSIONS=() MM_AGENT_VERSIONS=() MM_AGENT_ACTIVE=()
-MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=() MM_AGENT_SESSION_FILES=()
+MM_AGENT_WORKTREES=() MM_AGENT_LOGS=() MM_AGENT_HELPERS=() MM_AGENT_SESSION_FILES=() MM_AGENT_UPDATE=()
 MM_AGENT_REJECTED=()   # "<file>:<line>: <reason>" for user rows that were not accepted
 
 # _mm_tilde_list WORDS — the space-separated WORDS in REPLY, single-spaced, a leading ~ of each
@@ -143,15 +156,16 @@ _mm_agent_path_problem() {
 # _mm_agents_parse ORIGIN — read rows from stdin and load them; a row named like a loaded one
 # replaces it. Rows of the user's file (ORIGIN is its name) are validated first.
 _mm_agents_parse() {
-  local origin=$1 line n=0 i j w where bad name procs state sessions versions active worktrees logs helpers files
+  local origin=$1 line n=0 i j w where bad name procs state sessions versions active worktrees logs helpers files update
   local -a words=() more=()
   while IFS= read -r line || [[ -n "$line" ]]; do
     n=$((n + 1))
     line=${line//$'\t'/ }
     read -r line <<<"$line"
     [[ -z "$line" || "$line" == \#* ]] && continue
-    IFS='|' read -r name procs state sessions versions active worktrees logs helpers files <<<"$line"
+    IFS='|' read -r name procs state sessions versions active worktrees logs helpers files update <<<"$line"
     read -r name <<<"$name"
+    read -r update <<<"$update"
     if [[ "$origin" != builtin ]]; then
       where="$origin:$n"
       if [[ "$line" == *[[:cntrl:]]* ]]; then MM_AGENT_REJECTED+=("$where: control characters"); continue; fi
@@ -168,6 +182,9 @@ _mm_agents_parse() {
       bad=""
       for w in "${words[@]}"; do _mm_agent_path_problem "$w" && { bad=$REPLY; break; }; done
       if [[ -n "$bad" ]]; then MM_AGENT_REJECTED+=("$where: $bad"); continue; fi
+      if [[ -n "$update" && " $procs " != *" ${update%% *} "* ]]; then
+        MM_AGENT_REJECTED+=("$where: update command '$update' does not start with one of its process names"); continue
+      fi
     fi
     [[ -n "$name" ]] || continue
     i=${#MM_AGENT_NAME[@]}
@@ -182,6 +199,7 @@ _mm_agents_parse() {
     _mm_tilde_list "$logs"; MM_AGENT_LOGS[i]=$REPLY
     MM_AGENT_HELPERS[i]=$helpers
     read -r files <<<"$files"; MM_AGENT_SESSION_FILES[i]=$files
+    MM_AGENT_UPDATE[i]=$update
   done
 }
 
@@ -244,4 +262,36 @@ mm_agent_dir() {
     done
   done
   return 1
+}
+
+# mm_agent_procs — "idx<TAB>pid" for every process of this user that belongs to an agent row: by
+# name (the kernel's 15-character comm), or by the script an interpreter runs (node .../gemini.js,
+# python3 .../aider). From /proc only; helpers count like any other process.
+mm_agent_procs() {
+  local i name p c base
+  local -a argv=()
+  local -A want=()
+  for i in "${!MM_AGENT_NAME[@]}"; do
+    for name in ${MM_AGENT_PROCS[i]}; do
+      [[ -n "${want[$name]:-}" ]] || want[$name]=$i
+      [[ -n "${want[${name:0:15}]:-}" ]] || want[${name:0:15}]=$i
+    done
+  done
+  for p in /proc/[0-9]*; do
+    [[ -O "$p" ]] || continue
+    { read -r c <"$p/comm"; } 2>/dev/null || continue
+    _mm_proc_in_scope "$p" || continue
+    i=${want[$c]:-}
+    if [[ -z "$i" && "$c" =~ ^(node|nodejs|bun|deno|python[0-9.]*)$ ]]; then
+      mapfile -d '' -t -n 4 argv 2>/dev/null <"$p/cmdline" || continue
+      for base in "${argv[@]:1}"; do
+        [[ "$base" == -* || -z "$base" ]] && continue
+        base=${base##*/} base=${base%.*js} base=${base%.py} base=${base%.ts}
+        i=${want[$base]:-}
+        break
+      done
+    fi
+    [[ -n "$i" ]] && printf '%s\t%s\n' "$i" "${p#/proc/}"
+  done
+  return 0
 }

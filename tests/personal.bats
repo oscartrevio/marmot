@@ -3,9 +3,6 @@
 # `mm purge --yes` and `mm clean` without a terminal. Each case below is a way marmot once
 # deleted something a person wanted; the regenerable controls prove the runs still act.
 
-# Runs share the machine's process list (busy checks): keep this file's tests sequential.
-setup_file() { export BATS_NO_PARALLELIZE_WITHIN_FILE=true; }
-
 setup() {
   load helpers/common
   mm_test_setup

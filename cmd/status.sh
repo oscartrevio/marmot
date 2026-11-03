@@ -82,9 +82,16 @@ Environment:
   MM_STATUS_VPN_IFACES   VPN interface globs ("$ST_VPN_GLOBS")
   MM_CONTAINER           1 or 0: treat this machine as a container or not (default: detected)
 
+Security: apt's pending security updates (from a -security suite), package lists older than
+  $MM_APT_LISTS_OLD_DAYS days (they cannot know newer fixes), agent CLIs installed over $MM_TOOL_OLD_DAYS days ago (with
+  the command that updates each; age only, marmot does not ask any registry), node and python
+  runtimes of a version manager past their end of life, and agent sessions still running code an
+  update replaced (restart them). --json lists everything installed outside apt and snap.
+
 Health starts at 100 and drops for sustained CPU >85%, load above core count (not in a
 container), low available memory, swap >50%, root disk >=80%, root inodes >=90%, pending reboot,
-failed units, and orphaned agent or dev processes.
+failed units, orphaned agent or dev processes, security updates, old package lists, old agent
+CLIs, runtimes past end of life and sessions on replaced code.
 The marmot over the dashboard shows it at a glance, first match wins: x x health below 60,
 O O ! below 80 (cheeks stuffed when the root disk is full), > < CPU above 85% over the last
 three samples, o o any other health reason, - o and a mug of coffee on the night shift (an agent
@@ -255,6 +262,7 @@ _status_init() {
   ST_PF=0 ST_T=0 ST_SLOW_PID="" ST_SLOW_AT=0 ST_TOPN=5 ST_NCORE=4 ST_AGN=8 ST_GAP=1 ST_MASCOT=1 ST_IF=""
   ST_SHOWN=() ST_REPAINT=1 ST_SIZE=""
   ST_CT=() ST_CI=() ST_CPU=() ST_CPUH=() ST_RXH=() ST_TXH=() ST_FAILED=() ST_ORPHANS=() ST_KPENDING=0
+  ST_INSTALLS=() ST_OLD_TOOLS=() ST_EOL=() ST_LISTS_DAYS="" ST_OUTDATED=() ST_OUT_KEY=- ST_OUT_AT=0
   declare -gA ST_SLOW=() ST_NRX=() ST_NTX=() ST_P_NRX=() ST_P_NTX=() ST_RBPS=() ST_TBPS=() ST_CL_PREV=()
   # The client link (see _status_client): ss is in iproute2; names need tailscale and jq.
   ST_SS="" ST_TS=""
@@ -607,6 +615,7 @@ _status_procs() {
   # own helper processes (lib/agents.sh) are marked: they head a helper tree, not a session.
   for e in "${cands[@]}"; do
     IFS=$'\t' read -r kind pid ppid kb comm age <<<"$e"
+    _mm_proc_in_scope "/proc/$pid" || continue
     proc=""
     if [[ "$kind" == A ]]; then
       proc=${ST_AGENT_COMM[$comm]:-}
@@ -701,7 +710,7 @@ _status_procs() {
   ((${#ST_AGENTS[@]} > 1)) && mapfile -t ST_AGENTS < <(printf '%s\n' "${ST_AGENTS[@]}" | sort -t$'\t' -k8,8nr -k7,7nr -k4,4nr)
   ((${#ST_HELPERS[@]} > 1)) && mapfile -t ST_HELPERS < <(printf '%s\n' "${ST_HELPERS[@]}" | sort -t$'\t' -k4,4nr)
   ((${#ST_LINGER[@]} > 1)) && mapfile -t ST_LINGER < <(printf '%s\n' "${ST_LINGER[@]}" | sort -t$'\t' -k3,3nr)
-  return 0
+  _status_outdated
 }
 
 # _status_pss PID... — proportional memory (Pss + SwapPss, kB) of each PID into ST_PSS, -1 where
@@ -848,7 +857,11 @@ _status_ports() {
     ino=${link#socket:\[} ino=${ino%\]}
     [[ -n "${sock[$ino]:-}" ]] || continue
     pid=${dir#/proc/} pid=${pid%/fd}
-    if [[ -z "${pidage[$pid]:-}" ]]; then _status_page "$pid" || continue; pidage[$pid]=$REPLY; fi
+    if [[ -z "${pidage[$pid]:-}" ]]; then
+      _mm_proc_in_scope "/proc/$pid" || continue
+      _status_page "$pid" || continue
+      pidage[$pid]=$REPLY
+    fi
     age=${pidage[$pid]}
     # Forked workers share the socket; it belongs to the oldest of them (the server's parent).
     if [[ -z "${owner[$ino]:-}" ]] || ((age > ${owner[$ino]#* })); then owner[$ino]="$pid $age"; fi
@@ -1266,11 +1279,23 @@ _status_slow_probe() {
   mkdir -p "$d"
   {
     if command -v apt >/dev/null; then
+      # "name/suite,suite version arch [upgradable from: old]": a candidate from a -security suite
+      # (noble-security, bookworm-security, esm-apps-security) fixes a vulnerability.
       timeout 2 apt list --upgradable 2>/dev/null |
-        awk -F/ 'NR > 1 && NF { n++; if (n <= 30) names = names (names ? " " : "") $1 }
-          END { printf "upgradable\t%d\nupgradable_names\t%s\n", n, names }'
+        awk -F/ 'NR > 1 && NF { n++; if (n <= 30) names = names (names ? " " : "") $1
+            if ($2 ~ /^[^ ]*-security/) { s++; if (s <= 30) sec = sec (sec ? " " : "") $1 } }
+          END { printf "upgradable\t%d\nupgradable_names\t%s\nsecurity\t%d\nsecurity_names\t%s\n", n, names, s, sec }'
+      mm_apt_lists_at && printf 'lists_at\t%s\n' "$REPLY"
     fi
   } >"$d/apt" &
+  {
+    # What is installed outside apt and snap (lib/updates.sh), one inst_N key each.
+    local n=0 line
+    while IFS= read -r line; do
+      n=$((n + 1))
+      printf 'inst_%d\t%s\n' "$n" "$line"
+    done < <(mm_installs)
+  } >"$d/tools" &
   {
     local f
     if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
@@ -1316,7 +1341,7 @@ _status_slow_probe() {
     fi
   } >"$d/addr" &
   wait
-  { cat "$d"/apt "$d"/systemd "$d"/kernel "$d"/docker "$d"/addr; printf 'at\t%s\n' "$(date +%s)"; } >"$out.tmp"
+  { cat "$d"/apt "$d"/tools "$d"/systemd "$d"/kernel "$d"/docker "$d"/addr; printf 'at\t%s\n' "$(date +%s)"; } >"$out.tmp"
   mv -f "$out.tmp" "$out"
 }
 
@@ -1329,7 +1354,7 @@ _status_slow_start() {
 # _status_slow_load — read the latest slow-probe results into ST_SLOW (keeps old ones until then).
 _status_slow_load() {
   [[ -f "$ST_TMP/slow" ]] || return 0
-  local k v
+  local k v at now kind eol
   ST_SLOW=()
   while IFS=$'\t' read -r k v; do [[ -n "$k" ]] && ST_SLOW[$k]=$v; done <"$ST_TMP/slow"
   # A container runs the host's kernel: its kernel packages, if any, say nothing about a reboot.
@@ -1337,6 +1362,44 @@ _status_slow_load() {
   ((ST_CTR)) && ST_KPENDING=0
   ST_FAILED=()
   read -r -a ST_FAILED <<<"${ST_SLOW[failed]:-}"
+  # What mm_installs found (lib/updates.sh), each line with the days since it was installed
+  # appended (fields joined by the unit separator); ST_OLD_TOOLS the agent CLIs older than
+  # MM_TOOL_OLD_DAYS, ST_EOL the runtimes past their end of life. The ages are the clock's at
+  # load time: one `date` for all of them.
+  ST_INSTALLS=() ST_OLD_TOOLS=() ST_EOL=() ST_LISTS_DAYS=""
+  [[ -n "${ST_SLOW[inst_1]:-}${ST_SLOW[lists_at]:-}" ]] || return 0
+  now=$(date +%s)
+  for ((k = 1; ; k++)); do
+    v=${ST_SLOW[inst_$k]:-}
+    [[ -n "$v" ]] || break
+    IFS=$MM_FS read -r kind _ _ at _ _ _ eol _ <<<"$v"
+    mm_days_ago "$at" "$now"
+    v+=$MM_FS$REPLY
+    ST_INSTALLS+=("$v")
+    [[ "$kind" == agent ]] && ((REPLY > MM_TOOL_OLD_DAYS)) && ST_OLD_TOOLS+=("$v")
+    [[ "$kind" == runtime && -n "$eol" ]] && ST_EOL+=("$v")
+  done
+  if [[ -n "${ST_SLOW[lists_at]:-}" ]]; then mm_days_ago "${ST_SLOW[lists_at]}" "$now"; ST_LISTS_DAYS=$REPLY; fi
+  return 0
+}
+
+# _status_outdated — agent sessions and helpers still running code an update replaced
+# (lib/updates.sh mm_proc_outdated), into ST_OUTDATED as "pid<TAB>process<TAB>reason". Checked
+# again when the set of agent processes changes and every ST_SLOW_EVERY seconds otherwise.
+_status_outdated() {
+  local e pid proc key=""
+  for e in "${ST_AGENTS[@]}" "${ST_HELPERS[@]}"; do key+="${e%%$'\t'*} "; done
+  [[ "$key" != "${ST_OUT_KEY-}" ]] || ((EPOCHSECONDS - ST_OUT_AT >= ST_SLOW_EVERY)) || return 0
+  ST_OUT_KEY=$key ST_OUT_AT=$EPOCHSECONDS ST_OUTDATED=()
+  for e in "${ST_AGENTS[@]}"; do
+    IFS=$'\t' read -r pid _ proc _ <<<"$e"
+    mm_proc_outdated "$pid" "${ST_AGENT_IDX[$proc]}" && ST_OUTDATED+=("$pid"$'\t'"$proc"$'\t'"$REPLY")
+  done
+  for e in "${ST_HELPERS[@]}"; do
+    IFS=$'\t' read -r pid _ proc _ <<<"$e"
+    mm_proc_outdated "$pid" "${ST_AGENT_IDX[$proc]}" && ST_OUTDATED+=("$pid"$'\t'"$proc helper"$'\t'"$REPLY")
+  done
+  return 0
 }
 
 # _status_fixes — the problems that have a marmot command addressing them, into ST_FIXES as
@@ -1408,6 +1471,12 @@ _status_health() {
   if ((ST_ROOT_PCT >= MM_DISK_FULL_PCT * 10)); then _status_pen 25 "disk $((ST_ROOT_PCT / 10))% full"
   elif ((ST_ROOT_PCT >= MM_DISK_WARN_PCT * 10)); then _status_pen 10 "disk $((ST_ROOT_PCT / 10))% full"; fi
   ((ST_REBOOT || ${ST_KPENDING:-0})) && _status_pen 10 "reboot required"
+  local sec=${ST_SLOW[security]:-0}
+  ((sec > 0)) && _status_pen 10 "$sec security update$( ((sec > 1)) && echo s)"
+  [[ -n "${ST_LISTS_DAYS:-}" ]] && ((ST_LISTS_DAYS > MM_APT_LISTS_OLD_DAYS)) && _status_pen 5 "apt lists ${ST_LISTS_DAYS}d old"
+  ((${#ST_OLD_TOOLS[@]})) && _status_pen 5 "old agent CLI"
+  ((${#ST_EOL[@]})) && _status_pen 5 "runtime past EOL"
+  ((${#ST_OUTDATED[@]})) && _status_pen 5 "stale sessions"
   if ((ST_ROOT_IPCT >= MM_DISK_FULL_PCT * 10)); then _status_pen 20 "inodes $((ST_ROOT_IPCT / 10))% used"; fi
   ((${#ST_FAILED[@]})) && _status_pen 10 "${#ST_FAILED[@]} failed unit$( ((${#ST_FAILED[@]} > 1)) && echo s)"
   ((${#ST_ORPHANS[@]})) && _status_pen 5 "${#ST_ORPHANS[@]} orphaned process$( ((${#ST_ORPHANS[@]} > 1)) && echo es)"
@@ -1854,11 +1923,32 @@ _status_panel_agents() {
 # never runs these). Checks whose tool is missing (no systemd, docker, apt) are left out, and so
 # are reboot and kernel in a container (the host's).
 _status_checks() {
-  local n s
+  local n s e pid proc why ver upd days name eol how
+  local -a names=()
   ST_CHK_OK=() ST_CHK_NOTE=() ST_CHK_BAD=()
   if ((ST_CTR)); then :
   elif ((ST_REBOOT)); then ST_CHK_BAD+=("reboot required${ST_REBOOT_PKGS:+ ($ST_REBOOT_PKGS)}"$'\t'"sudo reboot")
   else ST_CHK_OK+=(reboot); fi
+  # Sessions on replaced code, one line per process name and reason.
+  local -A byreason=()
+  local -a order=()
+  for e in "${ST_OUTDATED[@]}"; do
+    IFS=$'\t' read -r pid proc why <<<"$e"
+    [[ -n "${byreason[$proc$'\t'$why]:-}" ]] || order+=("$proc"$'\t'"$why")
+    byreason[$proc$'\t'$why]+=" $pid"
+  done
+  for e in "${order[@]}"; do
+    read -r -a names <<<"${byreason[$e]}"
+    proc=${e%%$'\t'*} why=${e#*$'\t'}
+    if ((${#names[@]} == 1)); then
+      ST_CHK_BAD+=("$proc (pid ${names[0]}) $why"$'\t'"restart it to load the update")
+    else
+      s="${names[*]:0:3}"
+      ((${#names[@]} > 3)) && s+=" +$((${#names[@]} - 3))"
+      why=${why/#runs/run} why=${why/#predates/predate}
+      ST_CHK_BAD+=("${#names[@]} $proc processes $why (pids $s)"$'\t'"restart them to load the update")
+    fi
+  done
   if [[ -z "${ST_SLOW[at]:-}" ]]; then ST_CHK_NOTE+=("checking…"); return 0; fi
   if ((ST_CTR)); then :
   elif ((ST_KPENDING)); then
@@ -1888,6 +1978,32 @@ _status_checks() {
   if [[ -z "$n" ]]; then :
   elif ((n > 0)); then ST_CHK_NOTE+=("$n update$s")
   else ST_CHK_OK+=(updates); fi
+
+  # Security (lib/updates.sh): fixes apt has and has not installed, package lists too old to know
+  # this week's, agent CLIs installed long ago (age only: a newer release may exist or not) and
+  # runtimes past their end of life.
+  n=${ST_SLOW[security]:-0} s=""
+  ((n > 1)) && s=s
+  if ((n > 0)); then
+    read -r -a names <<<"${ST_SLOW[security_names]:-}"
+    e="${names[*]:0:4}"
+    ((n > 4)) && e+=" +$((n - 4)) more"
+    ST_CHK_BAD+=("$n security update$s ($e)"$'\t'"mm optimize")
+  fi
+  if [[ -n "$ST_LISTS_DAYS" ]] && ((ST_LISTS_DAYS > MM_APT_LISTS_OLD_DAYS)); then
+    ST_CHK_BAD+=("package lists $ST_LISTS_DAYS days old: newer security updates unknown"$'\t'"mm optimize (apt-get update)")
+  fi
+  for e in "${ST_OLD_TOOLS[@]}"; do
+    IFS=$MM_FS read -r _ proc ver _ upd _ _ _ _ days <<<"$e"
+    ST_CHK_BAD+=("$proc ${ver:+$ver }installed $days days ago"$'\t'"${upd:-update it the way you installed it}")
+  done
+  for e in "${ST_EOL[@]}"; do
+    IFS=$MM_FS read -r _ name ver _ _ how _ eol _ <<<"$e"
+    ST_CHK_BAD+=("$name $ver ($how) past end of life ($eol): no security fixes"$'\t'"install a supported release with $how")
+  done
+  n=0
+  for e in "${ST_INSTALLS[@]}"; do [[ "$e" == agent"$MM_FS"* ]] && n=$((n + 1)); done
+  ((n && !${#ST_OLD_TOOLS[@]})) && ST_CHK_OK+=("agent CLIs")
   return 0
 }
 
@@ -2301,7 +2417,7 @@ _status_cols() {
 # ---------------------------------------------------------------- JSON
 
 _status_json() {
-  local tc tm ag he li orph po df nets e ifc i core_list="" last=null
+  local tc tm ag he li orph po df nets e ifc i core_list="" last=null inst outd
   # The last scheduled run's summary as written (lib/schedule.sh), if it is valid JSON.
   # shellcheck disable=SC2031 # a lib/schedule.sh constant
   ((ST_LAST)) && { last=$(jq -c . "$MM_SCHEDULE_LAST" 2>/dev/null) || last=null; }
@@ -2313,6 +2429,8 @@ _status_json() {
   orph=$(printf '%s\n' "${ST_ORPHANS[@]}")
   po=$(printf '%s\n' "${ST_PORTS[@]}")
   df=$(printf '%s\n' "${ST_DF[@]}")
+  inst=$(printf '%s\n' "${ST_INSTALLS[@]}")
+  outd=$(printf '%s\n' "${ST_OUTDATED[@]}")
   nets=""
   [[ -n "$ST_IF" ]] && nets+="$ST_IF"$'\tdefault\t'"$ST_RX_BPS"$'\t'"$ST_TX_BPS"$'\n'
   for ifc in "${ST_VPN[@]}"; do nets+="$ifc"$'\tvpn\t'"${ST_RBPS[$ifc]:-0}"$'\t'"${ST_TBPS[$ifc]:-0}"$'\n'; done
@@ -2337,7 +2455,8 @@ _status_json() {
     --arg cl_via "$ST_CL_VIA" --arg cl_tr "$ST_CL_TRANSPORT" --arg cl_tty "$ST_CL_TTY" --arg cl_idle "$ST_CL_IDLE" \
     --arg ctr "$ST_CTR" --arg cgmem "$ST_CG_MEM_MAX" --arg cgcpu "$ST_CG_MILLI" \
     --argjson last "${last:-null}" --arg sched "$ST_SCHED" \
-    --arg kpending "${ST_KPENDING:-0}" '
+    --arg kpending "${ST_KPENDING:-0}" --arg inst "$inst" --arg outd "$outd" --arg lists "$ST_LISTS_DAYS" \
+    --arg oldt "$MM_TOOL_OLD_DAYS" --argjson agents "$(printf '%s\n' "${MM_AGENT_NAME[@]}" | jq -R . | jq -s .)" '
     def num: if . == null or . == "" then null else tonumber end;
     def str: if . == "" then null else . end;
     def lines: split("\n") | map(select(length > 0) | split("\t"));
@@ -2401,6 +2520,16 @@ _status_json() {
         failed_units: (if $slow.failed_ok then ($slow.failed // "" | words) else null end),
         upgradable_packages: ($slow.upgradable | num),
         upgradable_names: ($slow.upgradable_names // "" | words),
+        security_updates: ($slow.security | num),
+        security_update_names: ($slow.security_names // "" | words),
+        package_lists_age_days: ($lists | num),
+        installs: ($inst | split("\n") | map(select(length > 0) | split("\u001f")) | map({
+          kind: .[0], name: .[1], version: (.[2] | str), installed_days_ago: (.[9] | num),
+          how: .[5], update_command: (.[4] | str),
+          agent: (if .[0] == "agent" then $agents[.[6] | tonumber] else null end),
+          old: (.[0] == "agent" and (.[9] | tonumber) > ($oldt | tonumber)),
+          end_of_life: (.[7] | str), path: .[8] })),
+        outdated_sessions: ($outd | lines | map({ pid: (.[0] | tonumber), process: .[1], reason: .[2] })),
         unattended_upgrades: (if ($slow.unattended // "absent") == "absent" then null else $slow.unattended == "active" end),
         docker: (if ($slow.docker // "") == "" then null
           elif $slow.docker == "down" then { reachable: false }
@@ -2571,6 +2700,23 @@ _status_agent_text() {
   for e in "${ST_CHK_NOTE[@]}"; do t+="${t:+ · }$e"; done
   [[ "${ST_SLOW[upgradable]:-0}" != 0 ]] && t+=" (mm optimize upgrades)"
   printf 'checks: %s\n' "${t:-none}"
+  # What is installed outside apt and snap (lib/updates.sh): agent CLIs and runtimes by name,
+  # everything else counted.
+  local kind ver how eol days ag="" rt="" np=0 nold=0
+  for e in "${ST_INSTALLS[@]}"; do
+    IFS=$MM_FS read -r kind name ver _ _ how _ eol _ days <<<"$e"
+    case "$kind" in
+      agent) ag+="${ag:+, }$name${ver:+ $ver} (installed ${days} days ago, $how)" ;;
+      runtime) rt+="${rt:+, }$name $ver ($how${eol:+, end of life $eol})" ;;
+      *) np=$((np + 1)); ((days > MM_TOOL_OLD_DAYS)) && nold=$((nold + 1)) ;;
+    esac
+  done
+  if [[ -n "${ST_SLOW[at]:-}" ]]; then
+    printf 'agent clis: %s\n' "${ag:-none found}"
+    printf 'runtimes: %s\n' "${rt:-system only}"
+    printf 'other installs: %d global packages and binaries, %d installed over %d days ago (mm status --json lists them)\n' \
+      "$np" "$nold" "$MM_TOOL_OLD_DAYS"
+  fi
   _status_sched_text t
   printf 'scheduled cleanup: %s\n' "$t"
   _status_age a "$ST_LINGER_AGE"

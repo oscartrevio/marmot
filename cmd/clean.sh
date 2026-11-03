@@ -2095,11 +2095,14 @@ _clean_tmpfiles_runs() { [[ -d /run/systemd/system ]]; }
 # _clean_review_tmp — /tmp and /var/tmp: size (every user's files when root or passwordless sudo,
 # else only what this user can read) and the OS aging policy, with a fix when nothing ages them.
 _clean_review_tmp() {
-  local dir all=0 size age file detail hint fs suggest name
+  local dir all=0 size age file detail hint fs suggest name measure
   if (( EUID != 0 )) && mm_can_sudo; then all=1; fi
   for dir in /tmp /var/tmp; do
     [[ -d "$dir" ]] || continue
-    if size=$(MM_SIZE_SUDO=$all mm_size "$dir"); then
+    # The test suite measures its sandbox stand-in (_clean_browser_tmp_root), never the host's.
+    measure=$dir
+    [[ -n "${MM_TEST_TMP_ROOT+x}" ]] && { measure=$(_clean_browser_tmp_root) || continue; }
+    if size=$(MM_SIZE_SUDO=$all mm_size "$measure"); then
       detail=$(mm_human "$size")
       (( EUID != 0 && ! all )) && detail+=" (your files)"
     else

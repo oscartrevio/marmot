@@ -1,5 +1,6 @@
 # shellcheck shell=bash
-# mm optimize — performance diagnosis plus bounded maintenance: apt/snap updates, swap reset,
+# mm optimize — performance diagnosis plus bounded maintenance: apt/snap updates, agent CLI and
+# global package updates (lib/updates.sh), swap reset,
 # processes stranded in deleted worktrees, orphaned headless browsers, SSD trim, DNS flush, failed
 # units, pending reboot.
 
@@ -126,10 +127,11 @@ _optimize_diagnose() {
 
 # ---------------------------------------------------------------- updates
 
-# _optimize_apt_plan — "u|p|k<TAB>package" from a simulated upgrade (upgrade/phased/kept back).
+# _optimize_apt_plan — "u|s|p|k<TAB>package" from a simulated upgrade (upgrade, security upgrade:
+# its candidate comes from a -security suite, phased, kept back).
 _optimize_apt_plan() {
   LC_ALL=C apt-get -s -o Debug::NoLocking=1 upgrade 2>/dev/null | awk '
-    /^Inst / { print "u\t" $2; next }
+    /^Inst / { print (/-security/ ? "s" : "u") "\t" $2; next }
     /deferred due to phasing:/ { m = "p"; next }
     /kept back:/ { m = "k"; next }
     /^  / { if (m != "") for (i = 1; i <= NF; i++) print m "\t" $i; next }
@@ -268,10 +270,11 @@ _optimize_updates() {
       refreshed=0
     fi
 
-    local kind pkg up=() phased=() kept=()
+    local kind pkg up=() sec=() phased=() kept=()
     while IFS=$'\t' read -r kind pkg; do
-      case "$kind" in u) up+=("$pkg") ;; p) phased+=("$pkg") ;; k) kept+=("$pkg") ;; esac
+      case "$kind" in u) up+=("$pkg") ;; s) up+=("$pkg") sec+=("$pkg") ;; p) phased+=("$pkg") ;; k) kept+=("$pkg") ;; esac
     done < <(_optimize_apt_plan)
+    (( ${#sec[@]} )) && mm_warn "${#sec[@]} security updates: $(_optimize_list "${sec[@]}")"
 
     if (( ${#up[@]} == 0 )); then
       if (( refreshed )); then _optimize_unchanged "Packages" "up to date"
@@ -295,6 +298,182 @@ _optimize_updates() {
     mapfile -t names < <(awk 'NR > 1 { print $1 }' <<<"$snaps")
     _optimize_unchanged "Snaps" "${#names[@]} pending ($(_optimize_list "${names[@]}")); snapd auto-refreshes them"
   fi
+}
+
+# ---------------------------------------------------------------- agent CLIs, packages, runtimes
+# What is installed outside apt and snap (lib/updates.sh mm_installs). Agent CLIs and harnesses
+# ship fixes every week and run with your credentials: their updates are offered together, each
+# command named. Global packages and tools are offered in a picker, nothing marked. Runtimes past
+# their end of life are reported. Every update is the tool's own command (its self-update, or the
+# package manager that installed it), run as you, never with sudo, and only after you confirm.
+
+# _optimize_tool_line ROW — "name version · installed 3d ago · update command" for an mm_installs
+# row.
+_optimize_tool_line() {
+  local kind name ver at upd how
+  IFS=$MM_FS read -r kind name ver at upd how _ <<<"$1"
+  printf '%s%s · installed %s · %s' "$name" "${ver:+ $ver}" "$(mm_ago $(($(date +%s) - at)))" "$upd"
+}
+
+# _optimize_tool_dir PATH — the folder an update of the install at PATH writes: the node_modules
+# it is in, else its parent.
+_optimize_tool_dir() {
+  if [[ "$1" == */node_modules/* ]]; then printf '%s/node_modules' "${1%/node_modules/*}"
+  else dirname -- "$1"; fi
+}
+
+# _optimize_tool_exec CMD... — run an update command with no terminal input and a time limit: an
+# updater that waits for an answer fails instead of hanging the run.
+_optimize_tool_exec() { timeout 900 "$@" </dev/null; }
+
+# _optimize_tool_updates LABEL ROW... — run the update command of each ROW (mm_installs lines),
+# split into words, never through a shell. Its program is the one mm_installs found (first in
+# PATH's folders, else the agent's active-version link), not whatever another PATH would give.
+_optimize_tool_updates() {
+  local label=$1 row upd name idx ok=0 failed=0
+  local -a argv=()
+  shift
+  _mm_path_dirs
+  for row in "$@"; do
+    IFS=$MM_FS read -r _ name _ _ upd _ idx _ <<<"$row"
+    read -r -a argv <<<"$upd"
+    if _mm_which "${argv[0]}"; then argv[0]=$REPLY
+    elif [[ -n "$idx" && "${MM_AGENT_ACTIVE[idx]:-}" == */"${argv[0]}" ]]; then argv[0]=${MM_AGENT_ACTIVE[idx]}; fi
+    if mm_run "$upd" _optimize_tool_exec "${argv[@]}"; then
+      ok=$((ok + 1))
+    else
+      failed=$((failed + 1))
+      _optimize_attention "$name did not update · rerun: $upd"
+    fi
+  done
+  ((ok)) && _optimize_applied "Updated $ok $label" ""
+  return 0
+}
+
+_optimize_tools() {
+  mm_section "Agent CLIs and Tools"
+  local rows=() agents=() pkgs=() row kind name ver at upd how eol path now noupd=0 n
+  mapfile -t rows < <(mm_installs)
+  if ((${#rows[@]} == 0)); then
+    _optimize_unchanged "Agent CLIs and tools" "none found outside apt and snap"
+    return
+  fi
+  now=$(date +%s)
+  for row in "${rows[@]}"; do
+    IFS=$MM_FS read -r kind name ver at upd how _ eol path <<<"$row"
+    if [[ "$kind" == runtime ]]; then
+      if [[ -n "$eol" ]]; then
+        _optimize_attention "$name $ver ($how) is past end of life ($eol): no security fixes · install a supported release with $how"
+      else
+        _optimize_unchanged "$name $ver" "runtime ($how) · installed $(mm_ago $((now - at)))"
+      fi
+      continue
+    fi
+    if [[ -z "$upd" ]]; then
+      if [[ "$kind" == agent ]]; then
+        _optimize_skipped "$name${ver:+ $ver}" "installed $(mm_ago $((now - at))) · marmot knows no update command for this $how install"
+      else
+        noupd=$((noupd + 1))
+      fi
+      continue
+    fi
+    if [[ ! -w "$(_optimize_tool_dir "$path")" ]]; then
+      _optimize_skipped "$name${ver:+ $ver}" "installed as root · update it yourself: sudo $upd"
+      continue
+    fi
+    if [[ "$kind" == agent ]]; then agents+=("$row"); else pkgs+=("$row"); fi
+  done
+  ((noupd)) && mm_info "${C_DIM}◎ $noupd loose binaries without a known update command (mm status --json lists them)${C_RESET}"
+
+  # Agent CLIs: one confirmation naming every command.
+  if ((${#agents[@]})); then
+    local cmds=()
+    for row in "${agents[@]}"; do
+      IFS=$MM_FS read -r _ _ _ at upd _ <<<"$row"
+      cmds+=("$upd")
+      mm_days_ago "$at" "$now"
+      if ((REPLY > MM_TOOL_OLD_DAYS)); then mm_warn "$(_optimize_tool_line "$row")"; else mm_info "$(_optimize_tool_line "$row")"; fi
+    done
+    if [[ "$MM_DRY_RUN" == 1 ]]; then
+      _optimize_applied "" "Would update ${#agents[@]} agent CLIs after confirmation ($(IFS=,; printf '%s' "${cmds[*]}" | sed 's/,/, /g'))"
+    elif [[ "$MM_TTY" != 1 ]]; then
+      _optimize_skipped "Agent CLIs" "needs a terminal to confirm"
+    elif mm_confirm "Update ${#agents[@]} agent CLIs ($(IFS=,; printf '%s' "${cmds[*]}" | sed 's/,/, /g'))?"; then
+      _optimize_tool_updates "agent CLIs" "${agents[@]}"
+    else
+      _optimize_skipped "Agent CLIs" "declined"
+    fi
+  fi
+
+  # Global packages and tools: picked one by one, nothing marked; without fzf every one is named
+  # before a single question.
+  ((${#pkgs[@]})) || return 0
+  n=${#pkgs[@]}
+  if [[ "$MM_DRY_RUN" == 1 ]]; then
+    _optimize_applied "" "Would offer $n global packages and tools for update (you pick which, interactively)"
+    return
+  fi
+  if [[ "$MM_TTY" != 1 ]]; then
+    _optimize_skipped "Global packages" "$n can update · needs a terminal to pick"
+    return
+  fi
+  local picked=() chosen=() line
+  if _optimize_have_fzf; then
+    mapfile -t picked < <(for row in "${pkgs[@]}"; do _optimize_tool_line "$row"; printf '\n'; done |
+      mm_pick "TAB: mark packages to update · Enter: continue · Esc: none")
+    for row in "${pkgs[@]}"; do
+      line=$(_optimize_tool_line "$row")
+      for name in "${picked[@]}"; do [[ "$name" == "$line" ]] && chosen+=("$row"); done
+    done
+  else
+    chosen=("${pkgs[@]}")
+  fi
+  if ((${#chosen[@]} == 0)); then _optimize_skipped "Global packages" "none selected"; return; fi
+  # What the picker returned (Enter with nothing marked returns the highlighted row) is listed
+  # and confirmed.
+  for row in "${chosen[@]}"; do mm_info "$(_optimize_tool_line "$row")"; done
+  if mm_confirm "Update these ${#chosen[@]} packages?"; then
+    _optimize_tool_updates "global packages" "${chosen[@]}"
+  else
+    _optimize_skipped "Global packages" "declined"
+  fi
+}
+
+# _optimize_agent_idx NAME — REPLY: the lib/agents.sh row of agent NAME (as _optimize_agent_of
+# names it, " helper" dropped).
+_optimize_agent_idx() {
+  local i
+  for i in "${!MM_AGENT_NAME[@]}"; do [[ "${MM_AGENT_NAME[i]}" == "${1% helper}" ]] && { REPLY=$i; return 0; }; done
+  return 1
+}
+
+# _optimize_outdated — agent processes still running code an update replaced (lib/updates.sh
+# mm_proc_outdated), one line per agent and reason. Reported only: a session is the user's to
+# restart.
+_optimize_outdated() {
+  mm_section "Agent Sessions"
+  local p pid comm agent key
+  local -A byreason=()
+  local -a order=() list=()
+  for p in /proc/[0-9]*; do
+    [[ -O "$p" ]] || continue
+    pid=${p#/proc/}
+    { read -r comm <"$p/comm"; } 2>/dev/null || continue
+    agent=$(_optimize_agent_of "$pid" "$comm") || continue
+    _optimize_agent_idx "$agent" || continue
+    mm_proc_outdated "$pid" "$REPLY" || continue
+    key="$agent"$'\t'"$REPLY"
+    [[ -n "${byreason[$key]:-}" ]] || order+=("$key")
+    byreason[$key]+=" $pid"
+  done
+  if ((${#order[@]} == 0)); then
+    _optimize_unchanged "Agent sessions" "all run the installed code"
+    return
+  fi
+  for key in "${order[@]}"; do
+    read -r -a list <<<"${byreason[$key]}"
+    _optimize_attention "${key%%$'\t'*} (pid$( ((${#list[@]} > 1)) && echo s) $(_optimize_list "${list[@]}")) ${key#*$'\t'} · restart to load the update"
+  done
 }
 
 # ---------------------------------------------------------------- swap
@@ -388,6 +567,7 @@ _optimize_orphans() {
     [[ -n "${mine[$pid]:-}" ]] && continue
     [[ -O "$p" ]] || continue
     _optimize_cwd_deleted "$pid" || continue
+    _mm_proc_in_scope "$p" || continue
     age=$(mm_proc_age "$pid") || continue
     (( age >= min_age )) || continue
     bytes=$(awk '/^(VmRSS|VmSwap):/ { kb += $2 } END { printf "%.0f\n", kb * 1024 }' "$p/status" 2>/dev/null)
@@ -545,9 +725,15 @@ _optimize_orphan_task() {
     fi
   done
   (( ${#sent[@]} )) || { _optimize_skipped "Orphaned processes" "already gone or changed"; return; }
-  sleep 5
-  local i
-  for i in "${!sent[@]}"; do _optimize_alive "${sent[$i]}" "${starts[$i]}" && survivors+=("${sent[$i]}"); done
+  # Up to 5s for them to exit, done as soon as every one has (a zombie has exited).
+  local i t left
+  for (( t = 0; t < 25; t++ )); do
+    left=0
+    for i in "${!sent[@]}"; do _optimize_running "${sent[$i]}" "${starts[$i]}" && { left=1; break; }; done
+    (( left )) || break
+    sleep 0.2
+  done
+  for i in "${!sent[@]}"; do _optimize_running "${sent[$i]}" "${starts[$i]}" && survivors+=("${sent[$i]}"); done
   _optimize_applied "Sent SIGTERM to ${#sent[@]} orphaned processes ($(mm_human "$freed") RAM+swap)" ""
   if (( ${#survivors[@]} )); then
     _optimize_attention "${#survivors[@]} still running after 5s · force: kill -9 ${survivors[*]}"
@@ -662,6 +848,7 @@ _optimize_browsers() {
   for pid in "${!start[@]}"; do
     [[ -z "${mine[$pid]:-}" && -O "/proc/$pid" ]] || continue
     info=$(_optimize_browser_root "$pid") || continue
+    _mm_proc_in_scope "/proc/$pid" || continue
     _optimize_browser_orphaned "$pid" || continue
     age=$(mm_proc_age "$pid") || continue
     (( age >= min_age )) || continue
@@ -862,7 +1049,10 @@ _optimize_usage() {
 Usage: mm optimize [--dry-run]
 
 Diagnose performance (load, pressure, swap, CPU and memory hogs), then:
-  apt upgrade (snap refresh reported only) · swap reset when RAM allows · SIGTERM processes
+  apt upgrade, security updates named (snap refresh reported only) · agent CLI updates (each
+  tool's own command, named in one confirmation) · global npm, bun, pnpm, pipx, uv, cargo, go
+  and Homebrew packages you pick · runtimes past end of life and agent sessions on replaced
+  code reported · swap reset when RAM allows · SIGTERM processes
   stranded in deleted directories (older than 1h) · stop orphaned headless browsers (Playwright,
   Puppeteer and agent Chromium whose script is gone, older than 1h: SIGTERM, then SIGKILL for
   the same process if it ignores it) · fstrim / (unless trimmed <24h ago) · DNS cache flush ·
@@ -872,7 +1062,8 @@ Options:
   -n, --dry-run   Show what would be applied; runs nothing (not even apt-get update)
 
 Confirmations (upgrades, swap reset, SIGTERM, browsers) need a terminal; without one they are
-skipped. In a container the swap reset, TRIM and reboot check are skipped (swap, disk and kernel
+skipped. Updates run as you, never with sudo: an install only root can write is named with the
+command to run yourself. In a container the swap reset, TRIM and reboot check are skipped (swap, disk and kernel
 belong to the host), the diagnosis reports load, pressure and swap as the host's without flagging
 them, and memory against the cgroup limit when one is set.
 
@@ -892,10 +1083,12 @@ mm_cmd_main() {
   done
 
   mm_header "Optimize"
-  mm_prog_plan 9 auto
+  mm_prog_plan 11 auto
   [[ "$MM_DRY_RUN" == 1 ]] || mm_sudo_ask "package upgrades, the swap reset, TRIM and the DNS cache flush"
   _optimize_diagnose
   _optimize_updates
+  _optimize_tools
+  _optimize_outdated
   _optimize_swap
   _optimize_orphan_task
   _optimize_browser_task

@@ -1001,3 +1001,19 @@ fake_cgroup() { mkdir -p "$1"; echo "cpu memory" >"$1/cgroup.controllers"; expor
   [ "$output" = "0 " ]
   [ "$(cat "$MM_TRASH_DIR/files/item/doc.txt")" = important ]
 }
+
+@test "busy checks: under the suite only this test's processes count; outside it, or with another scope, every one does" {
+  cp "$(type -P sleep)" "$SB/busytool"
+  (env -u MM_TEST_PROC_SCOPE "$SB/busytool" 30 & echo $! >"$SB/out.pid"; wait) &
+  MM_TEST_PIDS+=($!)
+  local i; for ((i = 0; i < 100; i++)); do [[ -s "$SB/out.pid" ]] && break; sleep 0.05; done
+  mm_core
+  run mm_proc_running busytool
+  [ "$status" -ne 0 ]                       # another test's (or the host's) process
+  _MM_PROC_SCOPE="" mm_proc_running busytool  # without the scope: seen
+  mm_test_bg "$SB" "$SB/busytool" 31
+  mm_proc_running busytool                  # this test's own: seen
+  # a scope that is not this test's own bats folder is ignored
+  [ -z "$(MM_TEST_PROC_SCOPE="$SB" bash -c '. "$1/lib/core.sh"; printf %s "$_MM_PROC_SCOPE"' _ "$MM_SRC")" ]
+  kill "$(cat "$SB/out.pid")" 2>/dev/null
+}
